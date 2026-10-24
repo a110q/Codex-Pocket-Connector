@@ -1,0 +1,5 @@
+{
+  "relay": "https://XX:24443",
+  "pin": "XX",
+  "signingSha256": "XX"
+}

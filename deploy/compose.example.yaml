@@ -1,0 +1,17 @@
+services:
+  relay:
+    build:
+      context: ../
+      dockerfile: deploy/Dockerfile
+    image: codex-pocket-relay:local
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    env_file: ../.private/relay.env
+    ports: ["24443:8443"]
+    volumes:
+      - ../.private/relay-data:/data
+      - ../.private/relay-certs:/certs:ro
+    tmpfs: [/tmp:rw,noexec,nosuid,size=16m]

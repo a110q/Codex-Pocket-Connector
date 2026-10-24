@@ -1,0 +1,9 @@
+.private
+releases
+android
+node_modules
+test
+docs
+*.log
+*.sqlite*
+*.pem

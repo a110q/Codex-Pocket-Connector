@@ -1,0 +1,18 @@
+package dev.codexpocket.app
+
+enum class ConnectionState(val label: String, val ready: Boolean = false, val retry: Boolean = false) {
+    CONNECTING("正在连接"),
+    RELAY_CONNECTED("已连接中继"),
+    CONNECTING_DESKTOP("正在确认电脑连接"),
+    COMPUTER_OFFLINE("电脑离线，等待自动恢复"),
+    READY("电脑已连接", ready=true),
+    DESKTOP_UNAVAILABLE("电脑在线，Codex 尚未连接"),
+    DESKTOP_DISCONNECTED("电脑上的 Codex 已断开"),
+    INCOMPATIBLE("电脑接口已变化，请更新连接服务"),
+    RECONNECTING("连接中断，正在重连", retry=true),
+    CLOSED("连接已断开，正在重连", retry=true),
+    HANDSHAKE_TIMEOUT("连接确认超时，正在重连", retry=true),
+    INVALID_DATA("连接数据验证失败，正在重连", retry=true),
+    AUTH_FAILED("设备授权已失效"),
+    REVOKED("设备已被撤销，请重新配对")
+}

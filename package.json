@@ -1,0 +1,21 @@
+{
+  "name": "codex-pocket",
+  "version": "0.7.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "package:mac": "node scripts/build-connector.mjs",
+    "package:windows": "node scripts/build-windows-connector.mjs",
+    "package:android": "node scripts/collect-android.mjs",
+    "relay": "node relay.mjs",
+    "companion": "node companion.mjs"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "ws": "8.22.0"
+  }
+}

@@ -1,0 +1,2 @@
+# Copy to .private/android-signing.properties and use your own keystore.
+storePassword=XX
