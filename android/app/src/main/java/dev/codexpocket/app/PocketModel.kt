@@ -28,7 +28,14 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private var saved = try { store.load() } catch (_: Exception) { JSONObject() }
     var profile by mutableStateOf(saved.optJSONObject("profile")); private set
     var computers by mutableStateOf(saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(profile)});private set
-    private var computerStates=saved.optJSONObject("computerStates")?:JSONObject()
+    private var computerStates=(saved.optJSONObject("computerStates")?:JSONObject()).also { states ->
+        // Older snapshots can contain already-merged placeholder duplicates.
+        // Reload only this derived cache; keep pairings, drafts and operations.
+        if (saved.optInt("timelineFormat") < 2) {
+            saved.remove("snapshot")
+            states.keys().forEach { states.optJSONObject(it)?.remove("snapshot") }
+        }
+    }
     private var pendingScannedPair=saved.optString("pendingScan").takeIf{it.isNotBlank()&&it!="null"}
     var status by mutableStateOf(if (profile == null) "尚未连接电脑" else "等待连接"); private set
     var connected by mutableStateOf(false); private set
@@ -96,11 +103,12 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     fun clearAccountAccess() { stop();account=null;computers.forEach{it.remove("accountToken")};profile?.remove("accountToken");persist() }
     private var pairingJob: Job? = null
+    private var pairingRequest: Job? = null
     private var reconnect: Runnable? = null
     private var cacheWrite: Runnable? = null
     private fun persist() {
         try {
-            saved.put("profile", profile ?: JSONObject.NULL).put("threads", JSONArray(threads)).put("snapshot", snapshot ?: JSONObject.NULL)
+            saved.put("timelineFormat", 2).put("profile", profile ?: JSONObject.NULL).put("threads", JSONArray(threads)).put("snapshot", snapshot ?: JSONObject.NULL)
                 .put("pending", pendingOperation ?: JSONObject.NULL).put("drafts", JSONObject(drafts.entries)).put("projects", JSONArray(projects)).put("appearance", appearance)
             saved.remove("draft")
             profile?.let{p->
@@ -119,7 +127,11 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun start() {
         foreground = true
         if(requireLan&&profile!=null&&!PocketConnection.isLanPairing(profile!!)){error="局域网模式只允许连接私有 IPv4 地址，请重新扫码";return}
-        if (profile != null) { if (profile?.optBoolean("approved") == true) connect() else waitForApproval() }
+        if (profile != null) {
+            if (profile?.optBoolean("approved") == true) {
+                if (connection == null) connect()
+            } else if (pairingRequest?.isActive != true) waitForApproval()
+        }
     }
     fun stop() {
         closePreview()
@@ -155,7 +167,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     fun reconnectNow() { if (profile?.optBoolean("approved") == true) connect() else if (profile != null) waitForApproval() }
     private fun activateComputer(next:JSONObject?) {
-        val resume=foreground;stop();scope.cancel();scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+        val resume=foreground;stop();scope.cancel();pairingRequest=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
         profile=next?.let{JSONObject(it.toString())};account?.let{profile?.put("accountToken",it.token)}
         val cache=next?.let{computerStates.optJSONObject(it.optString("hostId"))}?:JSONObject()
         threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
@@ -199,16 +211,19 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             val existing=computers.find{it.optString("hostId")==next.optString("hostId")&&it.optString("pairCode")==next.optString("pairCode")}
             next.put("mobileToken",existing?.optString("mobileToken")?.takeIf{it.isNotBlank()}?:Encoding.secret())
             next.put("approved", false)
-            persist();pairingJob?.cancel();reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+            persist();pairingJob?.cancel();pairingJob=null;reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();pairingRequest=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
             closePreview(); closeMessage(); threadBackStack.clear(); threads = emptyList(); projects = emptyList(); models = emptyList(); snapshot = null; selected = null; drafts = DraftBook()
             profile = next;messageImages=MessageImageLoader(context,next.getString("hostId")); pairing = true; error = null; persist()
             busy = true
-            scope.launch {
+            pairingRequest = scope.launch {
                 try {
                     withContext(Dispatchers.IO) { PocketConnection.post(next, "/api/pair", JSONObject().put("hostId", next.getString("hostId")).put("pairCode", next.getString("pairCode")).put("mobileToken", next.getString("mobileToken")).put("name", "${Build.MANUFACTURER} ${Build.MODEL}")) }
-                    status = "请在电脑端允许这台手机连接"; waitForApproval()
-                } catch (e: Exception) { error = e.message ?: "配对失败"; status = "配对未完成" }
-                finally { busy = false }
+                    if (profile !== next) return@launch
+                    status = "请在电脑端允许这台手机连接"
+                    if (foreground) waitForApproval()
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { if (profile === next) { error = e.message ?: "配对失败"; status = "配对未完成" } }
+                finally { if (profile === next) busy = false }
             }
         } catch (e: Exception) { error = e.message ?: "配对内容无效，请重新扫码" }
     }
@@ -220,7 +235,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         }catch(e:Exception){error=e.message?:"配对内容无效，请重新扫码"}
     }
     private fun waitForApproval() {
-        pairingJob?.cancel(); val p = profile ?: return
+        if (!foreground || pairingJob?.isActive == true) return
+        val p = profile ?: return
         pairingJob = scope.launch {
             status = "等待电脑端确认"; pairing = true
             while (foreground && profile === p && !p.optBoolean("approved")) {
@@ -229,7 +245,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                     if (result.optString("state") == "approved") {
                         p.put("approved", true); p.remove("pairCode"); pairing = false; persist(); connect(); return@launch
                     }
-                } catch (e: Exception) { error = e.message ?: "无法查询配对状态" }
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { error = e.message ?: "无法查询配对状态" }
                 delay(2500)
             }
         }
@@ -258,15 +275,21 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             loadingThread = false; if (e != null) error = e else { r?.let { acceptSnapshot(it) }; persistSoon() }
         }
     }
-    private fun acceptSnapshot(next: JSONObject) {
-        val same = snapshot?.optJSONObject("history") != null && snapshot?.optJSONObject("thread")?.optString("id") == next.optJSONObject("thread")?.optString("id")
+    private fun acceptSnapshot(next: JSONObject, olderPage: Boolean = false) {
+        val current = snapshot
+        val same = current?.optJSONObject("history") != null && current.optJSONObject("thread")?.optString("id") == next.optJSONObject("thread")?.optString("id")
+        val sameSource = same && current?.optString("source") == next.optString("source")
         fun entries(value: JSONObject?) = value?.optJSONArray("messages").objects().mapIndexed { index, message -> TimelineEntry(message.optString("key", message.optString("turnId")+":"+message.optString("id")), message.optInt("order",index), message) }
-        val stale = same && (snapshot?.optLong("revision") ?: 0) > next.optLong("revision")
-        val merged = if(stale)mergeTimeline(entries(next),entries(snapshot)) else mergeTimeline(if (same) entries(snapshot) else emptyList(), entries(next))
-        if(stale)listOf("thread","requests","artifacts","revision","source","historyComplete").forEach { key -> next.put(key,snapshot?.opt(key)) }
-        next.put("messages", JSONArray(merged.map { it.value }))
-        next.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }
-        snapshot = next
+        val stale = sameSource && !next.isNull("revision") && current?.isNull("revision") == false && current.optLong("revision") > next.optLong("revision")
+        if (stale && !olderPage) return
+        if (olderPage && same && !sameSource) { selected?.let { openThread(it) }; return }
+        val previous = if (sameSource) entries(current) else emptyList()
+        val merged = if (olderPage && sameSource) mergeTimeline(entries(next), previous)
+            else replaceTimelineTail(previous, entries(next), next.optJSONObject("history")?.optBoolean("hasEarlier") == true)
+        val accepted = if (olderPage && sameSource && current != null) JSONObject(current.toString()) else next
+        accepted.put("messages", JSONArray(merged.map { it.value }))
+        accepted.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }
+        snapshot = accepted
     }
     fun loadEarlier() {
         val thread = selected ?: return
@@ -276,7 +299,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         request("thread.history", JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("before",history.getString("before"))) { r,e ->
             loadingHistory = false
             if (selected?.optString("id") != thread.optString("id")) return@request
-            if(e != null) error=e else { r?.let { acceptSnapshot(it) }; persistSoon() }
+            if(e != null) error=e else { r?.let { acceptSnapshot(it, olderPage = true) }; persistSoon() }
         }
     }
     fun showMessage(message: JSONObject, mode: String = "text") {
@@ -423,6 +446,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         profile?.optString("hostId")?.let{removeComputer(it)}
     }
     private fun forgetAll() {
+        pairingRequest?.cancel();pairingRequest=null
         stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
         computers=emptyList();computerStates=JSONObject();pendingScannedPair=null;persist()
     }

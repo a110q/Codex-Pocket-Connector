@@ -12,6 +12,8 @@ import org.junit.*
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.Mac
@@ -68,11 +70,45 @@ class ConnectionRecoveryTest {
         Assert.assertEquals(1,peer.server.requestCount)
         Assert.assertFalse(model!!.connected)
     }
+    @Test fun repeatedForegroundAndAccountStartsKeepTheExistingConnection(){
+        start();until{model!!.connected&&model!!.projects.isNotEmpty()}
+        instrumentation.runOnMainSync{
+            repeat(3){
+                model!!.authorizeAccount(AccountAuthorization("local-test-user","local-test-session",peer.profile.getString("hostId"),peer.profile.getString("relay"),peer.profile.getString("pin")))
+                model!!.start()
+            }
+        }
+        instrumentation.waitForIdleSync()
+        Assert.assertTrue(model!!.connected)
+        Assert.assertFalse(model!!.projects.isEmpty())
+        Assert.assertEquals(1,peer.opens.get())
+        Assert.assertEquals(1,peer.hellos.get())
+        Assert.assertNull(model!!.error)
+    }
+    @Test fun pausingDuringAnApprovalQueryDoesNotDisplayCancellationAsAnError(){
+        peer.holdPairStatus=true
+        SecureStore(context).save(JSONObject().put("profile",JSONObject(peer.profile.toString()).put("approved",false)))
+        instrumentation.runOnMainSync{model=PocketModel(context);model!!.start()}
+        until{peer.pairStatusRequests.get()==1}
+        instrumentation.runOnMainSync{model!!.stop()}
+        peer.releasePairStatus.countDown()
+        until{!peer.holdPairStatus}
+        // The canceled IO continuation is dispatched back to the main thread.
+        instrumentation.waitForIdleSync()
+        Assert.assertNull(model!!.error)
+        Assert.assertFalse(model!!.connected)
+        instrumentation.runOnMainSync{model!!.start()}
+        until{model!!.connected&&model!!.projects.isNotEmpty()}
+        Assert.assertNull(model!!.error)
+    }
     private class Peer {
         val server=MockWebServer()
         val opens=AtomicInteger();val hellos=AtomicInteger()
         val actions=CopyOnWriteArrayList<String>();val auth=CopyOnWriteArrayList<String?>()
         var dropFirstHello=false;var ignoreMessages=false;var rejectAuthorization=false
+        @Volatile var holdPairStatus=false
+        val pairStatusRequests=AtomicInteger()
+        val releasePairStatus=CountDownLatch(1)
         private val sockets=CopyOnWriteArrayList<WebSocket>()
         private val host="network-test-host-abcdefghijklmnop"
         private val key=Encoding.secret()
@@ -84,6 +120,11 @@ class ConnectionRecoveryTest {
             server.useHttps(tls.sslSocketFactory(),false)
             server.dispatcher=object:okhttp3.mockwebserver.Dispatcher(){override fun dispatch(request:okhttp3.mockwebserver.RecordedRequest):MockResponse{
                 if(rejectAuthorization)return MockResponse().setResponseCode(401)
+                if(request.path=="/api/pair/status"){
+                    pairStatusRequests.incrementAndGet()
+                    if(holdPairStatus){releasePairStatus.await(10,TimeUnit.SECONDS);holdPairStatus=false}
+                    return MockResponse().setHeader("Content-Type","application/json").setBody("{\"state\":\"approved\"}")
+                }
                 return MockResponse().withWebSocketUpgrade(object:WebSocketListener(){
                     override fun onOpen(webSocket:WebSocket,response:Response){sockets.add(webSocket);opens.incrementAndGet();auth.add(request.getHeader("Authorization"));webSocket.send(JSONObject().put("type","status").put("peerOnline",true).toString())}
                     override fun onMessage(webSocket:WebSocket,text:String){
@@ -111,7 +152,7 @@ class ConnectionRecoveryTest {
             profile=JSONObject().put("relay",server.url("/").toString().trimEnd('/')).put("hostId",host).put("key",key).put("pin",pin).put("mobileToken",Encoding.secret()).put("approved",true)
         }
         fun status(online:Boolean){sockets.last().send(JSONObject().put("type","status").put("peerOnline",online).toString())}
-        fun close(){try{sockets.forEach{it.close(1000,"Local test finished")}}finally{server.shutdown()}}
+        fun close(){releasePairStatus.countDown();try{sockets.forEach{it.close(1000,"Local test finished")}}finally{server.shutdown()}}
     }
     // The fixture's server role follows the wire specification independently
     // of PocketConnection's handshake implementation.

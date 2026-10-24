@@ -32,7 +32,7 @@ class PocketLayoutTest {
         backup=SecureStore(context).load()
         val thread=JSONObject().put("id","layout-only").put("hostId","local").put("title","界面验证")
         val snapshot=JSONObject().put("thread",thread).put("messages",JSONArray().put(JSONObject().put("id","answer").put("turnId","t").put("key","t:answer").put("role","assistant").put("text","用于检查键盘布局的本地测试内容。"))).put("historyComplete",true)
-        SecureStore(context).save(JSONObject().put("snapshot",snapshot).put("threads",JSONArray().put(thread)))
+        SecureStore(context).save(JSONObject().put("timelineFormat",2).put("snapshot",snapshot).put("threads",JSONArray().put(thread)))
         compose.runOnUiThread { compose.activity.enableEdgeToEdge(); model=PocketModel(context);model.openThread(thread) }
     }
     @After fun teardown() { compose.runOnUiThread { model.stop() };SecureStore(context).save(backup) }
