@@ -354,3 +354,13 @@ test('question response fields match desktop answers schema and reject unknown q
   assert.equal(writes[0][0], 'thread-follower-submit-user-input');
   assert.deepEqual(writes[0][1], { conversationId: 't', requestId: 'r', response });
 });
+
+test('accepted steering placeholders merge only by canonical message identity across turns',()=>{
+  const state={id:'qa',turns:[{id:'old',items:[
+    {type:'steeringUserMessage',id:'placeholder',serverUserMessageId:'canonical',clientUserMessageId:'original',status:'accepted',input:[{type:'text',text:'same prompt'}]},
+    {type:'steeringUserMessage',id:'pending',clientUserMessageId:'pending-client',input:[{type:'text',text:'still pending'}]}
+  ]},{id:'new',items:[{type:'userMessage',id:'canonical',clientId:'original',content:[{type:'text',text:'same prompt'}]},{type:'userMessage',id:'intentional-repeat',clientId:'different',content:[{type:'text',text:'same prompt'}]}]}]};
+  const result=normalizeSnapshot(state).messages.filter(m=>m.role==='user');
+  assert.equal(result.filter(m=>m.text==='same prompt').length,2);assert.equal(result.filter(m=>m.text==='still pending').length,1);
+  assert(!result.some(m=>m.id==='placeholder'));
+});

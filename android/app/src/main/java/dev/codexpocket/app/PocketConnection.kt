@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
+class PairingHttpException(val status:Int,message:String):Exception(message)
+
 class PocketConnection(private val profile: JSONObject, private val onStatus: (ConnectionState) -> Unit, private val onEvent: (JSONObject) -> Unit, private val handshakeTimeoutMillis: Long = 20000) {
     private val pending = ConcurrentHashMap<String, (JSONObject?, String?) -> Unit>()
     private var socket: WebSocket? = null
@@ -146,7 +148,7 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
                 .post(body.toString().toRequestBody("application/json".toMediaType())).build()
             httpClient(profile.getString("pin")).newCall(request).execute().use { response ->
                 val result = JSONObject(response.body?.string() ?: "{}")
-                if (!response.isSuccessful) throw IllegalStateException(result.optString("error", "请求失败 ${response.code}"))
+                if (!response.isSuccessful) throw PairingHttpException(response.code,result.optString("error", "请求失败 ${response.code}"))
                 return result
             }
         }

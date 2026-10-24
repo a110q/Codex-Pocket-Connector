@@ -20,8 +20,9 @@ export function writePrivate(path, value, { exclusive = false } = {}) {
 }
 export function validateDefaults(defaults) {
   const url = new URL(defaults.relay);
-  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('安装包的中继地址无效');
-  const certificate = new X509Certificate(defaults.caCert);
+  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('中继地址无效，请填写不带路径的 HTTPS 地址');
+  if(typeof defaults.caCert!=='string'||/PRIVATE KEY/.test(defaults.caCert))throw new Error('请使用服务器的公开证书，不能导入私钥');
+  let certificate;try{certificate=new X509Certificate(defaults.caCert)}catch{throw new Error('公开证书格式无效，请导入 PEM 格式的 cert.pem')}
   return { relay: url.origin, caCert: defaults.caCert, pin: certificate.fingerprint256.replaceAll(':', '').toLowerCase() };
 }
 export class Enrollment {

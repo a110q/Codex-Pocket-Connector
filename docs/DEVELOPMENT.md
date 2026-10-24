@@ -70,6 +70,19 @@ cd android
 
 `androidTest` 内部分仪器测试需要模拟器和隔离中继夹具，不应连接正式服务。编译、单元测试和静态检查不等于实机交互验收。
 
+Node 测试包含真实 TLS / WebSocket 与加密传输、图片分片和断点恢复、自建服务验证与身份隔离、消息去重、回执核对和配对取消。
+
+安卓不依赖外部夹具的仪器测试可以单独运行：
+
+```sh
+./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=dev.codexpocket.app.PairingImagesTest,dev.codexpocket.app.ConnectionRecoveryTest
+```
+
+账号与服务切换测试需先在项目根目录运行 `node test/support/account-ui-server.mjs`。它会创建临时中继及虚构桌面，并把连接资料保存在 `.private/account-ui-fixture.json`；不要发布该文件。模拟器使用 `adb reverse` 转发夹具端口。`AccountFlowTest` 需要 `accountRelay`、`accountPin`、`accountDevice`、`lanPairing`、`lanDesktop`、`cloudPairing`、`cloudDesktop` 仪器参数；`ServiceRoutingTest` 需要 `servicePairing`。均从夹具文件读取，勿放入公开日志。
+
+`SelfHostingFlowTest` 会真正发送图片与文字，只能在明确授权的专用测试会话中运行。先按自建文档启动独立 Docker 中继、初始化测试管理员并连接测试电脑，再提供 `selfRelay`、`selfPin`、`selfUsername`、`selfPassword`、`selfPairing`、`selfDesktop`、`selfThread` 参数。不得使用其他人的账号或工作会话。已执行的流程和环境边界见 [0.7.7 验收记录](verification-0.7.7.md)。
+
 ## 目录
 
 ```text
@@ -85,6 +98,8 @@ relay.mjs                HTTPS / WSS 中继
 companion.mjs            电脑连接服务与加密消息处理
 desktop-adapter.mjs       桌面 IPC 适配
 standalone-adapter.mjs    Codex App Server 适配
+relay-profiles.mjs        自建中继校验与服务身份隔离
+image-uploads.mjs         加密通道中的图片分片接收与校验
 .private/                本机私密数据，禁止提交
 releases/                本地构建产物，只发布到 Release
 ```

@@ -14,4 +14,4 @@ services:
     volumes:
       - ../.private/relay-data:/data
       - ../.private/relay-certs:/certs:ro
-    tmpfs: [/tmp:rw,noexec,nosuid,size=16m]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]

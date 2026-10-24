@@ -220,6 +220,16 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
         if (host.pending_hash && equalHash(host.pending_hash, hash)) return res.end(JSON.stringify({ state: 'pending' }));
         throw error(401, '配对尚未完成或已被撤销');
       }
+      if (path === '/api/pair/cancel') {
+        const host=checkHost(body.hostId)?getHost(body.hostId):null;
+        claimPhone(req,body.hostId);
+        if(!host||!checkSecret(body.mobileToken)||!host.pending_hash||!equalHash(host.pending_hash,digest(body.mobileToken)))throw error(401,'配对请求已结束');
+        const fingerprint=host.pending_hash.slice(0,12);
+        db.prepare('UPDATE hosts SET pending_hash=NULL,pending_name=NULL WHERE id=?').run(body.hostId);
+        db.prepare('UPDATE mobile_claim_hosts SET pending_user_id=NULL,pending_session_hash=NULL WHERE host_id=?').run(body.hostId);
+        send(relayState(body.hostId).desktop,{type:'pair/cancelled',fingerprint});
+        return res.end(JSON.stringify({cancelled:true}));
+      }
       if (path === '/api/pair/decision') {
         const host = authenticate(req, 'desktop', body.hostId);
         if (!host.pending_hash) throw error(409, 'No pending device');

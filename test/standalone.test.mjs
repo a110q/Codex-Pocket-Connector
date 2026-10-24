@@ -165,7 +165,7 @@ test('a desktop delivery error never falls back to a second app-server send', as
   const original=Object.getPrototypeOf(StandaloneAdapter.prototype).readThread;
   Object.getPrototypeOf(StandaloneAdapter.prototype).readThread=async()=>({thread:{id:'qa',activeTurnId:null,cwd:'/qa'},source:'desktop-live'});
   try{await assert.rejects(a.sendMessage({threadId:'qa',text:'only once'}),e=>e.uncertain===true)}finally{Object.getPrototypeOf(StandaloneAdapter.prototype).readThread=original}
-  assert.equal(server.calls.length,0);
+  assert(!server.calls.some(c=>c.method.startsWith("turn/")||c.method=== "thread/resume"));
 });
 
 function desktopSendFixture(t, options = {}) {
@@ -240,7 +240,7 @@ test('only an explicit writer rejection is certain; other desktop delivery failu
   const ambiguous = desktopSendFixture(t, { deliveryError: Object.assign(Error('handler failed after submission'), { rejected: true }) });
   await assert.rejects(ambiguous.a.sendMessage({ threadId: 'qa', text: 'once' }), e => e.uncertain === true && !e.notSubmitted);
   assert.equal(ambiguous.calls.filter(c => c === 'thread-follower-start-turn').length, 1);
-  assert.equal(ambiguous.server.calls.length, 0);
+  assert(!ambiguous.server.calls.some(c=>c.method.startsWith("turn/")||c.method==="thread/resume"));
 });
 test('approval decisions enforce conversation identity, and disconnect forgets owned sessions', async t => {
   const server=new Server(),a=fixtureAdapter({server,catalog:false});t.after(()=>a.close());a.ready=true;
@@ -296,4 +296,19 @@ test('archive, restore and delete change the backend and verify the fresh list; 
   assert.equal((await a.call('thread.delete',{threadId:'qa'})).alreadyDeleted,true);
   assert.equal(notifications.at(-1).method,'thread-archived');
   await assert.rejects(a.call('thread.archive',{threadId:'qa',hostId:'other'}),/本机/);
+});
+
+test('receipt reconciliation reads exact client IDs and never accepts equal text or rejected steering',async t=>{
+  const {a,server}=desktopSendFixture(t);const client='request-id';
+  a.snapshots.set('local:qa',{state:{turns:[{items:[{id:'placeholder',type:'steeringUserMessage',status:'accepted',serverUserMessageId:'server-id',clientUserMessageId:client}]}]}});
+  assert.equal((await a.confirmMessage({threadId:'qa',clientUserMessageId:client})).messageId,'server-id');
+  a.snapshots.clear();server.request=async(method)=>{assert.equal(method,'thread/turns/list');return{data:[{items:[{id:'canonical',type:'userMessage',clientId:client,content:[{type:'text',text:'one prompt'}]}]}]}};
+  assert.equal((await a.confirmMessage({threadId:'qa',clientUserMessageId:client})).messageId,'canonical');
+  assert.equal(await a.confirmMessage({threadId:'qa',clientUserMessageId:'other'}),null);
+});
+test('text and uploaded images enter one public first turn with the same client request ID',async t=>{
+  const {a,server}=publicCreateFixture(t);
+  await a.createThread({text:'describe this',imagePaths:['/phone/one.jpg','/phone/two.png'],clientUserMessageId:'client'});
+  const input=server.calls.find(c=>c.method==='turn/start').params;
+  assert.equal(input.clientUserMessageId,'client');assert.deepEqual(input.input.map(i=>i.type),['text','localImage','localImage']);
 });

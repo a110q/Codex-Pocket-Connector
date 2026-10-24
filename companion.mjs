@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import QRCode from 'qrcode';
 import { DesktopAdapter } from './desktop-adapter.mjs';
 import { PreviewTunnel } from './preview-tunnel.mjs';
+import { ImageUploads } from './image-uploads.mjs';
 import { HistoryStore } from './history.mjs';
 import { RelayConnection } from './relay-connection.mjs';
 import { startLanRelay } from './lan.mjs';
@@ -39,7 +40,7 @@ export class CommandLedger {
     this.db = new DatabaseSync(path); this.pending = new Map();
     this.db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY, action TEXT, args_hash TEXT, state TEXT, response TEXT, created_at INTEGER);`);
   }
-  async run(command, execute) {
+  async run(command, execute, reconcile) {
     if (!MUTATIONS.has(command.action)) return execute();
     const fingerprint = digest(JSON.stringify(command.args));
     const previous = this.db.prepare('SELECT * FROM commands WHERE id=?').get(command.id);
@@ -56,6 +57,13 @@ export class CommandLedger {
         this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run(previous.state, previous.response, command.id);
       }
       if (previous.state === 'rejected') throw Object.assign(new Error(JSON.parse(previous.response).error), { notSubmitted: true, uncertain: false });
+      if (reconcile) {
+        const receipt = await reconcile();
+        if (receipt) {
+          this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('done', JSON.stringify(receipt), command.id);
+          return receipt;
+        }
+      }
       throw Object.assign(new Error('该操作的执行结果尚未确认，请查看会话后再决定；系统不会重复执行'), { uncertain: true });
     }
     this.db.prepare('INSERT INTO commands VALUES(?,?,?,?,?,?)').run(command.id, command.action, fingerprint, 'started', null, Date.now());
@@ -138,6 +146,7 @@ export class FileAccess {
 
 export async function startCompanion(config, { adapter = new DesktopAdapter({ callerThreadId: config.contextThreadId }), port = 43785, statePath = resolve(ROOT, '.private/commands.sqlite'), configPath = CONFIG } = {}) {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
+  const uploads = new ImageUploads(resolve(dirname(statePath), 'image-uploads'));
   const ledger = new CommandLedger(statePath), files = new FileAccess(), preview = new PreviewTunnel(), history = new HistoryStore();
   let channel = null, crypto = new CipherChannel(config.key, config.hostId, 'desktop');
   let stopping = false, mobileOnline = false, pairRequest = null, lastError = '', relayError = '', desktopRetry, desktopConnecting;
@@ -166,6 +175,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
       try {
         const frame = JSON.parse(data.toString());
         if (frame.type === 'status') { mobileOnline = !!frame.peerOnline; if (!mobileOnline) { channel = null; preview.close(); } return; }
+        if (frame.type === 'pair/cancelled') { if(pairRequest?.fingerprint===frame.fingerprint)pairRequest=null;return; }
         if (frame.type === 'pair/request') { pairRequest = { name: String(frame.name).slice(0, 80), fingerprint: frame.fingerprint }; return; }
         const payload = crypto.decrypt(frame);
         if (payload.type === 'hello') {
@@ -180,13 +190,19 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           validateCommand(payload); await connectDesktop();
           if (!adapter.ready) throw new Error('电脑上的 Codex 尚未连接，请检查电脑端应用');
           const result = await ledger.run(payload, async () => {
+            if (payload.action.startsWith('image.upload.')) return uploads.call(payload.action, payload.args);
             if (payload.action.startsWith('preview.')) return preview.call(payload.action, payload.args);
             if (payload.action === 'file.read') return files.read(payload.args);
             if (payload.action === 'thread.history') return history.page(payload.args);
             if (payload.action === 'message.read') return history.read(payload.args);
-            const result = await adapter.call(payload.action, payload.args);
+            let args = payload.args;
+            if (['message.send', 'thread.create'].includes(payload.action)) {
+              try { args = { ...args, imagePaths: uploads.resolve(args.imageUploadIds, payload.action === 'thread.create' ? '__new__' : args.threadId), clientUserMessageId: payload.id }; }
+              catch (error) { throw Object.assign(error, { notSubmitted: true }); }
+            }
+            const result = await adapter.call(payload.action, args);
             return payload.action === 'thread.read' ? history.put(files.decorate(result)) : result;
-          });
+          }, payload.action === 'message.send' && adapter.confirmMessage ? () => adapter.confirmMessage({ ...payload.args, clientUserMessageId: payload.id }) : undefined);
           if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, result: result ?? {} });
         } catch (e) { if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, error: e.message, uncertain: !!e.uncertain }); }
       } catch { /* Unauthenticated or replayed content cannot reach desktop methods. */ }

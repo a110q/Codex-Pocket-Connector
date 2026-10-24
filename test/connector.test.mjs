@@ -94,3 +94,14 @@ test('connector uses authenticated TLS registration and manager status, blocks f
   const incompatible = await diagnose({paths,defaults:f.defaults,managerPort:backend.port,status:async()=>({desktopReady:true,relayOnline:true,capabilities:{}})});
   assert.equal(incompatible.checks.find(c=>c.id==='desktop').state,'error');
 });
+
+test('only the requesting phone can cancel a pending pair; a paired phone cannot be silently revoked',async t=>{
+  const f=await fixture();t.after(()=>f.close());const {config}=await f.enroll('cancel-pair');const mobile=secret();
+  const body={hostId:config.hostId,mobileToken:mobile};
+  await f.call('/api/pair',{...body,pairCode:config.pairCode});
+  await assert.rejects(f.call('/api/pair/cancel',{...body,mobileToken:secret()}),/结束/);
+  assert.equal((await f.call('/api/pair/status',body)).state,'pending');
+  assert.equal((await f.call('/api/pair/cancel',body)).cancelled,true);await assert.rejects(f.call('/api/pair/status',body),/撤销/);
+  await f.call('/api/pair',{...body,pairCode:config.pairCode});await f.call('/api/pair/decision',{hostId:config.hostId,fingerprint:digest(mobile).slice(0,12),accept:true},config.desktopToken);
+  await assert.rejects(f.call('/api/pair/cancel',body),/结束/);assert.equal((await f.call('/api/pair/status',body)).state,'approved');
+});

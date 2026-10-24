@@ -84,3 +84,12 @@ test('only explicitly attached desktop images can be read outside the project an
   renameSync(image, `${directory}/moved.jpg`); symlinkSync(other, image);
   assert.throws(() => files.read({ threadId: 'pictures', artifactId: attachments[0].id }), /变化/);
 });
+
+test('an uncertain delivery can be reconciled with its client ID after restart without executing again',async()=>{
+  const dir=resolve('.private/tests',randomUUID());mkdirSync(dir,{recursive:true});const path=resolve(dir,'commands.sqlite');let ledger=new CommandLedger(path),sends=0;
+  const cmd={id:randomUUID(),action:'message.send',args:{threadId:'t',text:'one prompt'}};
+  await assert.rejects(ledger.run(cmd,()=>{sends++;throw Error('receipt lost')}));ledger.close();ledger=new CommandLedger(path);
+  const receipt={submitted:true,confirmed:true,messageId:'canonical'};
+  assert.deepEqual(await ledger.run(cmd,()=>{sends++;},()=>receipt),receipt);
+  assert.deepEqual(await ledger.run(cmd,()=>{sends++;}),receipt);assert.equal(sends,1);ledger.close();
+});

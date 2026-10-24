@@ -121,7 +121,7 @@ class UiRedesignTest {
         compose.onNodeWithText("允许本次").performClick()
         until{peer.calls.any{it.optString("action")=="approval.respond"}&&!model.busy}
         Assert.assertEquals("accept",peer.calls.first{it.optString("action")=="approval.respond"}.getJSONObject("args").getString("decision"))
-        compose.onNodeWithContentDescription("查看交付文件").performClick()
+        compose.onNodeWithContentDescription("对话更多操作").performClick();compose.onNodeWithText("查看交付文件",substring=false).performClick()
         compose.onNodeWithText("验收说明.md").performScrollTo().performClick()
         until{model.previewFile!=null&&!model.previewLoading}
         Assert.assertTrue(model.previewFile!!.readText().contains("隔离环境"));shot("07-file-preview")

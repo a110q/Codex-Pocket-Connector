@@ -30,12 +30,18 @@ class AccountApi(val defaults:JSONObject) {
             return json
         }
     }
-    companion object { fun defaults(context:Context)=JSONObject(context.assets.open("server.json").bufferedReader().use{it.readText()}) }
+    companion object {
+        fun bundled(context:Context)=JSONObject(context.assets.open("server.json").bufferedReader().use{it.readText()})
+        fun defaults(context:Context)=try{SecureStore(context,"pocket-service.enc").load().optJSONObject("selected")?:bundled(context)}catch(_:Exception){bundled(context)}
+        fun same(a:JSONObject,b:JSONObject)=a.getString("relay").trimEnd('/')==b.getString("relay").trimEnd('/')&&a.getString("pin")==b.getString("pin")
+        fun suffix(context:Context,defaults:JSONObject=defaults(context))=if(same(defaults,bundled(context)))"" else "-"+MessageDigest.getInstance("SHA-256").digest((defaults.getString("relay").trimEnd('/')+"|"+defaults.getString("pin")).toByteArray()).joinToString(""){"%02x".format(it)}.take(24)
+        fun select(context:Context,server:JSONObject){SecureStore(context,"pocket-service.enc").save(JSONObject().put("selected",JSONObject().put("relay",server.getString("relay").trimEnd('/')).put("pin",server.getString("pin")).put("signingSha256",bundled(context).optString("signingSha256"))))}
+    }
 }
 
 class AccountModel(private val context:Context,val api:AccountApi=AccountApi(AccountApi.defaults(context)),private val onAccess:(AccountAuthorization?)->Unit={}) {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
-    private val store=SecureStore(context,"pocket-account.enc")
+    private val store=SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc")
     private var saved=try{store.load()}catch(_:Exception){JSONObject()}
     private var generation=0
     private var polling:Job?=null
@@ -64,6 +70,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
         val next=if(canUse)AccountAuthorization(user!!.getString("id"),token!!,hostId,api.defaults.getString("relay"),api.defaults.getString("pin"),hosts.map{it.getString("id")}.toSet())else null
         if(next!=granted){granted=next;onAccess(next)}
     }
+    fun close(){generation++;stop();scope.cancel()}
     fun start(){foreground=true;polling?.cancel();polling=scope.launch{while(isActive&&foreground){if(!busy&&token!=null)refreshNow();delay(15000)}}}
     fun stop(){foreground=false;polling?.cancel();polling=null;verified=false;grant()}
     fun refresh(){if(!busy)scope.launch{busy=true;try{refreshNow()}finally{busy=false}}}

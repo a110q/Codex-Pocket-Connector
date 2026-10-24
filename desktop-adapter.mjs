@@ -263,6 +263,9 @@ export function orderedTurns(state) {
 
 export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', revision = null } = {}) {
   const turns = orderedTurns(state); const messages = []; const artifacts = []; const diffs = [];
+  const userItems = turns.flatMap(turn => turn.items ?? []).filter(item => item.type === 'userMessage');
+  const userIds = new Set(userItems.map(item => item.id).filter(Boolean));
+  const userClientIds = new Set(userItems.map(item => item.clientId ?? item.clientUserMessageId).filter(Boolean));
   const settings = normalizeThreadSettings(state);
   for (const turn of turns) {
     const turnId = turn.turnId ?? turn.id;
@@ -277,6 +280,10 @@ export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', re
     for (const [index, item] of items.entries()) {
       const base = { id: item.id ?? `${turnId}:item:${index}`, turnId, type: item.type, status: item.status };
       if (item.type === 'userMessage' || item.type === 'steeringUserMessage') {
+        // A desktop steering placeholder can survive in an older turn after
+        // the accepted user message appears in canonical history. Match only
+        // server/client identity; identical text can be two real submissions.
+        if (item.type === 'steeringUserMessage' && (userIds.has(item.serverUserMessageId) || userClientIds.has(item.serverClientUserMessageId ?? item.clientUserMessageId))) continue;
         const text = userItemText(item);
         const input = userMessage(text, [...(item.content ?? []), ...(item.input ?? [])]);
         if (text || input.attachments?.length) messages.push({ ...base, role: 'user', ...input, detail: JSON.stringify(item, null, 2) });

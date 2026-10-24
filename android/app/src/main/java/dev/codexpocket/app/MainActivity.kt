@@ -72,6 +72,9 @@ import org.json.JSONObject
 class MainActivity : ComponentActivity() {
     private lateinit var model: PocketModel
     private lateinit var account: AccountModel
+    private var serviceRevision by mutableIntStateOf(0)
+    private var pendingService by mutableStateOf<String?>(null)
+    private var scanError by mutableStateOf<String?>(null)
     private lateinit var lanModel:PocketModel
     private var lanMode by mutableStateOf(false)
     private val activeModel get()=if(lanMode)lanModel else model
@@ -79,31 +82,70 @@ class MainActivity : ComponentActivity() {
         activeModel.stop();account.stop();lanMode=local;getSharedPreferences("connection-mode",MODE_PRIVATE).edit().putBoolean("lan",local).apply()
         if(local)lanModel.start()else account.start()
     }
+    private var imagePickKey:String?=null
+    private var imagePickLan=false
+    private val imagePicker=registerForActivityResult(ActivityResultContracts.GetMultipleContents()){uris->
+        val key=imagePickKey;imagePickKey=null
+        if(key!=null&&uris.isNotEmpty())(if(imagePickLan)lanModel else model).addImages(uris,key)
+    }
     private var incoming by mutableStateOf<String?>(null)
     private var openAdmin by mutableStateOf(false)
     private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){}
-    private val scanner = registerForActivityResult(ScanContract()) { result -> result.contents?.let { activeModel.scannedPair(it) } }
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState); enableEdgeToEdge(); model = PocketModel(applicationContext)
-        lanModel=PocketModel(applicationContext,"pocket-lan-state.enc",true);lanMode=getSharedPreferences("connection-mode",MODE_PRIVATE).getBoolean("lan",false)
+    private fun scan(){scanner.launch(ScanOptions().setCaptureActivity(PocketCaptureActivity::class.java).setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(if(lanMode)"扫描电脑上的局域网配对码"else"扫描电脑上的 Codex Pocket 配对码").setBeepEnabled(false).setOrientationLocked(true))}
+    private fun receivePair(text:String){
+        try{
+            val pair=PocketConnection.validatePairing(text)
+            if(!PocketConnection.isLanPairing(pair)&&!AccountApi.same(pair,account.api.defaults)){pendingService=text;return}
+            if(PocketConnection.isLanPairing(pair)&&!lanMode)switchMode(true)
+            activeModel.scannedPair(text)
+        }catch(e:Exception){scanError=e.message?:"配对码无效"}
+    }
+    private fun loadCloud(){
+        model=PocketModel(applicationContext,"pocket-state${AccountApi.suffix(applicationContext)}.enc")
         account=AccountModel(applicationContext){authorization->
             if(authorization==null)model.clearAccountAccess()
             else{model.authorizeAccount(authorization);if(lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED))model.start()}
         }
+    }
+    private fun changeService(server:JSONObject,pair:String?=null){
+        activeModel.stop();account.close();AccountNotifications.cancel(applicationContext)
+        AccountApi.select(applicationContext,server);lanMode=false;getSharedPreferences("connection-mode",MODE_PRIVATE).edit().putBoolean("lan",false).apply()
+        loadCloud();pair?.let{model.scannedPair(it)};serviceRevision++;account.start()
+    }
+    private val scanner = registerForActivityResult(ScanContract()) { result -> result.contents?.let(::receivePair) }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState); enableEdgeToEdge()
+        lanModel=PocketModel(applicationContext,"pocket-lan-state.enc",true);lanMode=getSharedPreferences("connection-mode",MODE_PRIVATE).getBoolean("lan",false)
+        loadCloud()
+        imagePickKey=savedInstanceState?.getString("imagePickKey");imagePickLan=savedInstanceState?.getBoolean("imagePickLan")?:false
         incoming = activeModel.consumePairingIntent(intent?.dataString)
         openAdmin = intent?.getBooleanExtra("openAdmin",false)==true
         intent?.data = null
         setContent { PocketTheme(activeModel.appearance) {
+            CompositionLocalProvider(LocalOutgoingImagePicker provides { target,key->imagePickKey=key;imagePickLan=target===lanModel;imagePicker.launch("image/*")}) {
             LaunchedEffect(account.isAdmin){
                 if(account.isAdmin&&android.os.Build.VERSION.SDK_INT>=33){
                     val preferences=getSharedPreferences("admin-alerts",MODE_PRIVATE)
                     if(!preferences.getBoolean("asked-notifications",false)){preferences.edit().putBoolean("asked-notifications",true).apply();notifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)}
                 }
             }
-            if(lanMode||account.canUse)PocketApp(activeModel, scan = { scanner.launch(ScanOptions().setCaptureActivity(PocketCaptureActivity::class.java).setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(if(lanMode)"扫描电脑上的局域网配对码"else"扫描电脑上的 Codex Pocket 配对码").setBeepEnabled(false).setOrientationLocked(true)) }, incoming = incoming, dismissIncoming = { incoming = null },account=if(lanMode)null else account,openAdmin=openAdmin,consumeAdmin={openAdmin=false},onExitLan=if(lanMode){{switchMode(false)}}else null,onEnterLan=if(!lanMode){{switchMode(true)}}else null)
-            else AccountGate(account){switchMode(true)}
-        } }
+            key(serviceRevision) {
+                LaunchedEffect(incoming){incoming?.let{receivePair(it);incoming=null}}
+                if(lanMode||account.canUse)PocketApp(activeModel,scan=::scan,incoming=null,dismissIncoming={incoming=null},account=if(lanMode)null else account,openAdmin=openAdmin,consumeAdmin={openAdmin=false},onExitLan=if(lanMode){{switchMode(false)}}else null,onEnterLan=if(!lanMode){{switchMode(true)}}else null)
+                else AccountGate(account,onLan={switchMode(true)},onScan=::scan,onBuiltin={changeService(AccountApi.bundled(applicationContext))})
+            }
+            pendingService?.let{raw->
+                val server=remember(raw){PocketConnection.validatePairing(raw)}
+                AlertDialog(onDismissRequest={pendingService=null},title={Text("连接这个中继服务？")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
+                    Text(server.getString("relay"));Text("证书指纹：${server.getString("pin").take(16)}…",fontSize=12.sp)
+                    Text("仅连接你信任的电脑所提供的服务。切换后需登录该服务的账号，原服务的登录信息不会发送过去。",fontSize=14.sp)
+                }},confirmButton={TextButton(onClick={pendingService=null;changeService(server,raw)}){Text("切换并登录")}},dismissButton={TextButton(onClick={pendingService=null}){Text("取消")}})
+            }
+            scanError?.let{message->AlertDialog(onDismissRequest={scanError=null},title={Text("无法读取配对码")},text={Text(message)},confirmButton={TextButton(onClick={scanError=null}){Text("知道了")}})}
+
+        } } }
     }
+    override fun onSaveInstanceState(outState:Bundle){super.onSaveInstanceState(outState);outState.putString("imagePickKey",imagePickKey);outState.putBoolean("imagePickLan",imagePickLan)}
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin&&lanMode)switchMode(false); intent.data = null; setIntent(intent) }
     override fun onStart() { super.onStart(); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
     override fun onStop() { if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop(); super.onStop() }
@@ -146,7 +188,8 @@ class MainActivity : ComponentActivity() {
             if(model.selected!=null)key(model.selected?.optString("hostId"),model.selected?.optString("id")){ChatScreen(model,snack)}
             else{
                 PendingCard(model);model.error?.let{ErrorBanner(it){model.error=null}}
-                if(model.profile==null&&tab !in 2..5)Welcome(scan,{showPair=true})
+                if(model.pairing&&tab !in 2..5)PairingWaiting(model)
+                else if(model.profile==null&&tab !in 2..5)Welcome(scan,{showPair=true})
                 else when(tab){
                     0,1->ThreadList(model,{tab=if(tab==0)1 else 0},{presetProject=it;showNew=true},tab==1)
                     2->ComputerScreen(model,scan,{showPair=true})
@@ -199,6 +242,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
     val thread=model.selected?:return;val focus=LocalFocusManager.current
     val snapshot=model.snapshot;val messages=snapshot?.optJSONArray("messages").objects();val list=rememberLazyListState()
     val chatScope=rememberCoroutineScope()
+    val pickImages=rememberImagePicker(model,thread.getString("id"))
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")};var expanded by remember{mutableStateOf(false)}
     var addressFocused by remember { mutableStateOf(false) }
     var previewCollapsed by remember{mutableStateOf(false)}
@@ -267,16 +311,18 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
         if(!editingAddress)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal=12.dp).padding(top=5.dp,bottom=if(keyboardOpen)4.dp else 8.dp)){
             if(messages.isNotEmpty()&&!followBottom&&!(previewExpanded&&model.previewKind!=null))Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center){TextButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}){Text("跳到最新 ↓",fontSize=11.sp)}}
             PendingCard(model)
+            OutgoingImageStrip(model,thread.getString("id"))
+            model.imageStatus?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)}
             if(active)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=model.connected&&!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
             Surface(shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
                 Row(Modifier.fillMaxWidth().padding(horizontal=3.dp,vertical=2.dp),verticalAlignment=Alignment.Bottom){
-                    IconButton(onClick={showResults=true},modifier=Modifier.size(48.dp).semantics{contentDescription="查看交付文件"}){
+                    IconButton(onClick=pickImages,enabled=!model.busy&&model.pendingOperation==null,modifier=Modifier.size(48.dp).semantics{contentDescription="添加图片"}){
                         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("附件",Modifier.size(21.dp))}
                     }
                     BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),modifier=Modifier.weight(1f).heightIn(min=48.dp,max=136.dp).padding(top=13.dp,bottom=13.dp,end=4.dp).semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
                         Box { if(model.draft.isEmpty())Text(if(active)"补充你的想法…" else "继续向 Codex 发送指令…",fontSize=13.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis);inner() }
                     })
-                    val canSend=model.connected&&!model.busy&&model.draft.isNotBlank()&&model.pendingOperation==null
+                    val canSend=model.connected&&!model.busy&&(model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty())&&model.pendingOperation==null
                     IconButton(onClick={model.send(model.draft)},enabled=canSend,modifier=Modifier.size(48.dp).semantics{contentDescription="发送"}){
                         Surface(Modifier.size(36.dp),shape=CircleShape,color=if(canSend)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(canSend)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f)){
                             Box(contentAlignment=Alignment.Center){if(model.busy)CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=1.5.dp)else PocketIcon("发送",Modifier.size(18.dp))}
@@ -403,5 +449,17 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
                 }
             }
         }
+    }
+}
+
+@Composable fun PairingWaiting(model:PocketModel) {
+    Column(Modifier.fillMaxWidth().padding(28.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(18.dp)) {
+        Spacer(Modifier.height(36.dp))
+        if(model.error==null)CircularProgressIndicator(Modifier.size(38.dp),strokeWidth=3.dp)
+        Text(if(model.error==null)"配对中，等待电脑确认"else"配对尚未完成",fontSize=21.sp,fontWeight=FontWeight.SemiBold)
+        Text(model.profile?.optString("name").orEmpty(),color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(if(model.error==null)"请在电脑连接器中点击「允许连接」。确认后会自动打开工作空间。"else"可返回电脑更新二维码，然后重新扫码。",fontSize=14.sp,lineHeight=23.sp)
+        if(model.status.contains("网络"))Text(model.status,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedButton(onClick=model::cancelPairing){Text("取消配对")}
     }
 }

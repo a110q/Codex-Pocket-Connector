@@ -50,7 +50,7 @@ object AccountNotifications {
 class AccountAlertWorker(context:Context,params:WorkerParameters):CoroutineWorker(context,params){
     override suspend fun doWork():Result=withContext(Dispatchers.IO){
         try{
-            val saved=SecureStore(applicationContext,"pocket-account.enc").load()
+            val saved=SecureStore(applicationContext,"pocket-account${AccountApi.suffix(applicationContext)}.enc").load()
             val token=saved.optString("token");if(token.isBlank())return@withContext Result.success()
             val api=AccountApi(AccountApi.defaults(applicationContext))
             val user=api.post("/api/account/me",token=token).getJSONObject("user")

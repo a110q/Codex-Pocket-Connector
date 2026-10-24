@@ -98,6 +98,7 @@ import androidx.compose.ui.window.DialogProperties
 }
 
 @Composable fun NewTaskDialog(model:PocketModel,preset:String?,onDismiss:()->Unit,create:(String,String?,String?)->Unit){
+    val pickImages=rememberImagePicker(model,"__new__")
     var text by rememberSaveable{mutableStateOf("")};var project by rememberSaveable{mutableStateOf(preset)};var selectedModel by rememberSaveable{mutableStateOf<String?>(null)}
     Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)){
         Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background){
@@ -109,9 +110,11 @@ import androidx.compose.ui.window.DialogProperties
                     Text("任务会在 ${model.profile?.optString("name")?:"电脑"} 上执行。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     DropdownPicker("项目",model.projects.map{it.getString("projectId") to it.label()},project,"独立会话"){project=it}
                     DropdownPicker("模型",model.models.map{it.getString("id") to it.getString("id")},selectedModel,"使用电脑默认模型"){selectedModel=it}
+                    OutlinedButton(onClick=pickImages,enabled=!model.busy){PocketIcon("图片");Spacer(Modifier.width(8.dp));Text("添加图片（最多 4 张）")}
+                    OutgoingImageStrip(model,"__new__")
                     OutlinedTextField(text,{text=it},placeholder={Text("描述你希望 Codex 完成的工作…",fontSize=14.sp)},modifier=Modifier.fillMaxWidth().heightIn(min=180.dp).semantics{contentDescription="新对话指令"},shape=RoundedCornerShape(14.dp))
                 }
-                Button(onClick={create(text,project,selectedModel)},enabled=text.isNotBlank()&&model.connected&&!model.busy&&model.pendingOperation==null,modifier=Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=14.dp).height(52.dp),shape=RoundedCornerShape(12.dp)){Text("开始对话",fontWeight=FontWeight.SemiBold);Spacer(Modifier.width(8.dp));PocketIcon("前往",Modifier.size(18.dp))}
+                Button(onClick={create(text,project,selectedModel)},enabled=(text.isNotBlank()||model.imagesFor("__new__").isNotEmpty())&&model.connected&&!model.busy&&model.pendingOperation==null,modifier=Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=14.dp).height(52.dp),shape=RoundedCornerShape(12.dp)){Text("开始对话",fontWeight=FontWeight.SemiBold);Spacer(Modifier.width(8.dp));PocketIcon("前往",Modifier.size(18.dp))}
             }
         }
     }

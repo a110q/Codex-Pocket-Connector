@@ -31,12 +31,12 @@ class AccountFlowTest {
         val args=InstrumentationRegistry.getArguments()
         Assert.assertNotNull("Start the isolated account-ui-server fixture and pass accountRelay",args.getString("accountRelay"))
         api=AccountApi(JSONObject().put("relay",args.getString("accountRelay")).put("pin",args.getString("accountPin")))
-        val store=SecureStore(context,"pocket-account.enc");backup=store.load();store.save(JSONObject().put("deviceId",args.getString("accountDevice")))
+        val store=SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc");backup=store.load();store.save(JSONObject().put("deviceId",args.getString("accountDevice")))
         pocketBackup=SecureStore(context).load();SecureStore(context).save(JSONObject().put("appearance","light"))
         compose.runOnUiThread{pocket=PocketModel(context);account=AccountModel(context,api){auth->if(auth!=null)pocket.authorizeAccount(auth)else pocket.clearAccountAccess()};lanPocket=PocketModel(context,"qa-lan.enc",true);lanPocket.forget()}
         compose.setContent{PocketTheme("light"){if(local)PocketApp(lanPocket,{},null,{},onExitLan={lanPocket.stop();local=false})else if(account.canUse)PocketApp(pocket,{},null,{},account)else AccountGate(account){local=true;lanPocket.start()}}}
     }
-    @After fun cleanup(){try{compose.runOnUiThread{account.stop();pocket.stop();lanPocket.stop()}}finally{SecureStore(context,"pocket-account.enc").save(backup);SecureStore(context).save(pocketBackup)}}
+    @After fun cleanup(){try{compose.runOnUiThread{account.stop();pocket.stop();lanPocket.stop()}}finally{SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc").save(backup);SecureStore(context).save(pocketBackup)}}
     private fun until(condition:()->Boolean){compose.waitUntil(15000){var value=false;compose.runOnUiThread{value=condition()};value}}
     private fun shot(name:String){compose.waitForIdle();val values=ContentValues().apply{put(MediaStore.Images.Media.DISPLAY_NAME,"account-$name-${System.currentTimeMillis()}.png");put(MediaStore.Images.Media.MIME_TYPE,"image/png");put(MediaStore.Images.Media.RELATIVE_PATH,"Pictures/CodexPocket-${BuildConfig.VERSION_NAME}");put(MediaStore.Images.Media.IS_PENDING,1)};val uri=context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,values)!!;context.contentResolver.openOutputStream(uri)!!.use{instrument.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it)};context.contentResolver.update(uri,ContentValues().apply{put(MediaStore.Images.Media.IS_PENDING,0)},null,null)}
     @Test fun realRegistrationApprovalRoleMenusSecurityAlertAndDisable(){
@@ -61,7 +61,7 @@ class AccountFlowTest {
         compose.onNodeWithText("管理中心").assertDoesNotExist()
         compose.onNodeWithText("账号：$username").assertIsDisplayed()
         shot("03-user-settings")
-        val token=SecureStore(context,"pocket-account.enc").load().getString("token")
+        val token=SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc").load().getString("token")
         api.post("/api/account/security/report",JSONObject().put("certificate","b".repeat(64)).put("version","0.6.0-ui-test").put("signals",JSONArray().put("signature_mismatch")),token)
         compose.runOnUiThread{account.logout()};until{!account.loggedIn}
         compose.runOnUiThread{account.login("owner",password)};until{account.isAdmin&&!account.busy}
@@ -99,7 +99,7 @@ class AccountFlowTest {
         compose.runOnUiThread{account.stop();pocket.scannedPair(pairing)}
         Assert.assertNull(pocket.profile);Assert.assertNull(pocket.error)
         compose.runOnUiThread{account.refresh()};until{account.canUse&&!account.busy}
-        until{pocket.profile!=null};compose.runOnUiThread{pocket.start()};until{!pocket.busy&&pocket.profile!=null}
+        until{pocket.profile!=null};compose.runOnUiThread{pocket.start()};until{pocket.profile?.optBoolean("pairSubmitted")==true}
         Assert.assertNull(pocket.error)
         compose.runOnUiThread{account.refresh()};until{!account.busy}
         Assert.assertNotNull("An unclaimed account refresh must not erase a pending phone pairing",pocket.profile)
@@ -111,7 +111,7 @@ class AccountFlowTest {
         Assert.assertTrue(pocket.connected)
         Assert.assertEquals(mobile,pocket.profile!!.getString("mobileToken"))
         shot("07-phone-claims-computer")
-        val token=SecureStore(context,"pocket-account.enc").load().getString("token")
+        val token=SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc").load().getString("token")
         val current=api.post("/api/account/me",token=token);Assert.assertEquals(account.hostId,current.getJSONObject("host").getString("id"))
     }
     @Test fun encryptedStoresRemainIndependentAndIntegrityReadsActualInstalledSignature(){
@@ -128,7 +128,7 @@ class AccountFlowTest {
         Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://192.168.1.300:24444")))
         compose.onNodeWithText("局域网直连 · 无需账号审批").performScrollTo().performClick()
         compose.runOnUiThread{lanPocket.pair(pairing)}
-        until{!lanPocket.busy&&lanPocket.profile!=null}
+        until{lanPocket.profile?.optBoolean("pairSubmitted")==true}
         Assert.assertNull(lanPocket.error)
         Assert.assertFalse(account.loggedIn)
         val mobile=lanPocket.profile!!.getString("mobileToken")

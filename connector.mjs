@@ -9,17 +9,19 @@ import { openBrowser } from './platform.mjs';
 import { lanAddresses, prepareLan } from './lan.mjs';
 import { secret, digest, equalHash } from './protocol.mjs';
 import { CodexInstallation } from './codex-installation.mjs';
+import { RelayProfiles } from './relay-profiles.mjs';
 import { ConnectorRuntime } from './connector-runtime.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const hashScript = html => createHash('sha256').update(html.match(/<script>([\s\S]*?)<\/script>/)[1]).digest('base64');
 export async function startConnector({ paths = connectorPaths(), defaults, port = 43786, managerPort = 43787, root = ROOT, request, status = companionStatus, runtime = new ConnectorRuntime(), installation = new CodexInstallation(paths.state), onShutdown } = {}) {
-  const trusted = validateDefaults(defaults);
-  const enrollment = new Enrollment({ paths, defaults: trusted, ...(request ? { request } : {}) });
-  const account = new ConnectorAccount({ paths, defaults: trusted, ...(request ? { request } : {}) });
+  const profiles = new RelayProfiles(paths, defaults);
+  const enrollments=new Map(), accounts=new Map();
+  const enrollment = () => { const key=profiles.paths().state; if(!enrollments.has(key))enrollments.set(key,new Enrollment({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return enrollments.get(key); };
+  const account = () => { const key=profiles.paths().state;if(!accounts.has(key))accounts.set(key,new ConnectorAccount({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return accounts.get(key); };
   const token = secret();
   const mode=()=>existsSync(paths.setup)&&readJson(paths.setup).mode==='lan'?'lan':'cloud';
-  const activePaths=()=>mode()==='lan'?connectorPaths(resolve(paths.state,'lan')):paths;
+  const activePaths=()=>mode()==='lan'?connectorPaths(resolve(paths.state,'lan')):profiles.paths();
   const currentPort = config => runtime.port(config) ?? managerPort;
   const currentStatus = config => status(config, currentPort(config));
   const managerRequest = async (path, body) => {
@@ -46,7 +48,7 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         let current = null;
         if (config) try { current = await currentStatus(config); } catch {}
         const missing = missingCapabilities(current);
-        return res.end(JSON.stringify({ version: JSON.parse(readFileSync(resolve(root,'package.json'),'utf8')).version, mode:mode(),lanAddresses:lanAddresses(),platform: process.platform, installation: installation.state(), registered: !!config, name: config?.name ?? hostname(),  connected: !!(current?.desktopReady && current?.relayOnline && !missing.length), serviceRunning: !!current,
+        return res.end(JSON.stringify({ version: JSON.parse(readFileSync(resolve(root,'package.json'),'utf8')).version, mode:mode(),relayService:profiles.info(),lanAddresses:lanAddresses(),platform: process.platform, installation: installation.state(), registered: !!config, name: config?.name ?? hostname(),  connected: !!(current?.desktopReady && current?.relayOnline && !missing.length), serviceRunning: !!current,
           connecting: runtime.busy, mobileOnline: !!current?.mobileOnline, pairRequest: current?.pairRequest ?? null, error: current?.desktopReady && missing.length ? `当前 Codex 版本缺少所需接口：${missing.join('、')}，请更新连接器。` : current?.error || runtime.error || '',  pending: existsSync(active.enrollment) && !readJson(active.enrollment).completed && !readJson(active.enrollment).rejected }));
       }
       if (req.method === 'GET' && url.pathname === '/api/pairing') {
@@ -56,22 +58,28 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         if(!current?.desktopReady || !current?.relayOnline || missingCapabilities(current).length) throw new Error('请先完成第二步，成功连接 Codex 后再配对手机');
         return res.end(JSON.stringify(await managerRequest('/api/pairing')));
       }
-      if (req.method === 'GET' && url.pathname === '/api/diagnostics') return res.end(JSON.stringify(await diagnose({ paths:activePaths(), defaults: trusted, managerPort, status:currentStatus, ...(request ? { request } : {}) })));
+      if (req.method === 'GET' && url.pathname === '/api/diagnostics') return res.end(JSON.stringify(await diagnose({ paths:activePaths(), defaults: profiles.defaults(), managerPort, status:currentStatus, ...(request ? { request } : {}) })));
       if (req.method !== 'POST') { res.writeHead(404).end('{}'); return; }
-      let text = ''; for await (const part of req) { text += part; if (Buffer.byteLength(text) > 4096) throw new Error('输入内容过长'); }
+      let text = ''; for await (const part of req) { text += part; if (Buffer.byteLength(text) > 32768) throw new Error('输入内容过长'); }
       const body = JSON.parse(text || '{}');
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('输入内容无效');
+      if (url.pathname === '/api/relay') {
+        if(runtime.busy)throw new Error('正在连接，请稍后切换中继');
+        const selected=await profiles.validate(body);
+        await runtime.stop(); const relayService=profiles.select(selected);
+        return res.end(JSON.stringify({relayService}));
+      }
       if (url.pathname === '/api/mode') {
         if(!['cloud','lan'].includes(body.mode))throw new Error('连接模式无效');
         if(runtime.busy)throw new Error('正在连接，请稍后切换。');
         await runtime.stop();
         if(body.mode==='lan')prepareLan(paths.state,{address:body.address,renew:body.renew===true});
-        else await enrollment.prepare({name:body.name});
+        else await enrollment().prepare({name:body.name});
         writePrivate(paths.setup,{...(existsSync(paths.setup)?readJson(paths.setup):{}),mode:body.mode});
         return res.end(JSON.stringify({mode:body.mode}));
       }
       if (url.pathname === '/api/connect') {
-        if (mode() === 'cloud') await enrollment.prepare();
+        if (mode() === 'cloud') await enrollment().prepare();
         return res.end(JSON.stringify(await runtime.connect(activePaths(), {binary:installation.binary()})));
       }
       if(url.pathname === '/api/codex/pick') return res.end(JSON.stringify(await installation.pick()));
@@ -84,13 +92,13 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
       if (url.pathname === '/api/disconnect') { if(runtime.busy)throw new Error('正在连接，请稍候。');await runtime.stop(); return res.end(JSON.stringify({ stopped: true })); }
       if (url.pathname === '/api/pair/decision') return res.end(JSON.stringify(await managerRequest('/api/decision', body)));
       if (url.pathname === '/api/pair/renew') return res.end(JSON.stringify(await managerRequest('/api/reset', {})));
-      if (url.pathname === '/api/register') return res.end(JSON.stringify(await enrollment.register(body)));
-      if (url.pathname === '/api/login') return res.end(JSON.stringify(await account.login(body)));
-      if (url.pathname === '/api/logout') return res.end(JSON.stringify(await account.logout()));
+      if (url.pathname === '/api/register') return res.end(JSON.stringify(await enrollment().register(body)));
+      if (url.pathname === '/api/login') return res.end(JSON.stringify(await account().login(body)));
+      if (url.pathname === '/api/logout') return res.end(JSON.stringify(await account().logout()));
       if (url.pathname === '/api/register-account') {
-        const current = await account.state();
+        const current = await account().state();
         if (!current.loggedIn || current.verified === false || current.user?.accessState !== 'active') throw new Error('请先登录已批准的账号');
-        return res.end(JSON.stringify(await enrollment.registerAccount({name:body.name,token:readJson(paths.account).token,user:current.user})));
+        return res.end(JSON.stringify(await enrollment().registerAccount({name:body.name,token:readJson(profiles.paths().account).token,user:current.user})));
       }
       if (url.pathname === '/api/command') return res.end(JSON.stringify({ command: connectionCommand(root, activePaths(), body.contextThreadId ?? '') }));
       if (url.pathname === '/api/manager') {

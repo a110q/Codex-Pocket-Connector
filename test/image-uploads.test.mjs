@@ -1,0 +1,33 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { ImageUploads } from '../image-uploads.mjs';
+import { digest, validateCommand } from '../protocol.mjs';
+const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
+test('image uploads are scoped, bounded, integrity checked, durable, and retry idempotent', t=>{
+  mkdirSync('.private/tests',{recursive:true});const dir=mkdtempSync(resolve('.private/tests/images-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  let uploads=new ImageUploads(dir);const id=randomUUID();const meta={uploadId:id,threadId:'t',size:png.length,mime:'image/png',sha256:digest(png)};
+  assert.equal(uploads.start(meta).nextOffset,0);assert.throws(()=>uploads.resolve([id],'t'),/未上传完成/);
+  const first={uploadId:id,offset:0,data:png.subarray(0,20).toString('base64')};
+  assert.equal(uploads.chunk(first).nextOffset,20);assert.equal(uploads.chunk(first).nextOffset,20);
+  uploads=new ImageUploads(dir);assert.equal(uploads.start(meta).nextOffset,20);
+  assert.throws(()=>uploads.chunk({...first,data:Buffer.alloc(20).toString('base64')}),/顺序/);
+  assert.throws(()=>uploads.finish({uploadId:id}),/完整性/);
+  uploads.chunk({uploadId:id,offset:20,data:png.subarray(20).toString('base64')});uploads.finish({uploadId:id});
+  uploads.finish({uploadId:id});assert.equal(uploads.start(meta).done,true);assert(readFileSync(uploads.resolve([id],'t')[0]).equals(png));
+  assert.throws(()=>uploads.resolve([id],'other'),/不属于/);assert.throws(()=>uploads.resolve([id,id],'t'),/最多/);
+  assert.throws(()=>uploads.start({...meta,threadId:'different'}),/其他图片/);
+  assert.throws(()=>uploads.start({...meta,uploadId:'../escape'}),/标识/);
+  assert.throws(()=>uploads.start({...meta,uploadId:randomUUID(),size:11*1024*1024}),/大小/);
+  assert.throws(()=>uploads.start({...meta,uploadId:randomUUID(),mime:'image/svg+xml'}),/格式/);
+  const bad=randomUUID();uploads.start({...meta,uploadId:bad,sha256:'a'.repeat(64)});uploads.chunk({uploadId:bad,offset:0,data:png.toString('base64')});assert.throws(()=>uploads.finish({uploadId:bad}),/完整性/);uploads.cancel({uploadId:bad});
+  const fake=randomUUID(), bytes=Buffer.alloc(16);uploads.start({...meta,uploadId:fake,size:bytes.length,sha256:digest(bytes)});uploads.chunk({uploadId:fake,offset:0,data:bytes.toString('base64')});assert.throws(()=>uploads.finish({uploadId:fake}),/完整性/);
+});
+test('image-only messages require opaque bounded attachment IDs, not arbitrary file paths',()=>{
+  const cmd={id:randomUUID(),sentAt:Date.now(),action:'message.send',args:{threadId:'t',text:'',imageUploadIds:[randomUUID()]}};
+  assert.equal(validateCommand(cmd),cmd);
+  assert.throws(()=>validateCommand({...cmd,args:{...cmd.args,imageUploadIds:['/private/image.jpg']}}),/标识/);
+  assert.throws(()=>validateCommand({...cmd,args:{text:'',threadId:'t'}}),/不能为空/);
+});
