@@ -19,6 +19,31 @@ test('mutation retries share one execution and stay deduplicated after restartin
   ledger.close(); ledger = new CommandLedger(path);
   await assert.rejects(ledger.run(interrupted, execute), /不会重复执行/); assert.equal(count, 1); ledger.close();
 });
+test('a failure explicitly known to precede submission is cached as rejected rather than pending', async () => {
+  const directory = resolve('.private/tests', randomUUID()); mkdirSync(directory, { recursive: true });
+  const path = `${directory}/commands.sqlite`; let ledger = new CommandLedger(path), attempts = 0;
+  const command = { id: randomUUID(), action: 'thread.create', args: { text: 'one prompt' } };
+  const reject = async () => { attempts++; throw Object.assign(new Error('desktop not connected'), { notSubmitted: true }); };
+  await assert.rejects(ledger.run(command, reject), e => e.uncertain === false && e.notSubmitted === true);
+  ledger.close(); ledger = new CommandLedger(path);
+  await assert.rejects(ledger.run(command, reject), e => e.uncertain === false && e.message === 'desktop not connected');
+  assert.equal(attempts, 1);
+  assert.deepEqual(await ledger.run({ ...command, id: randomUUID() }, async () => ({ threadId: 'new-thread' })), { threadId: 'new-thread' });
+  ledger.close();
+});
+
+test('confirming a legacy refused writer acquisition clears pending without resending, while ambiguous errors stay pending', async () => {
+  const directory = resolve('.private/tests', randomUUID()); mkdirSync(directory, { recursive: true });
+  const ledger = new CommandLedger(`${directory}/commands.sqlite`);
+  let executions = 0;
+  for (const [error, certain] of [['thread existing-id already has an active writer', true], ['request timed out after sending', false], ['provider returned an error', false]]) {
+    const command = { id: randomUUID(), action: 'message.send', args: { threadId: 'existing-id', text: 'original draft' } };
+    await assert.rejects(ledger.run(command, async () => { executions++; throw Error(error); }));
+    await assert.rejects(ledger.run(command, async () => { executions++; return { sent: true }; }), e => certain ? e.notSubmitted === true && e.uncertain === false : e.uncertain === true);
+  }
+  assert.equal(executions, 3); ledger.close();
+});
+
 test('only real linked artifacts inside the selected project are readable', () => {
   const directory = resolve('.private/tests', randomUUID()); mkdirSync(`${directory}/project`, { recursive: true });
   writeFileSync(`${directory}/project/result.txt`, 'verified output'); writeFileSync(`${directory}/outside.txt`, 'private');

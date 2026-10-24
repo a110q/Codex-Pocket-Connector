@@ -82,6 +82,20 @@ export class AppServerClient extends EventEmitter {
     } while (cursor);
     return result;
   }
+  async closeAndWait() {
+    const child = this.child;
+    if (!child) return;
+    await new Promise((resolve, reject) => {
+      let hardTimer;
+      const finish = () => { clearTimeout(timer); clearTimeout(hardTimer); resolve(); };
+      child.once('exit', finish);
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        hardTimer = setTimeout(() => reject(new Error('Codex 对话进程尚未退出')), 1000);
+      }, 3000);
+      this.close();
+    });
+  }
   close() {
     const child = this.child; if (!child) return;
     this.child = null; child.stdin.end(); child.kill();

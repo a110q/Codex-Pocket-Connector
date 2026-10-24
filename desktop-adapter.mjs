@@ -437,7 +437,7 @@ export class DesktopAdapter extends EventEmitter {
     const response = await this.ipc.exchange({ type: 'request', requestId: randomUUID(), sourceClientId: this.clientId, version, method, params,
       ...(options.targetClientId ? { targetClientId: options.targetClientId } : {}),
       ...(hostId === 'local' ? {} : { hostId }), timeoutMs: options.timeoutMs ?? this.timeoutMs }, options.timeoutMs);
-    if (response.resultType !== 'success') throw new Error(response.error ?? 'Desktop request failed');
+    if (response.resultType !== 'success') throw Object.assign(new Error(response.error ?? 'Desktop request failed'), { rejected: true });
     return response;
   }
   broadcast(method, params, targetClientIds) {
@@ -475,10 +475,10 @@ export class DesktopAdapter extends EventEmitter {
     const response = await this.request('thread-owner-discovery', { conversationId: threadId, hostId });
     const key = `${hostId}:${threadId}`; this.owners.set(key, response.handledByClientId); return response.handledByClientId;
   }
-  async readThread(args) {
+  async readThread(args, { owner: knownOwner } = {}) {
     const threadId = requireString(args.threadId, 'threadId'); const hostId = args.hostId ?? 'local'; const key = `${hostId}:${threadId}`;
     try {
-      const owner = await this.owner(threadId, hostId); this.subscriptions.set(key, { threadId, hostId });
+      const owner = knownOwner ?? await this.owner(threadId, hostId); this.subscriptions.set(key, { threadId, hostId });
       // The phone displays one chat at a time; retain only a small recent set.
       while (this.subscriptions.size > 4) {
         const [oldKey, old] = this.subscriptions.entries().next().value;
@@ -542,7 +542,7 @@ export class DesktopAdapter extends EventEmitter {
     }
     return { ...result, projects: [...projects.values()], catalog: { source: 'desktop-local-metadata+app-tools', localComplete: catalog.localComplete, limitations: catalog.limitations } };
   }
-  async updateSettings(args) {
+  async updateSettings(args, { owner: knownOwner } = {}) {
     const allowed = new Set(['threadId', 'hostId', 'model', 'reasoningEffort', 'permissionMode']);
     if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !allowed.has(key))) throw new Error('Unsupported thread setting field');
     const threadId = requireString(args.threadId, 'threadId'); const hostId = args.hostId == null ? 'local' : requireString(args.hostId, 'hostId'); const threadSettings = {};
@@ -556,7 +556,7 @@ export class DesktopAdapter extends EventEmitter {
       if (!Object.hasOwn(PERMISSION_MODES, args.permissionMode)) throw new Error('Unsupported permission mode');
       Object.assign(threadSettings, PERMISSION_MODES[args.permissionMode]);
     }
-    const owner = await this.owner(threadId, hostId);
+    const owner = knownOwner ?? await this.owner(threadId, hostId);
     const before = (await this.request('thread-follower-read-model-settings', { conversationId: threadId }, { hostId, targetClientId: owner })).result.settings;
     if (Object.hasOwn(args, 'reasoningEffort')) {
       const selected = models.find(model => model.id === (args.model ?? before?.model));

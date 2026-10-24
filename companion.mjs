@@ -47,6 +47,15 @@ export class CommandLedger {
       if (previous.action !== command.action || previous.args_hash !== fingerprint) throw new Error('请求 ID 已被用于不同操作');
       if (this.pending.has(command.id)) return this.pending.get(command.id);
       if (previous.state === 'done') return JSON.parse(previous.response);
+      // Old connectors recorded a refused writer acquisition as ambiguous even
+      // though no turn was sent. Confirming that exact failure clears the phone
+      // pending state and restores its draft, without replaying the command.
+      if (previous.state === 'uncertain' && previous.action === 'message.send' && /^thread [\w-]+ already has an active writer[.!]?$/i.test(JSON.parse(previous.response ?? '{}').error ?? '')) {
+        previous.state = 'rejected';
+        previous.response = JSON.stringify({ error: '上次消息因电脑会话占用而未发送，已解除等待确认，请重新发送。' });
+        this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run(previous.state, previous.response, command.id);
+      }
+      if (previous.state === 'rejected') throw Object.assign(new Error(JSON.parse(previous.response).error), { notSubmitted: true, uncertain: false });
       throw Object.assign(new Error('该操作的执行结果尚未确认，请查看会话后再决定；系统不会重复执行'), { uncertain: true });
     }
     this.db.prepare('INSERT INTO commands VALUES(?,?,?,?,?,?)').run(command.id, command.action, fingerprint, 'started', null, Date.now());
@@ -56,6 +65,10 @@ export class CommandLedger {
         this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('done', JSON.stringify(result ?? {}), command.id);
         return result;
       } catch (e) {
+        if (e.notSubmitted === true && e.uncertain !== true) {
+          this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('rejected', JSON.stringify({ error: e.message }), command.id);
+          throw Object.assign(e, { uncertain: false });
+        }
         this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('uncertain', JSON.stringify({ error: e.message }), command.id);
         throw Object.assign(e, { uncertain: true });
       } finally { this.pending.delete(command.id); }

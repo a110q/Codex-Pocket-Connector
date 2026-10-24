@@ -28,13 +28,13 @@
 
 ## 下载安装
 
-**安卓：0.7.2；电脑端：0.7.1（沿用已交付安装包）。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**安卓：0.7.2；电脑连接器：0.7.6。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
 | Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.2/Codex-Pocket-0.7.2.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.1/Codex-Pocket-Connector-0.7.1-Windows.exe) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.1/Codex-Pocket-Connector-0.7.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.6/Codex-Pocket-Connector-0.7.6-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.6/Codex-Pocket-Connector-0.7.6-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.6/Codex-Pocket-Connector-0.7.6-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -76,7 +76,9 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
 
-0.7.2 修复首次配对 `was cancelled` 和手机消息重复气泡。13 项 JVM 单元测试通过，完成 release 编译、R8、lint 和签名校验；本版手机交互回归未运行，Windows 11 仍待实机验收。
+电脑连接器 **0.7.6** 修复手机新建对话不出现在电脑、回复后仍占用会话、删除与归档未刷新电脑，以及断线后发送提示 `active writer`。旧黄色提示点一次「重新确认」，明确未发送的消息回填草稿后再发送。98 项 Node 回归及 Mac 独立应用断线接续验收通过；Windows 11 仍待实机验收。详见 [0.7.6 更新说明](docs/patch-0.7.6.md)。
+
+安卓 **0.7.2** 沿用原包，无需重新扫码。该版修复首次配对 `was cancelled` 和手机消息重复气泡，已完成 13 项 JVM 单元测试、release 编译、R8、lint 和签名校验；手机交互回归未运行。
 
 ## 开发与自建
 
