@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
         try{
             val pair=PocketConnection.validatePairing(text)
             if(!PocketConnection.isLanPairing(pair)&&!AccountApi.same(pair,account.api.defaults)){pendingService=text;return}
-            if(PocketConnection.isLanPairing(pair)&&!lanMode)switchMode(true)
+            if(PocketConnection.isLanPairing(pair)!=lanMode)switchMode(PocketConnection.isLanPairing(pair))
             activeModel.scannedPair(text)
         }catch(e:Exception){scanError=e.message?:"配对码无效"}
     }
@@ -131,7 +131,7 @@ class MainActivity : ComponentActivity() {
             }
             key(serviceRevision) {
                 LaunchedEffect(incoming){incoming?.let{receivePair(it);incoming=null}}
-                if(lanMode||account.canUse)PocketApp(activeModel,scan=::scan,incoming=null,dismissIncoming={incoming=null},account=if(lanMode)null else account,openAdmin=openAdmin,consumeAdmin={openAdmin=false},onExitLan=if(lanMode){{switchMode(false)}}else null,onEnterLan=if(!lanMode){{switchMode(true)}}else null)
+                if(lanMode||account.canUse)PocketApp(activeModel,scan=::scan,incoming=null,dismissIncoming={incoming=null},account=if(lanMode)null else account,openAdmin=openAdmin,consumeAdmin={openAdmin=false},onExitLan=if(lanMode){{switchMode(false)}}else null,onEnterLan=if(!lanMode){{switchMode(true)}}else null,onSwitchService=::scan)
                 else AccountGate(account,onLan={switchMode(true)},onScan=::scan,onBuiltin={changeService(AccountApi.bundled(applicationContext))})
             }
             pendingService?.let{raw->
@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() { if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop(); super.onStop() }
 }
 
-@Composable fun PocketApp(model:PocketModel,scan:()->Unit,incoming:String?,dismissIncoming:()->Unit,account:AccountModel?=null,openAdmin:Boolean=false,consumeAdmin:()->Unit={},onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null){
+@Composable fun PocketApp(model:PocketModel,scan:()->Unit,incoming:String?,dismissIncoming:()->Unit,account:AccountModel?=null,openAdmin:Boolean=false,consumeAdmin:()->Unit={},onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null,onSwitchService:(()->Unit)?=null){
     var tab by rememberSaveable{mutableIntStateOf(0)}
     LaunchedEffect(openAdmin,account?.isAdmin){if(openAdmin){if(account?.isAdmin==true){model.back();tab=4};consumeAdmin()}}
     var showPair by remember{mutableStateOf(false)}
@@ -187,7 +187,7 @@ class MainActivity : ComponentActivity() {
                     0,1->ThreadList(model,{tab=if(tab==0)1 else 0},{presetProject=it;showNew=true},tab==1,onCreate={presetProject=null;showNew=true})
                     2->ComputerScreen(model,scan,{showPair=true})
                     4,5->if(account?.isAdmin==true)key(tab){AdminScreen(account,if(tab==5)"all"else"pending")}else Text("需要管理员权限")
-                    else->SettingsScreen(model,onComputer={tab=2},onTasks={tab=1},account=account,onAdmin={tab=4},onUsers={tab=5},onExitLan=onExitLan,onEnterLan=onEnterLan)
+                    else->SettingsScreen(model,onComputer={tab=2},onTasks={tab=1},account=account,onAdmin={tab=4},onUsers={tab=5},onExitLan=onExitLan,onEnterLan=onEnterLan,onSwitchService=onSwitchService)
                 }
             }
         }

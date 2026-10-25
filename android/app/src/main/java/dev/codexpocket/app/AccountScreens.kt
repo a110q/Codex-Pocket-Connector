@@ -25,16 +25,31 @@ import java.util.Locale
 fun accountStateLabel(value:String)=when(value){"active"->"正常使用";"pending"->"等待审批";"rejected"->"申请未通过";"disabled"->"账号已停用";"expired"->"使用已到期";else->"待验证"}
 fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).format(Date(value))
 
+@Composable fun RelayServiceEntry(onClick:()->Unit,enabled:Boolean=true){
+    Surface(onClick=onClick,enabled=enabled,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.primaryContainer,border=BorderStroke(1.dp,MaterialTheme.colorScheme.primary.copy(alpha=.22f))){
+        Row(Modifier.fillMaxWidth().heightIn(min=96.dp).padding(16.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){
+            Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(12.dp),modifier=Modifier.size(40.dp)){
+                Box(contentAlignment=Alignment.Center){CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("网页",Modifier.size(24.dp))}}
+            }
+            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)){
+                Text("自建中继 / 切换服务",fontSize=16.sp,lineHeight=23.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onPrimaryContainer)
+                Text("在电脑配置中继后，点这里扫码连接",fontSize=13.sp,lineHeight=20.sp,color=MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("展开",Modifier.size(22.dp))}
+        }
+    }
+}
+
 @Composable fun AccountGate(account:AccountModel,onScan:(()->Unit)?=null,onBuiltin:(()->Unit)?=null,onLan:(()->Unit)?=null){
     var register by rememberSaveable{mutableStateOf(false)}
     var username by rememberSaveable{mutableStateOf("")};var password by remember{mutableStateOf("")}
     var displayName by rememberSaveable{mutableStateOf("")};var reason by rememberSaveable{mutableStateOf("")}
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(26.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
-        Spacer(Modifier.height(18.dp));CodexMark(Modifier.size(64.dp));Text("Codex Pocket",fontSize=28.sp,fontWeight=FontWeight.Bold)
+        Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){CodexMark(Modifier.size(44.dp));Text("Codex Pocket",fontSize=26.sp,fontWeight=FontWeight.Bold)}
         Text("连接你的电脑，随时继续工作。",color=MaterialTheme.colorScheme.onSurfaceVariant)
         val isBuiltin=AccountApi.same(account.api.defaults,AccountApi.bundled(LocalContext.current))
-        Text(if(isBuiltin)"默认公网服务"else"自建中继：${account.api.defaults.getString("relay")}",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        onScan?.let{OutlinedButton(onClick=it,enabled=!account.busy,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)){Text("扫描电脑配对码 / 连接自建中继")}}
+        onScan?.let{RelayServiceEntry(it,enabled=!account.busy)}
+        Text(if(isBuiltin)"默认公网服务"else"自建中继：${account.api.defaults.getString("relay")}",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         if(!isBuiltin&&onBuiltin!=null)TextButton(onClick=onBuiltin,enabled=!account.busy){Text("返回默认公网服务")}
         account.error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
         account.notice?.let{Text(it,color=MaterialTheme.colorScheme.primary)}

@@ -14,8 +14,8 @@ android {
         applicationId = "dev.codexpocket.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.7.8"
+        versionCode = 15
+        versionName = "0.7.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }

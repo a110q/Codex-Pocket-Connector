@@ -13,9 +13,26 @@ class ServiceRoutingTest {
     @get:Rule val compose=createEmptyComposeRule()
     private val context get()=InstrumentationRegistry.getInstrumentation().targetContext
     private val backups=mutableMapOf<String,JSONObject>()
+    private var previousLan:Boolean?=null
     private var scenario:ActivityScenario<MainActivity>?=null
     private fun backup(file:String){backups[file]=SecureStore(context,file).load()}
-    @After fun cleanup(){scenario?.close();backups.forEach{(file,value)->SecureStore(context,file).save(value)}}
+    @After fun cleanup(){scenario?.close();backups.forEach{(file,value)->SecureStore(context,file).save(value)};previousLan?.let{context.getSharedPreferences("connection-mode",0).edit().putBoolean("lan",it).commit()}}
+    @Test fun scanningCurrentPublicServiceFromLanReturnsToPublicLogin(){
+        val preferences=context.getSharedPreferences("connection-mode",0)
+        previousLan=preferences.getBoolean("lan",false)
+        listOf("pocket-service.enc","pocket-account.enc","pocket-state.enc","pocket-lan-state.enc").forEach{backup(it);SecureStore(context,it).save(JSONObject())}
+        preferences.edit().putBoolean("lan",true).commit()
+        val bundled=AccountApi.bundled(context)
+        val pair=JSONObject(InstrumentationRegistry.getArguments().getString("servicePairing")!!)
+            .put("relay",bundled.getString("relay")).put("pin",bundled.getString("pin"))
+            .put("expiresAt",System.currentTimeMillis()+600000)
+        scenario=ActivityScenario.launch(Intent(context,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(Intent(context,MainActivity::class.java).setData(Uri.parse("codexpocket://pair?data="+Encoding.encode(pair.toString().toByteArray()))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        compose.waitUntil(10000){compose.onAllNodesWithText("欢迎回来").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("默认公网服务").assertIsDisplayed()
+        compose.onNodeWithText("自建中继 / 切换服务").assertIsDisplayed()
+        Assert.assertFalse("A public QR must leave LAN mode without bypassing login",preferences.getBoolean("lan",true))
+    }
     @Test fun scanningAnotherServerRequiresConfirmationAndNeverReusesBuiltinCredentials(){
         val args=InstrumentationRegistry.getArguments()
         val pair=JSONObject(args.getString("servicePairing")!!).put("pairCode",Encoding.secret()).put("expiresAt",System.currentTimeMillis()+600000)

@@ -69,9 +69,10 @@ import androidx.compose.ui.window.DialogProperties
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable fun SettingsScreen(model:PocketModel,onComputer:()->Unit={},onTasks:()->Unit={},account:AccountModel?=null,onAdmin:()->Unit={},onUsers:()->Unit=onAdmin,onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null){
+@Composable fun SettingsScreen(model:PocketModel,onComputer:()->Unit={},onTasks:()->Unit={},account:AccountModel?=null,onAdmin:()->Unit={},onUsers:()->Unit=onAdmin,onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null,onSwitchService:(()->Unit)?=null){
     var forget by remember{mutableStateOf(false)}
     Column(Modifier.fillMaxSize().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+        onSwitchService?.let{RelayServiceEntry(it,enabled=!model.busy&&model.pendingOperation==null)}
         account?.let{AccountSettings(it,onAdmin,onUsers)}
         if(onExitLan!=null){Text("局域网直连",fontWeight=FontWeight.SemiBold);Text("同一网络中使用，无需账号审批。离开局域网后，请切换公网远程。",fontSize=13.sp);OutlinedButton(onClick=onExitLan,modifier=Modifier.fillMaxWidth()){Text("切换到公网远程登录")}}
         if(onEnterLan!=null)OutlinedButton(onClick=onEnterLan,modifier=Modifier.fillMaxWidth()){Text("切换到局域网直连")}
