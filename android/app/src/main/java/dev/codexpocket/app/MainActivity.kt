@@ -250,10 +250,10 @@ class MainActivity : ComponentActivity() {
 
 @Composable fun PendingCard(model: PocketModel) {
     if(model.pendingOperation==null)return
-    if(model.busy){ Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.CenterVertically){ CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(10.dp));Text("正在等待电脑确认操作…",fontSize=12.sp) };return }
+    if(model.busy){ Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.CenterVertically){ CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(10.dp));Text(model.pendingStatus.ifBlank{"正在等待电脑确认操作…"},fontSize=12.sp) };return }
     var confirm by remember { mutableStateOf(false) }
     Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.tertiaryContainer),modifier=Modifier.fillMaxWidth().padding(vertical=6.dp)) {
-        Column(Modifier.padding(14.dp)) { Text("有一条操作等待确认",fontWeight=FontWeight.SemiBold);Text("断线或超时后，请先查看会话。重新确认会沿用原请求，不会重新执行。",fontSize=12.sp);Row { TextButton(onClick={model.confirmPending()},enabled=model.connected&&!model.busy){Text("重新确认")};TextButton(onClick={confirm=true}){Text("已查看，清除记录")} } }
+        Column(Modifier.padding(14.dp)) { Text("有一条操作等待确认",fontWeight=FontWeight.SemiBold);Text(model.pendingStatus.ifBlank{"断线或超时后会自动查询执行结果。请先查看会话，避免重复发送。"},fontSize=12.sp);Row { TextButton(onClick={model.confirmPending()},enabled=model.connected&&!model.busy){Text("重新确认")};TextButton(onClick={confirm=true}){Text("已查看，清除记录")} } }
     }
     if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("清除待确认记录？")},text={Text("请先在会话中检查这次操作是否已经执行。清除记录不会停止或撤销电脑上的任务。")},confirmButton={TextButton(onClick={model.clearPendingAfterInspection();confirm=false}){Text("已检查，清除")}},dismissButton={TextButton(onClick={confirm=false}){Text("返回检查")}})
 }
@@ -506,7 +506,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
         Spacer(Modifier.height(36.dp))
         if(model.error==null)CircularProgressIndicator(Modifier.size(38.dp),strokeWidth=3.dp)
         Text(if(model.error==null)"配对中，等待电脑确认"else"配对尚未完成",fontSize=21.sp,fontWeight=FontWeight.SemiBold)
-        Text(model.profile?.optString("name").orEmpty(),color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(model.profile?.computerName().orEmpty(),color=MaterialTheme.colorScheme.onSurfaceVariant)
         Text(if(model.error==null)"请在电脑连接器中点击「允许连接」。确认后会自动打开工作空间。"else"可返回电脑更新二维码，然后重新扫码。",fontSize=14.sp,lineHeight=23.sp)
         if(model.status.contains("网络"))Text(model.status,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedButton(onClick=model::cancelPairing){Text("取消配对")}

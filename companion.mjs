@@ -75,6 +75,10 @@ export class CommandLedger {
         this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('done', JSON.stringify(result ?? {}), command.id);
         return result;
       } catch (e) {
+        // A read-only receipt query may have confirmed this exact message
+        // while the desktop IPC acknowledgement was still pending.
+        const confirmed = this.db.prepare('SELECT state,response FROM commands WHERE id=?').get(command.id);
+        if (confirmed?.state === 'done') return JSON.parse(confirmed.response);
         if (e.notSubmitted === true && e.uncertain !== true) {
           this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('rejected', JSON.stringify({ error: e.message }), command.id);
           throw Object.assign(e, { uncertain: false });
@@ -85,6 +89,25 @@ export class CommandLedger {
     })();
     this.pending.set(command.id, promise);
     return promise;
+  }
+  async inspect(command, reconcile) {
+    const previous = this.db.prepare('SELECT * FROM commands WHERE id=?').get(command.id);
+    if (!previous) return { state: 'not_found' };
+    if (previous.action !== command.action || previous.args_hash !== digest(JSON.stringify(command.args))) throw new Error('请求 ID 已被用于不同操作');
+    const result = row => row.state === 'done' ? { state: 'done', result: JSON.parse(row.response) }
+      : row.state === 'rejected' ? { state: 'rejected', error: JSON.parse(row.response).error }
+      : { state: this.pending.has(command.id) ? 'running' : 'uncertain' };
+    if (previous.state === 'done' || previous.state === 'rejected') return result(previous);
+    if (reconcile) {
+      const receipt = await reconcile();
+      const current = this.db.prepare('SELECT * FROM commands WHERE id=?').get(command.id);
+      if (current.state === 'done' || current.state === 'rejected') return result(current);
+      if (receipt) {
+        this.db.prepare('UPDATE commands SET state=?,response=? WHERE id=?').run('done', JSON.stringify(receipt), command.id);
+        return { state: 'done', result: receipt };
+      }
+    }
+    return result(previous);
   }
   close() { this.db.close(); }
 }
@@ -200,12 +223,19 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           if (Math.abs(Date.now() - payload.sentAt) > 120000 || typeof payload.channel !== 'string' || !/^[a-f0-9-]{36}$/i.test(payload.channel)) return;
           preview.close(); channel = payload.channel; await connectDesktop();
           if (!link.isCurrent(socket) || channel !== payload.channel) return;
-          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true }, desktopReady: adapter.ready, error: lastError }); return;
+          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true, 'command.status': true }, desktopReady: adapter.ready, error: lastError }); return;
         }
         if (payload.type !== 'request' || !channel || payload.channel !== channel) return;
         const requestChannel = channel;
         try {
-          validateCommand(payload); await connectDesktop();
+          validateCommand(payload);
+          if (payload.action === 'command.status') {
+            const command = payload.args;
+            const result = await ledger.inspect(command, command.action === 'message.send' && adapter.confirmMessage ? () => adapter.confirmMessage({ ...command.args, clientUserMessageId: command.id }) : undefined);
+            if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, result });
+            return;
+          }
+          await connectDesktop();
           if (!adapter.ready) throw new Error('电脑上的 Codex 尚未连接，请检查电脑端应用');
           const result = await ledger.run(payload, async () => {
             if (payload.action==='automations.list'||payload.action.startsWith('automation.')) return scheduler.call(payload.action,payload.args);

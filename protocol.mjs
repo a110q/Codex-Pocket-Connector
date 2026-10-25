@@ -49,12 +49,16 @@ export class CipherChannel {
   }
 }
 
-export const ACTIONS = new Set(['thread.rename', 'workspace.list','workspace.search','workspace.read','git.status','git.diff','git.commit','git.push','git.pr.create','review.start','extensions.list','skill.read','skill.save','skill.delete','skill.set','plugin.list','plugin.install','plugin.uninstall','plugin.set','automations.list','automation.save','automation.delete','automation.run','account.usage','mcp.list','mcp.login','file.upload.start', 'file.upload.chunk', 'file.upload.finish', 'file.upload.cancel', 'image.upload.start', 'image.upload.chunk', 'image.upload.finish', 'image.upload.cancel', 'threads.list', 'projects.list', 'models.list', 'thread.read', 'thread.history', 'message.read', 'thread.create', 'message.send', 'turn.stop', 'approval.respond', 'file.read', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete', 'preview.open', 'preview.close', 'preview.connect', 'preview.write', 'preview.read', 'preview.disconnect']);
+export const ACTIONS = new Set(['command.status','thread.rename', 'workspace.list','workspace.search','workspace.read','git.status','git.diff','git.commit','git.push','git.pr.create','review.start','extensions.list','skill.read','skill.save','skill.delete','skill.set','plugin.list','plugin.install','plugin.uninstall','plugin.set','automations.list','automation.save','automation.delete','automation.run','account.usage','mcp.list','mcp.login','file.upload.start', 'file.upload.chunk', 'file.upload.finish', 'file.upload.cancel', 'image.upload.start', 'image.upload.chunk', 'image.upload.finish', 'image.upload.cancel', 'threads.list', 'projects.list', 'models.list', 'thread.read', 'thread.history', 'message.read', 'thread.create', 'message.send', 'turn.stop', 'approval.respond', 'file.read', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete', 'preview.open', 'preview.close', 'preview.connect', 'preview.write', 'preview.read', 'preview.disconnect']);
 export const MUTATIONS = new Set(['thread.rename','git.commit','git.push','git.pr.create','review.start','skill.save','skill.delete','skill.set','plugin.install','plugin.uninstall','plugin.set','automation.save','automation.delete','automation.run','mcp.login','thread.create', 'message.send', 'turn.stop', 'approval.respond', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete']);
 export function validateCommand(command) {
   if (!command || !/^[a-f0-9-]{36}$/i.test(command.id ?? '') || !ACTIONS.has(command.action)) throw new Error('Unsupported request');
   if (!Number.isFinite(command.sentAt) || Math.abs(Date.now() - command.sentAt) > 5 * 60_000) throw new Error('请求已过期，请重新操作');
   if (!command.args || typeof command.args !== 'object' || Array.isArray(command.args)) throw new Error('Invalid request arguments');
+  if (command.action === 'command.status') {
+    if (!MUTATIONS.has(command.args.action)) throw new Error('Invalid operation receipt request');
+    validateCommand({ ...command.args, sentAt: command.sentAt });
+  }
   if (command.action === 'message.send' || command.action === 'thread.create') {
     if (typeof command.args.text !== 'string' || (!command.args.text.trim() && !command.args.imageUploadIds?.length && !command.args.fileUploadIds?.length) || command.args.text.length > 100_000) throw new Error('消息不能为空或过长');
   }

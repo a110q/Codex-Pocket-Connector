@@ -114,7 +114,7 @@ internal fun pluginCanManage(plugin:JSONObject)=plugin.optBoolean("installed")&&
             ToolCard{
                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){
                     ToolBadge("电脑")
-                    Column(Modifier.weight(1f)){Text(model.profile?.optString("name")?.takeIf{it.isNotBlank()}?:"当前电脑",fontSize=15.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("项目、工具与任务",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                    Column(Modifier.weight(1f)){Text(model.profile?.computerName()?.takeIf{it.isNotBlank()}?:"当前电脑",fontSize=15.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("项目、工具与任务",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                     ToolPill(if(model.connected)"已连接"else"未连接",positive=model.connected)
                 }
             }

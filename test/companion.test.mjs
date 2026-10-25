@@ -5,6 +5,25 @@ import { mkdirSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CommandLedger, FileAccess, boundedSnapshot } from '../companion.mjs';
 
+test('receipt inspection never executes an unknown operation and can confirm a delayed acknowledgement',async t=>{
+  const directory=resolve('.private/tests',randomUUID());mkdirSync(directory,{recursive:true});const path=resolve(directory,'commands.sqlite');
+  let ledger=new CommandLedger(path);t.after(()=>ledger.close());
+  const command={id:randomUUID(),action:'message.send',args:{threadId:'qa',text:'once'}};
+  let writes=0,release;
+  assert.deepEqual(await ledger.inspect(command,()=>{assert.fail('unknown operations must not be reconciled')}),{state:'not_found'});
+  const pending=ledger.run(command,async()=>{writes++;await new Promise(resolve=>release=resolve);throw Error('IPC receipt lost')});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(await ledger.inspect(command),{state:'running'});
+  await assert.rejects(ledger.inspect({...command,args:{threadId:'other',text:'once'}}),/不同操作/);
+  const receipt={submitted:true,messageId:'matched-by-client-id'};
+  assert.deepEqual(await ledger.inspect(command,async()=>receipt),{state:'done',result:receipt});
+  release();assert.deepEqual(await pending,receipt);assert.equal(writes,1);
+  ledger.close();ledger=new CommandLedger(path);assert.deepEqual(await ledger.inspect(command),{state:'done',result:receipt});
+  assert.deepEqual(await ledger.run(command,()=>{writes++;return{}}),receipt);assert.equal(writes,1);
+  const rejected={...command,id:randomUUID()};await assert.rejects(ledger.run(rejected,()=>{throw Object.assign(Error('not sent'),{notSubmitted:true})}));
+  assert.deepEqual(await ledger.inspect(rejected),{state:'rejected',error:'not sent'});
+});
+
 test('mutation retries share one execution and stay deduplicated after restarting the ledger', async () => {
   const directory = resolve('.private/tests', randomUUID()); mkdirSync(directory, { recursive: true });
   const path = `${directory}/commands.sqlite`; let ledger = new CommandLedger(path), count = 0;

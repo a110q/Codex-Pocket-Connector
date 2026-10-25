@@ -8,6 +8,10 @@ import { secret, digest, CipherChannel } from '../protocol.mjs';
 import { ConnectorAccount, Enrollment, readJson } from '../connector-core.mjs';
 import { relayRequest } from '../companion.mjs';
 import { existsSync, readFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+import { startConnector } from '../connector.mjs';
+import { ConnectorRuntime } from '../connector-runtime.mjs';
 
 const pass = 'Test-only-long-password-429';
 async function setup(t) {
@@ -172,6 +176,78 @@ test('anonymous computer preparation persists identity after response loss witho
   const after=readJson(paths.config);assert.equal(after.hostId,before.hostId);assert.equal(after.key,before.key);assert.equal(after.mobileClaim,true);assert(!existsSync(paths.account));
   await new Enrollment({paths,defaults:f.defaults}).prepare();
   const db=new DatabaseSync(f.dbPath);assert.equal(db.prepare('SELECT count(*) n FROM hosts').get().n,1);assert.equal(db.prepare('SELECT count(*) n FROM account_hosts').get().n,0);db.close();
+});
+
+test('removed computers reconnect with fresh credentials and can be approved under a different phone account',async t=>{
+  const f=await setup(t),alice=await f.register('rebinduser');await f.approve(alice.user);await f.call('/api/account/me',{},alice.phone.token);
+  const paths=f.paths('rebind-computer');await new Enrollment({paths,defaults:f.defaults}).prepare({name:'Transfer PC'});
+  const old=readJson(paths.config),oldPhone=secret();
+  await f.call('/api/pair',{hostId:old.hostId,pairCode:old.pairCode,mobileToken:oldPhone},alice.phone.token);
+  await f.call('/api/pair/decision',{hostId:old.hostId,fingerprint:digest(oldPhone).slice(0,12),accept:true},old.desktopToken);
+  class Adapter extends EventEmitter {
+    async connect(){this.ready=true}
+    diagnostics(){return{capabilities:Object.fromEntries(['threads.list','projects.list','thread.read','message.send','thread.create','models.list'].map(key=>[key,true]))}}
+    close(){this.ready=false}
+  }
+  const runtime=new ConnectorRuntime({createAdapter:()=>new Adapter()});
+  const app=await startConnector({paths,defaults:f.defaults,port:0,runtime,installation:{binary:()=>null,state:()=>({detected:true})}});t.after(()=>app.close());
+  const api=async(path,body)=>{
+    const res=await fetch(`http://127.0.0.1:${app.server.address().port}${path}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${app.token}`,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+    const json=await res.json();assert.equal(res.status,200,json.error);return json;
+  };
+  const until=async predicate=>{for(let i=0;i<200;i++){const state=await api('/api/state');if(predicate(state))return state;await delay(20)}assert.fail('Connector state did not settle')};
+  await api('/api/connect',{});await until(state=>state.connected);const oldPort=runtime.port(old);
+  await f.call('/api/admin/devices/remove',{userId:alice.user.id,device:'computer',hostId:old.hostId},f.root.token);
+  await api('/api/mode',{mode:'cloud'});
+  const fresh=readJson(paths.config);
+  for(const field of ['hostId','desktopToken','pairCode','key','managerToken'])assert.notEqual(fresh[field],old[field],field+' must rotate');
+  assert.equal(fresh.name,'Transfer PC');assert.equal(fresh.mobileClaim,true);assert(!existsSync(paths.account));
+  assert.equal((await api('/api/state')).rebindRequired,true);
+  await assert.rejects(fetch(`http://127.0.0.1:${oldPort}/api/status`),/fetch failed/);
+  await api('/api/connect',{});await until(state=>state.connected);
+  const qr=await api('/api/pairing'),pairing=JSON.parse(Buffer.from(new URL(qr.link).searchParams.get('data'),'base64url'));
+  assert.equal(pairing.hostId,fresh.hostId);assert.equal(pairing.key,fresh.key);assert.equal(pairing.claimFromMobile,true);
+  await f.call('/api/pair',{hostId:fresh.hostId,pairCode:fresh.pairCode,mobileToken:secret()},f.root.token);
+  const pending=await until(state=>!!state.pairRequest);
+  const db=new DatabaseSync(f.dbPath);t.after(()=>db.close());
+  assert.equal(db.prepare('SELECT user_id FROM account_hosts WHERE host_id=?').get(fresh.hostId),undefined,'scan alone cannot change ownership');
+  await api('/api/pair/decision',{accept:true,fingerprint:pending.pairRequest.fingerprint});
+  assert.equal((await f.call('/api/account/me',{},alice.phone.token)).hosts.length,0);
+  assert((await f.call('/api/account/me',{},f.root.token)).hosts.some(host=>host.id===fresh.hostId));
+  assert.equal((await f.post('/api/hosts/status',{hostId:old.hostId},old.desktopToken)).status,401);
+  assert.equal(db.prepare('SELECT mobile_hash FROM hosts WHERE id=?').get(old.hostId).mobile_hash,null);
+  await new Enrollment({paths,defaults:f.defaults}).prepare();assert.equal(readJson(paths.config).hostId,fresh.hostId);
+});
+
+test('legacy account computers retain a staged replacement across response loss and restart',async t=>{
+  const f=await setup(t),alice=await f.register('legacyrebind');await f.approve(alice.user);
+  const session=await f.desktop('legacyrebind'),paths=f.paths('legacy-rebind');
+  await new Enrollment({paths,defaults:f.defaults}).registerAccount({name:'Legacy PC',token:session.token,user:(await f.call('/api/account/me',{},session.token)).user});
+  const oldText=readFileSync(paths.config,'utf8'),old=readJson(paths.config);
+  await f.call('/api/admin/devices/remove',{userId:alice.user.id,device:'computer',hostId:old.hostId},f.root.token);
+  let lost=true;
+  const request=async(...args)=>{const result=await relayRequest(...args);if(lost&&args[1]==='/api/desktop/prepare'){lost=false;throw Error('lost replacement response')}return result};
+  await assert.rejects(new Enrollment({paths,defaults:f.defaults,request}).prepare(),/lost replacement/);
+  assert.equal(readFileSync(paths.config,'utf8'),oldText,'no unverified replacement may overwrite the local identity');
+  const staged=readJson(paths.enrollment);assert.equal(staged.replacesHostId,old.hostId);
+  assert.equal((await new Enrollment({paths,defaults:f.defaults}).prepare()).rebindRequired,true);
+  const fresh=readJson(paths.config);assert.equal(fresh.hostId,staged.config.hostId);assert.equal(fresh.key,staged.config.key);assert.equal(fresh.mobileClaim,true);
+  const db=new DatabaseSync(f.dbPath);assert.equal(db.prepare('SELECT count(*) n FROM hosts').get().n,2);db.close();
+});
+
+test('account denials and uncertain network failures never reset a healthy computer identity',async t=>{
+  const f=await setup(t),alice=await f.register('deniedrebind');await f.approve(alice.user);await f.call('/api/account/me',{},alice.phone.token);
+  const paths=f.paths('denied-rebind');await new Enrollment({paths,defaults:f.defaults}).prepare();const config=readJson(paths.config),mobileToken=secret();
+  await f.call('/api/pair',{hostId:config.hostId,pairCode:config.pairCode,mobileToken},alice.phone.token);
+  await f.call('/api/pair/decision',{hostId:config.hostId,fingerprint:digest(mobileToken).slice(0,12),accept:true},config.desktopToken);
+  const original=()=>[readFileSync(paths.config,'utf8'),readFileSync(paths.enrollment,'utf8')],before=original();
+  await f.call('/api/admin/users/decision',{userId:alice.user.id,action:'disable'},f.root.token);
+  await assert.rejects(new Enrollment({paths,defaults:f.defaults}).prepare(),error=>error.statusCode===403);
+  assert.deepEqual(original(),before);
+  for(const error of [Error('network timeout'),Object.assign(Error('server unavailable'),{statusCode:503})]){
+    await assert.rejects(new Enrollment({paths,defaults:f.defaults,request:async()=>{throw error}}).prepare(),e=>e===error);
+    assert.deepEqual(original(),before);
+  }
 });
 
 test('multiple computers preserve ownership, enforce configurable quotas and revoke the selected computer',async t=>{

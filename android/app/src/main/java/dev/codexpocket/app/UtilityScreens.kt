@@ -34,11 +34,13 @@ import androidx.compose.ui.window.DialogProperties
 
 @Composable fun ComputerScreen(model:PocketModel,scan:()->Unit,manual:()->Unit){
     var removing by remember{mutableStateOf<org.json.JSONObject?>(null)}
+    var renaming by remember{mutableStateOf<org.json.JSONObject?>(null)}
+    var menuHost by remember{mutableStateOf<String?>(null)}
     Column(Modifier.fillMaxSize().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
         Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(16.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
             Column(Modifier.fillMaxWidth().padding(22.dp)){
                 Surface(color=MaterialTheme.colorScheme.primaryContainer,shape=RoundedCornerShape(14.dp),modifier=Modifier.size(56.dp)){Box(contentAlignment=Alignment.Center){CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("电脑",Modifier.size(30.dp))}}}
-                Spacer(Modifier.height(20.dp));Text(model.profile?.optString("name")?:"我的电脑",fontSize=20.sp,fontWeight=FontWeight.SemiBold)
+                Spacer(Modifier.height(16.dp));Row(verticalAlignment=Alignment.CenterVertically){Text(model.profile?.computerName()?:"我的电脑",Modifier.weight(1f),fontSize=20.sp,fontWeight=FontWeight.SemiBold);if(model.profile!=null)PocketAction("编辑","重命名当前电脑"){renaming=model.profile}}
                 Spacer(Modifier.height(10.dp));StatusPill(model);Spacer(Modifier.height(20.dp))
                 Text(if(model.pairing)"请在电脑端配对页面允许这台手机连接。" else "断网后会自动尝试恢复。电脑需要保持开机、联网，Codex 与连接服务持续运行。",fontSize=13.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(20.dp));Button(onClick=model::reconnectNow,enabled=!model.busy,modifier=Modifier.fillMaxWidth().height(48.dp),shape=RoundedCornerShape(10.dp)){PocketIcon("刷新",Modifier.size(18.dp));Spacer(Modifier.width(8.dp));Text(if(model.pairing)"检查配对状态" else "重新连接")}
@@ -50,16 +52,33 @@ import androidx.compose.ui.window.DialogProperties
             Surface(shape=RoundedCornerShape(14.dp),color=if(current)MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,if(current)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)){
                 Row(Modifier.fillMaxWidth().padding(start=16.dp,end=4.dp,top=8.dp,bottom=8.dp),verticalAlignment=Alignment.CenterVertically){
                     PocketIcon("电脑",Modifier.size(23.dp));Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)){Text(computer.optString("name","我的电脑"),fontWeight=FontWeight.Medium,maxLines=2);Text((if(computer.optString("mode")=="lan")"局域网"else"公网远程")+" · "+(if(current)model.status else"已保存"),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-                    TextButton(onClick={model.switchComputer(computer.getString("hostId"))},enabled=!current&&!model.busy&&model.pendingOperation==null){Text(if(current)"当前电脑"else"连接")}
-                    PocketAction("关闭","移除电脑 ${computer.optString("name")}",!model.busy&&model.pendingOperation==null){removing=computer}
+                    Column(Modifier.weight(1f)){Text(computer.computerName(),fontWeight=FontWeight.Medium,maxLines=2);Text((if(PocketConnection.isLanPairing(computer))"局域网"else"公网远程")+" · "+(if(current)model.status else"已保存"),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                    if(current)Text("当前",Modifier.padding(horizontal=8.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.primary)
+                    else TextButton(onClick={model.switchComputer(computer.getString("hostId"))},enabled=model.canSwitchComputer){Text("连接")}
+                    Box {
+                        PocketAction("更多","电脑选项 ${computer.computerName()}"){menuHost=computer.getString("hostId")}
+                        DropdownMenu(expanded=menuHost==computer.optString("hostId"),onDismissRequest={menuHost=null}){
+                            DropdownMenuItem(text={Text("重命名")},leadingIcon={PocketIcon("编辑")},onClick={menuHost=null;renaming=computer})
+                            DropdownMenuItem(text={Text("移除电脑",color=MaterialTheme.colorScheme.error)},enabled=!model.busy&&model.pendingOperation==null,onClick={menuHost=null;removing=computer})
+                        }
+                    }
                 }
             }
         }
         UtilityRow("扫码添加电脑","已有电脑会保留，添加后可随时切换","图片",scan)
         UtilityRow("粘贴配对内容","使用完整的电脑配对信息","附件",manual)
     }
-    removing?.let{computer->AlertDialog(onDismissRequest={removing=null},title={Text("移除这台电脑？")},text={Text("从手机移除 ${computer.optString("name")} 的配对和缓存。电脑上的对话不会删除；公网设备额度请由管理员移除绑定释放。")},confirmButton={TextButton(onClick={model.removeComputer(computer.getString("hostId"));removing=null}){Text("移除")}},dismissButton={TextButton(onClick={removing=null}){Text("取消")}})}
+    removing?.let{computer->AlertDialog(onDismissRequest={removing=null},title={Text("移除这台电脑？")},text={Text("从手机移除 ${computer.computerName()} 的配对和缓存。电脑上的对话不会删除；公网设备额度请由管理员移除绑定释放。")},confirmButton={TextButton(onClick={model.removeComputer(computer.getString("hostId"));removing=null}){Text("移除")}},dismissButton={TextButton(onClick={removing=null}){Text("取消")}})}
+    renaming?.let{computer->RenameComputerDialog(computer,{renaming=null}){name->if(model.renameComputer(computer.getString("hostId"),name))renaming=null}}
+}
+
+@Composable private fun RenameComputerDialog(computer:org.json.JSONObject,onDismiss:()->Unit,onSave:(String)->Unit){
+    var name by rememberSaveable(computer.optString("hostId")){mutableStateOf(computer.computerName())}
+    val valid=name.trim().isNotEmpty()&&name.length<=80&&!name.any{it.isISOControl()}
+    AlertDialog(onDismissRequest=onDismiss,title={Text("重命名电脑")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
+        OutlinedTextField(name,{name=it},singleLine=true,label={Text("电脑名称")},modifier=Modifier.fillMaxWidth().semantics{contentDescription="电脑名称"},isError=name.length>80,supportingText={Text("${name.length}/80")},shape=RoundedCornerShape(12.dp))
+        Text("例如：办公室 Windows、家里的 Mac。名称保存在这部手机上，不更改电脑系统名称。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+    }},confirmButton={TextButton(onClick={onSave(name)},enabled=valid){Text("保存")}},dismissButton={TextButton(onClick=onDismiss){Text("取消")}})
 }
 
 @Composable fun UtilityRow(title:String,description:String,icon:String,onClick:()->Unit){
@@ -109,7 +128,7 @@ import androidx.compose.ui.window.DialogProperties
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
                     Text("从一个想法开始",fontSize=24.sp,fontWeight=FontWeight.SemiBold)
-                    Text("任务会在 ${model.profile?.optString("name")?:"电脑"} 上执行。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("任务会在 ${model.profile?.computerName()?:"电脑"} 上执行。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     DropdownPicker("项目",model.projects.map{it.getString("projectId") to it.label()},project,"独立会话"){project=it}
                     DropdownPicker("模型",model.models.map{it.getString("id") to it.getString("id")},selectedModel,"使用电脑默认模型"){selectedModel=it}
                     OutlinedButton(onClick=pickImages,enabled=!model.busy){PocketIcon("图片");Spacer(Modifier.width(8.dp));Text("添加图片（最多 4 张）")}

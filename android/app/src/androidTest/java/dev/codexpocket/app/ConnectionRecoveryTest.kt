@@ -111,6 +111,40 @@ class ConnectionRecoveryTest {
         Thread.sleep(1300);instrumentation.waitForIdleSync()
         Assert.assertTrue(SecureStore(context).load().optBoolean("qaReplacement"))
     }
+    @Test fun pausingWhileSendingDoesNotLeaveTheComposerPermanentlyBusy(){
+        start();until{model!!.connected&&model!!.projects.isNotEmpty()}
+        instrumentation.runOnMainSync{model!!.openThread(JSONObject().put("id","local-network-test").put("hostId","local"))}
+        until{!model!!.loadingThread};peer.ignoreMessages=true
+        instrumentation.runOnMainSync{model!!.send("QA pending lifecycle")}
+        until{peer.actions.count{it=="message.send"}==1&&model!!.busy}
+        instrumentation.runOnMainSync{model!!.stop();model!!.start()}
+        until{model!!.connected&&peer.hellos.get()==2}
+        until{!model!!.busy}
+        Assert.assertNotNull(model!!.pendingOperation)
+        Assert.assertEquals(1,peer.actions.count{it=="message.send"})
+    }
+    @Test fun lostAcknowledgementIsRecoveredByReadingTheReceiptWithoutResending(){
+        peer.capabilities.put("command.status",true);peer.ignoreMessages=true
+        peer.extra={action,_->if(action=="command.status")JSONObject().put("state","done").put("result",JSONObject().put("submitted",true))else null}
+        start();until{model!!.connected}
+        instrumentation.runOnMainSync{model!!.openThread(JSONObject().put("id","local-network-test").put("hostId","local"))};until{!model!!.loadingThread}
+        instrumentation.runOnMainSync{model!!.send("QA receipt recovery")};until{peer.actions.count{it=="message.send"}==1}
+        instrumentation.runOnMainSync{model!!.stop();model!!.start()}
+        until{model!!.connected&&model!!.pendingOperation==null&&!model!!.busy}
+        Assert.assertTrue(peer.actions.contains("command.status"));Assert.assertEquals(1,peer.actions.count{it=="message.send"})
+        Assert.assertNull(model!!.error)
+    }
+    @Test fun missingReceiptNeverAutomaticallyResendsAndSlowReceiptDoesNotFreezeInput(){
+        peer.capabilities.put("command.status",true);peer.ignoreMessages=true
+        peer.extra={action,_->if(action=="command.status")JSONObject().put("state","not_found")else null}
+        start();until{model!!.connected}
+        instrumentation.runOnMainSync{model!!.openThread(JSONObject().put("id","local-network-test").put("hostId","local"))};until{!model!!.loadingThread}
+        instrumentation.runOnMainSync{model!!.send("QA missing receipt")}
+        until(8000){peer.actions.contains("command.status")&&!model!!.busy}
+        Assert.assertNotNull(model!!.pendingOperation);Assert.assertTrue(model!!.pendingStatus.contains("未找到"))
+        instrumentation.runOnMainSync{model!!.confirmPending()};until{peer.actions.count{it=="command.status"}>=2}
+        Assert.assertEquals(1,peer.actions.count{it=="message.send"})
+    }
     internal class Peer(testHost:String="network-test-host-abcdefghijklmnop",lan:Boolean=false) {
         val server=MockWebServer()
         val opens=AtomicInteger();val hellos=AtomicInteger()

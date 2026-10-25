@@ -33,13 +33,26 @@ export class Enrollment {
     if (this.busy) throw new Error('正在准备连接，请稍候');
     this.busy = true;
     try {
+      let previous = null;
       if (existsSync(this.paths.config)) {
         const config=readJson(this.paths.config);
-        if(config.mobileClaim===true) await this.request(config,'/api/desktop/prepare',Object.fromEntries(['hostId','desktopToken','pairCode','name'].map(k=>[k,config[k]])));
-        return {registered:true};
+        try {
+          if(config.mobileClaim===true) await this.request(config,'/api/desktop/prepare',Object.fromEntries(['hostId','desktopToken','pairCode','name'].map(k=>[k,config[k]])));
+          else await this.request(config,'/api/hosts/status',{hostId:config.hostId});
+          return {registered:true};
+        } catch (error) {
+          // A removed computer's credential is permanently revoked. Only an
+          // explicit reconnect starts a fresh, unowned identity for phone approval.
+          // Permission denials and uncertain network failures retain the identity.
+          if(error.statusCode!==401) throw error;
+          previous=config;
+        }
       }
       let pending = existsSync(this.paths.enrollment) ? readJson(this.paths.enrollment) : null;
-      if (!pending?.config) pending = { config: { ...this.defaults, name: String(name).trim().slice(0,80) || hostname(), hostId: secret().slice(0,32), desktopToken: secret(), pairCode: secret(), key: secret(), managerToken: secret(), pairExpires: Date.now()+10*60_000, mobileClaim: true } };
+      if (!pending?.config || (previous && pending.replacesHostId!==previous.hostId)) pending = {
+        ...(previous ? {replacesHostId:previous.hostId} : {}),
+        config: { ...this.defaults, name: String(previous?.name ?? name).trim().slice(0,80) || hostname(), hostId: secret().slice(0,32), desktopToken: secret(), pairCode: secret(), key: secret(), managerToken: secret(), pairExpires: Date.now()+10*60_000, mobileClaim: true }
+      };
       if (pending.config.relay !== this.defaults.relay || pending.config.pin !== this.defaults.pin) throw new Error('连接配置与当前版本不匹配，请联系管理员');
       writePrivate(this.paths.enrollment, pending);
       const config = pending.config;
@@ -47,9 +60,11 @@ export class Enrollment {
       const verified = await this.request(config, '/api/hosts/status', { hostId: config.hostId });
       if (!verified.registered) throw new Error('连接准备尚未确认，请重试');
       config.mobileClaim = verified.mobileClaim === true || registered.mobileClaim === true;
-      writePrivate(this.paths.config, config, { exclusive: true });
+      // Keep the revoked local file until the replacement is verified. The
+      // durable pending identity is reused if a response is lost or the app quits.
+      writePrivate(this.paths.config, config, { exclusive: !previous });
       writePrivate(this.paths.enrollment, { completed: true, hostId: config.hostId });
-      return { registered: true };
+      return { registered: true, ...(previous ? {rebindRequired:true} : {}) };
     } finally { this.busy = false; }
   }
   async register({ inviteCode, name = hostname() }) {

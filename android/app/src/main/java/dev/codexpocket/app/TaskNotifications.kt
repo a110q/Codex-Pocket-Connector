@@ -54,7 +54,7 @@ object TaskNotifications {
         val intent=Intent(context,MainActivity::class.java).putExtra("taskHostId",profile.optString("hostId")).putExtra("taskThreadId",alert.threadId).putExtra("taskLan",PocketConnection.isLanPairing(profile)).putExtra("taskRelay",profile.optString("relay")).putExtra("taskPin",profile.optString("pin")).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pending=PendingIntent.getActivity(context,identity.hashCode(),intent,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val title=when(alert.kind){"approval"->"Codex 等待你的操作";"failed"->"Codex 任务出错";else->"Codex 任务已完成"}
-        manager.notify(identity.hashCode(),NotificationCompat.Builder(context,CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText("${profile.optString("name","电脑")} · ${alert.title}").setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())
+        manager.notify(identity.hashCode(),NotificationCompat.Builder(context,CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText("${profile.computerName()} · ${alert.title}").setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())
     }
 }
 
@@ -124,7 +124,13 @@ class TaskMonitorService:Service() {
             if(e is AccountException&&(e.status==401||e.status==403))return lan
             // Cloud outages must not prevent new LAN computers from being watched.
             // Retain only existing cloud watchers for this same account and service.
-            return lan+watchers.values.map{it.profile}.filter{previous->previous.optString("accountToken")==token&&AccountApi.same(previous,api.defaults)&&values.any{TaskNotifications.namespace(it)==TaskNotifications.namespace(previous)&&listOf("mobileToken","key").all{field->it.optString(field)==previous.optString(field)}}}
+            return lan+values.mapNotNull { next ->
+                watchers.values.map { it.profile }.find { previous ->
+                    previous.optString("accountToken")==token && AccountApi.same(previous,api.defaults) &&
+                        TaskNotifications.namespace(next)==TaskNotifications.namespace(previous) &&
+                        listOf("mobileToken","key").all { field -> next.optString(field)==previous.optString(field) }
+                }?.let { JSONObject(next.toString()).put("accountToken",token) }
+            }
         }
         if(me.optJSONObject("user")?.optString("accessState")!="active")return lan
         val hosts=me.optJSONArray("hosts").objects().map{it.optString("id")}.toSet()+listOfNotNull(me.optJSONObject("host")?.optString("id"))
@@ -133,7 +139,7 @@ class TaskMonitorService:Service() {
     private fun reconcile(profiles:List<JSONObject>) {
         val allowed=profiles.distinctBy{TaskNotifications.namespace(it)}.filter{TaskNotifications.namespace(it) !in reserved()}.associateBy{TaskNotifications.namespace(it)}
         watchers.keys.filter{it !in allowed||!watchers.getValue(it).matches(allowed.getValue(it))}.forEach{watchers.remove(it)?.close()}
-        allowed.forEach{(id,profile)->if(id !in watchers)watchers[id]=Watcher(profile)}
+        allowed.forEach{(id,profile)->if(id !in watchers)watchers[id]=Watcher(profile)else watchers.getValue(id).updateName(profile)}
     }
     private fun monitor() {
         if(job?.isActive==true||!TaskNotifications.enabled(this))return
@@ -152,6 +158,7 @@ class TaskMonitorService:Service() {
         }
     }
     private inner class Watcher(val profile:JSONObject) {
+        fun updateName(next:JSONObject){profile.put("name",next.optString("name"));if(next.has("alias"))profile.put("alias",next.get("alias"))else profile.remove("alias")}
         private var connection:PocketConnection?=null
         private var retry=false
         private var valid=true

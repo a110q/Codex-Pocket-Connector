@@ -20,6 +20,7 @@ import java.io.File
 
 fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 fun JSONObject.label(): String = optString("title").ifBlank { optString("label").ifBlank { "未命名会话" } }
+fun JSONObject.computerName():String=optString("alias").takeIf{it.isNotBlank()&&it!="null"}?:optString("name").takeIf{it.isNotBlank()&&it!="null"}?:"我的电脑"
 
 class PocketModel(private val context: Context,filename:String="pocket-state.enc",private val requireLan:Boolean=false) {
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -55,6 +56,12 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     var busy by mutableStateOf(false); private set
     var pairing by mutableStateOf(profile != null && profile?.optBoolean("approved") != true); private set
     var pendingOperation by mutableStateOf(saved.optJSONObject("pending")); private set
+    var pendingStatus by mutableStateOf(""); private set
+    private var computerGeneration=0
+    private var supportsReceipts=false
+    private var receiptPolling:Job?=null
+    private var pendingCompletion:Pair<String,(JSONObject)->Unit>?=null
+    val canSwitchComputer get()=!busy||pendingOperation!=null
     var appearance by mutableStateOf(saved.optString("appearance", "system")); private set
     private var drafts by mutableStateOf(DraftBook(saved.optJSONObject("drafts")?.let { obj -> obj.keys().asSequence().associateWith { obj.optString(it) } }.orEmpty()))
     var draft: String
@@ -231,6 +238,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         closePreview()
         foreground = false; reconnect?.let(handler::removeCallbacks); reconnect = null
         cacheWrite?.let(handler::removeCallbacks);cacheWrite=null
+        receiptPolling?.cancel();receiptPolling=null
+        if(pendingOperation!=null)busy=false
         pairingJob?.cancel(); pairingJob = null;taskPolling?.cancel();taskPolling=null; connection?.close(); connection = null; connected = false; persist()
         TaskMonitorService.releaseUi(context,this)
     }
@@ -242,6 +251,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         candidate = PocketConnection(p, { state -> handler.post {
             if (connection !== candidate || !foreground) return@post
             status = state.label; connected = state.ready
+            if(!connected){receiptPolling?.cancel();receiptPolling=null}
             reconnect?.let(handler::removeCallbacks);reconnect=null
             if (state.retry) {
                 reconnect = Runnable { if (foreground && !connected) connect() }.also { handler.postDelayed(it, 4000) }
@@ -249,7 +259,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }, { event -> handler.post {
             if (connection !== candidate || !foreground) return@post
             when (event.optString("type")) {
-                "hello" -> { if(event.has("capabilities"))supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; refresh(); selected?.let { openThread(it) } }
+                "hello" -> { if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; refresh(); selected?.let { openThread(it) };watchPendingReceipt(0) }
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
                     if(change.optString("type") in listOf("mcp.updated","automation.updated","catalog.updated")){toolRevision++;if(change.optString("type")=="catalog.updated")refresh()}
@@ -266,6 +276,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun reconnectNow() { if (profile?.optBoolean("approved") == true) connect() else if (profile != null) waitForApproval() }
     private fun activateComputer(next:JSONObject?) {
         val resume=foreground;stop();scope.cancel();pairingRequest=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+        computerGeneration++;supportsReceipts=false;pendingStatus="";pendingCompletion=null
         profile=next?.let{JSONObject(it.toString())};account?.let{profile?.put("accountToken",it.token)}
         val cache=next?.let{computerStates.optJSONObject(it.optString("hostId"))}?:JSONObject()
         threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
@@ -280,7 +291,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     fun switchComputer(id:String):Boolean {
         if(profile?.optString("hostId")==id)return true
-        if(busy||pendingOperation!=null){error="请先确认当前电脑上一次操作的结果，再切换电脑";return false}
+        if(!canSwitchComputer){error="请等待当前附件准备完成后再切换电脑";return false}
         val next=computers.find{it.optString("hostId")==id}?:return false
         activateComputer(next)
         return true
@@ -291,6 +302,16 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         computers=computers.filter{it.optString("hostId")!=id};computerStates.remove(id);persist()
         TaskMonitorService.configurationChanged(context)
         if(profile==null&&computers.isNotEmpty())activateComputer(computers.first())
+    }
+    fun renameComputer(id:String,value:String):Boolean {
+        val name=value.trim()
+        if(name.isEmpty()||name.length>80||name.any{it.isISOControl()}){error="电脑名称需要 1–80 个字符，不能包含换行";return false}
+        if(computers.none{it.optString("hostId")==id})return false
+        computers=computers.map{if(it.optString("hostId")==id)JSONObject(it.toString()).put("alias",name)else it}
+        if(profile?.optString("hostId")==id){profile=JSONObject(profile.toString()).put("alias",name);taskPolling?.cancel();taskPolling=null}
+        persist();TaskMonitorService.configurationChanged(context)
+        if(foreground)start()
+        notice="电脑名称已更新";return true
     }
     fun updateAppearance(value: String) { if (value in listOf("system", "light", "dark")) { appearance = value; persist() } }
     fun consumePairingIntent(text:String?):String? {
@@ -312,6 +333,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 next.put("accountToken",auth.token)
             }
             val existing=computers.find{it.optString("hostId")==next.optString("hostId")&&it.optString("pairCode")==next.optString("pairCode")}
+            next.remove("alias")
+            computers.find{TaskNotifications.namespace(it)==TaskNotifications.namespace(next)}?.optString("alias")?.takeIf{it.isNotBlank()}?.let{next.put("alias",it)}
             val attempts=saved.optJSONObject("pairAttempts")?:JSONObject()
             val attempt=attempts.optJSONObject(next.getString("hostId"))?.takeIf{it.optString("pairCode")==next.getString("pairCode")}
             next.put("mobileToken",existing?.optString("mobileToken")?.takeIf{it.isNotBlank()}?:attempt?.optString("mobileToken")?.takeIf{it.isNotBlank()}?:Encoding.secret())
@@ -319,6 +342,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             next.put("approved", false)
             persist();cacheWrite?.let(handler::removeCallbacks);cacheWrite=null;pairingJob?.cancel();pairingJob=null;reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();pairingRequest=null;taskPolling=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
             closePreview(); closeMessage(); threadBackStack.clear(); threads = emptyList(); projects = emptyList(); models = emptyList(); snapshot = null; selected = null; drafts = DraftBook(); outgoing=emptyMap()
+            computerGeneration++;supportsReceipts=false;receiptPolling?.cancel();receiptPolling=null
             profile = next;messageImages=MessageImageLoader(context,next.getString("hostId")); pairing = true; error = null; persist()
             TaskMonitorService.releaseUi(context,this)
             status = "配对中，等待电脑确认"
@@ -373,7 +397,13 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private fun request(action: String, args: JSONObject = JSONObject(), id: String = UUID.randomUUID().toString(), done: (JSONObject?, String?) -> Unit) {
         val c = connection
         if (c == null || !c.ready) { done(null, "电脑尚未连接"); return }
-        c.request(action, args, id) { result, problem -> handler.post { if(connection===c)done(result, problem) } }
+        val generation=computerGeneration
+        c.request(action, args, id) { result, problem -> handler.post {
+            if(generation==computerGeneration) {
+                if(connection===c)done(result,problem)
+                else done(null,"连接已更新，操作结果将在恢复连接后确认")
+            }
+        } }
     }
     fun refresh() {
         if (!connected) return
@@ -449,10 +479,17 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         pendingOperation = op; persist(); deliver(op, onSuccess)
     }
     private fun deliver(op: JSONObject, onSuccess: (JSONObject) -> Unit = {}) {
-        busy = true
+        busy = true;pendingStatus="正在等待电脑确认操作…";pendingCompletion=op.getString("id") to onSuccess
         request(op.getString("action"), op.getJSONObject("args"), op.getString("id")) { result, problem ->
+            completePending(op,result,problem)
+        }
+        watchPendingReceipt()
+    }
+    private fun completePending(op:JSONObject,result:JSONObject?,problem:String?) {
+            if(pendingOperation?.optString("id")!=op.optString("id"))return
             busy = false
-            if (result?.optBoolean("_confirmed") == true && !result.optBoolean("_uncertain")) { pendingOperation = null; persist() }
+            val completion=pendingCompletion?.takeIf{it.first==op.optString("id")}?.second
+            if (result?.optBoolean("_confirmed") == true && !result.optBoolean("_uncertain")) { pendingOperation = null;pendingCompletion=null;pendingStatus="";receiptPolling?.cancel();receiptPolling=null;persist() }
             if (problem != null) {
                 error = problem
                 if (result?.optBoolean("_confirmed") == true && !result.optBoolean("_uncertain") && op.optString("action") == "message.send") {
@@ -465,11 +502,38 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 val fileIds=op.optJSONObject("args")?.optJSONArray("fileUploadIds")?.let{array->(0 until array.length()).map{array.getString(it)}.toSet()}.orEmpty()
                 if(fileIds.isNotEmpty()){outgoingFiles.values.flatten().filter{it.id in fileIds}.forEach{File(it.path).delete()};outgoingFiles=outgoingFiles.mapValues{(_,files)->files.filter{it.id !in fileIds}};persist()}
                 if(op.optString("action") in listOf("message.send","thread.create")){val key=if(op.optString("action")=="thread.create")"__new__"else op.optJSONObject("args")?.optString("threadId").orEmpty();referenceDrafts=referenceDrafts-key;persist()}
-                error = null; onSuccess(result); refresh(); selected?.let { openThread(it) } }
+                error = null
+                if(completion!=null)completion(result)
+                else if(op.optString("action")=="thread.create")result.optString("threadId").takeIf{it.isNotBlank()}?.let{id->openThread(JSONObject().put("id",id).put("hostId",result.optString("hostId","local")).put("title",op.optJSONObject("args")?.optString("text").orEmpty().take(40)))}
+                refresh(); selected?.let { openThread(it) } }
+    }
+    private fun watchPendingReceipt(firstDelay:Long=3000) {
+        if(!supportsReceipts||!foreground||!connected||receiptPolling?.isActive==true)return
+        val op=pendingOperation?:return
+        val generation=computerGeneration
+        receiptPolling=scope.launch {
+            try {
+                delay(firstDelay)
+                while(isActive&&foreground&&connected&&computerGeneration==generation&&pendingOperation?.optString("id")==op.optString("id")) {
+                    try {
+                        val receipt=rpc("command.status",JSONObject().put("id",op.getString("id")).put("action",op.getString("action")).put("args",op.getJSONObject("args")))
+                        if(pendingOperation?.optString("id")!=op.optString("id"))break
+                        when(receipt.optString("state")) {
+                            "done"->{completePending(op,(receipt.optJSONObject("result")?:JSONObject()).put("_confirmed",true),null);break}
+                            "rejected"->{completePending(op,JSONObject().put("_confirmed",true),receipt.optString("error","操作未执行，请重试"));break}
+                            "not_found"->{busy=false;pendingStatus="电脑未找到这次操作的记录，请先检查会话再重发。";break}
+                            "running"->{busy=false;pendingStatus="电脑已收到操作，正在确认结果…"}
+                            "uncertain"->{busy=false;pendingStatus="正在核对上次操作结果，请勿重复发送。"}
+                            else->{busy=false;pendingStatus="暂时无法确认，请检查会话。";break}
+                        }
+                    }catch(e:CancellationException){throw e}catch(_:Exception){busy=false;pendingStatus="连接恢复后会继续确认操作结果。"}
+                    delay(5000)
+                }
+            }finally{if(receiptPolling===coroutineContext[Job])receiptPolling=null}
         }
     }
-    fun confirmPending() { pendingOperation?.let { deliver(it) } }
-    fun clearPendingAfterInspection() { pendingOperation = null; persist(); error = null }
+    fun confirmPending() { if(supportsReceipts)watchPendingReceipt(0)else pendingOperation?.let { deliver(it) } }
+    fun clearPendingAfterInspection() { receiptPolling?.cancel();receiptPolling=null;pendingCompletion=null;pendingStatus="";pendingOperation = null;busy=false;persist();error=null }
     fun send(text: String, model: String? = null) {
         val thread = selected ?: return
         if ((text.isBlank() && imagesFor(imageDraftKey).isEmpty() && filesFor(imageDraftKey).isEmpty()) || busy || !connected) return
@@ -579,6 +643,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     private fun forgetAll() {
         pairingRequest?.cancel();pairingRequest=null
+        computerGeneration++;supportsReceipts=false;pendingCompletion=null;pendingStatus=""
+        scope.cancel();scope=CoroutineScope(SupervisorJob()+Dispatchers.Main);busy=false
         stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; outgoing=emptyMap();outgoingFiles=emptyMap();pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
         computers=emptyList();computerStates=JSONObject();pendingScannedPair=null;persist()
     }

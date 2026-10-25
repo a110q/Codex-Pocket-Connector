@@ -24,6 +24,11 @@ test('actual encrypted companion routes multi-chunk images and text into one ada
   await request('image.upload.finish',{uploadId});const id=randomUUID(),args={threadId:'qa',text:'one image and text',imageUploadIds:[uploadId],imagePaths:['/must-never-reach-adapter']};
   await request('message.send',args,id);await request('message.send',args,id);
   const messages=calls.filter(c=>c.action==='message.send');assert.equal(messages.length,1);assert.equal(messages[0].args.text,args.text);assert.equal(messages[0].args.clientUserMessageId,id);assert.equal(messages[0].args.imagePaths.length,1);assert(readFileSync(messages[0].args.imagePaths[0]).equals(bytes));
+  const beforeReceipts=calls.length;
+  assert.deepEqual(await request('command.status',{id,action:'message.send',args}),{state:'done',result:{submitted:true}});
+  assert.deepEqual(await request('command.status',{id:randomUUID(),action:'message.send',args}),{state:'not_found'});
+  assert.equal(calls.length,beforeReceipts,'receipt queries never invoke a desktop command');
+  await assert.rejects(request('command.status',{id,action:'message.send',args:{...args,text:'changed'}}),/不同操作/);
   await assert.rejects(request('message.send',{threadId:'other',text:'not this chat',imageUploadIds:[uploadId]}),/不属于/);
   const fileId=randomUUID(),content=Buffer.alloc(400*1024,65);
   await request('file.upload.start',{uploadId:fileId,threadId:'qa',name:'report.txt',mime:'text/plain',size:content.length,sha256:digest(content)});

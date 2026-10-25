@@ -82,6 +82,19 @@ class MultiComputerNotificationsTest {
         Assert.assertTrue(alerts().any{it.notification.extras.getString("android.text")?.contains("开发 Mac")==true})
         Assert.assertTrue(alerts().any{it.notification.extras.getString("android.text")?.contains("办公室 Windows")==true})
     }
+    @Test fun renamedComputerAppearsInNotificationsWithoutRestartingItsSocket(){
+        compose.onNodeWithContentDescription("快速切换电脑").performClick()
+        compose.onNodeWithText("管理电脑与名称").performClick()
+        compose.onNodeWithContentDescription("电脑选项 开发 Mac").performClick()
+        compose.onNodeWithText("重命名").performClick()
+        compose.onNodeWithContentDescription("电脑名称").performTextReplacement("工作站 A")
+        val previousReads=a.actions.count{it=="thread.read"}
+        compose.onNodeWithText("保存").performClick()
+        until{a.actions.count{it=="thread.read"}>previousReads}
+        a.snapshot(snapshot("构建任务 A",true))
+        until{alerts().any{it.notification.extras.getString("android.text")?.contains("工作站 A · 构建任务 A")==true}}
+        Assert.assertEquals(1,a.opens.get());Assert.assertEquals(1,b.opens.get())
+    }
     @Test fun foregroundPollsApprovalsOnTheVisibleComputerWithoutASecondSocket(){
         b.extra={action,_->when(action){
             "thread.read"->snapshot("同一电脑的其他对话",true)

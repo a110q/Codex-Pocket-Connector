@@ -22,11 +22,23 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 @Composable fun ConnectionBadge(model:PocketModel,onClick:()->Unit){
-    Surface(onClick=onClick,color=if(model.connected)PocketGreen.copy(alpha=.07f)else MaterialTheme.colorScheme.tertiaryContainer,shape=RoundedCornerShape(8.dp),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="查看电脑连接"}){
+    var expanded by remember{mutableStateOf(false)}
+    Box {
+    Surface(onClick={expanded=true},color=if(model.connected)PocketGreen.copy(alpha=.07f)else MaterialTheme.colorScheme.tertiaryContainer,shape=RoundedCornerShape(8.dp),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="快速切换电脑"}){
         Row(Modifier.padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically){
             Box(Modifier.size(6.dp).background(if(model.connected)PocketGreen else MaterialTheme.colorScheme.tertiary,RoundedCornerShape(50)))
-            Spacer(Modifier.width(6.dp));Text(model.profile?.optString("name")?:"我的电脑",modifier=Modifier.widthIn(max=90.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=11.sp,fontWeight=FontWeight.Medium);PocketIcon("下拉",Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp));Text(model.profile?.computerName()?:"我的电脑",modifier=Modifier.widthIn(max=90.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=11.sp,fontWeight=FontWeight.Medium);PocketIcon("下拉",Modifier.size(14.dp))
         }
+    }
+    DropdownMenu(expanded=expanded,onDismissRequest={expanded=false},modifier=Modifier.widthIn(min=250.dp,max=300.dp)) {
+        Text("切换电脑",Modifier.padding(horizontal=16.dp,vertical=8.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        model.computers.forEach{computer->
+            val current=computer.optString("hostId")==model.profile?.optString("hostId")
+            DropdownMenuItem(text={Column{Text(computer.computerName(),fontWeight=if(current)FontWeight.SemiBold else FontWeight.Normal,maxLines=2,overflow=TextOverflow.Ellipsis);Text(if(current)model.status else if(PocketConnection.isLanPairing(computer))"局域网 · 已保存"else"公网远程 · 已保存",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}},leadingIcon={PocketIcon("电脑")},trailingIcon={if(current)Text("当前",fontSize=11.sp,color=MaterialTheme.colorScheme.primary)},enabled=current||model.canSwitchComputer,onClick={if(model.switchComputer(computer.getString("hostId")))expanded=false})
+        }
+        HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+        DropdownMenuItem(text={Text("管理电脑与名称")},leadingIcon={PocketIcon("设置")},onClick={expanded=false;onClick()})
+    }
     }
 }
 
@@ -138,5 +150,5 @@ internal fun threadTime(thread:JSONObject):String{
         }
     }
     if(rename)RenameThreadDialog(model,thread){rename=false}
-    if(deleting)AlertDialog(onDismissRequest={deleting=false},title={Text("删除对话？")},text={Text("将从 ${model.profile?.optString("name")?:"电脑"} 删除“${thread.label()}”及其对话记录，无法恢复。项目文件不会删除。")},confirmButton={TextButton(onClick={deleting=false;model.manageThread(thread,"delete")}){Text("确认删除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={deleting=false}){Text("取消")}})
+    if(deleting)AlertDialog(onDismissRequest={deleting=false},title={Text("删除对话？")},text={Text("将从 ${model.profile?.computerName()?:"电脑"} 删除“${thread.label()}”及其对话记录，无法恢复。项目文件不会删除。")},confirmButton={TextButton(onClick={deleting=false;model.manageThread(thread,"delete")}){Text("确认删除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={deleting=false}){Text("取消")}})
 }
