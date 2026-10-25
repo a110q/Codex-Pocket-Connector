@@ -30,7 +30,7 @@ class ServiceRoutingTest {
         context.startActivity(Intent(context,MainActivity::class.java).setData(Uri.parse("codexpocket://pair?data="+Encoding.encode(pair.toString().toByteArray()))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         compose.waitUntil(10000){compose.onAllNodesWithText("欢迎回来").fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("默认公网服务").assertIsDisplayed()
-        compose.onNodeWithText("自建中继 / 切换服务").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回选择连接方式").assertIsDisplayed()
         Assert.assertFalse("A public QR must leave LAN mode without bypassing login",preferences.getBoolean("lan",true))
     }
     @Test fun scanningAnotherServerRequiresConfirmationAndNeverReusesBuiltinCredentials(){
@@ -53,7 +53,8 @@ class ServiceRoutingTest {
         Assert.assertEquals(sentinel,SecureStore(context,"pocket-account.enc").load().getString("token"))
         Assert.assertTrue(SecureStore(context,custom).load().optString("token").isBlank())
         SecureStore(context,"pocket-account.enc").save(JSONObject())
-        compose.onNodeWithText("返回默认公网服务").performClick()
+        compose.onNodeWithContentDescription("返回选择连接方式").performClick()
+        compose.onNodeWithText("公网使用").performClick()
         compose.onNodeWithText("默认公网服务").assertIsDisplayed()
         Assert.assertTrue(AccountApi.same(AccountApi.defaults(context),AccountApi.bundled(context)))
     }

@@ -28,17 +28,17 @@
 | 多台电脑 | 保存多个配对并切换，按电脑隔离聊天缓存与草稿 |
 | 账号管理 | 一个 APK 按角色展示菜单；管理员审批、停用、续期、管理设备和查看安全提醒 |
 
-<p align="center"><img src="docs/images/workspace-compact.png" width="360" alt="手机紧凑工作空间，使用虚构测试数据"></p>
+<p align="center"><img src="docs/images/connection-home-phone.png" width="280" alt="手机首页的三种连接方式"> <img src="docs/images/workspace-compact.png" width="280" alt="手机紧凑工作空间，使用虚构测试数据"></p>
 
 ## 下载安装
 
-**安卓与电脑连接器：0.7.9。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**安卓与电脑连接器：0.7.10。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.9/Codex-Pocket-0.7.9.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.9/Codex-Pocket-Connector-0.7.9-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.9/Codex-Pocket-Connector-0.7.9-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.9/Codex-Pocket-Connector-0.7.9-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-0.7.10.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-Connector-0.7.10-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-Connector-0.7.10-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-Connector-0.7.10-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -48,7 +48,7 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 
 1. **准备电脑。** 安装并登录 [官方 Codex](https://chatgpt.com/codex)，再打开 Codex Pocket 电脑连接器。
 2. **连接 Codex。** 选择「局域网」或「公网」，点击连接。自动识别失败时，在第二步手动选择 Codex 安装位置。连接成功后才能进入第三步。
-3. **手机扫码。** 局域网点「局域网直连 · 无需账号审批」；默认公网先登录已批准账号。自建中继点击登录页或「设置」顶部的「自建中继 / 切换服务」，扫码并确认后登录该服务账号。
+3. **手机选择连接方式并扫码。** 首页选择与电脑一致的连接方式；局域网直接进入扫码，默认公网先登录已批准账号。自建中继点击手机首页「自建中继 → 扫码配置服务」，确认切换后登录该服务账号。
 4. **电脑确认。** 在电脑允许这台手机。项目与对话加载后，即可从手机继续工作。
 
 电脑端不需要填写聊天 ID，也不需要服务器 root 密码。使用期间保持电脑、Codex 和连接器运行。
@@ -80,7 +80,7 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
 
-**0.7.9** 提高自建中继入口的可见性：电脑首页直接显示自建中继卡片，手机登录页和设置页顶部提供扫码切换服务入口。保留 0.7.8 的紧凑首页与桌面跟随同步。电脑和手机都需更新。详见 [更新说明](docs/patch-0.7.9.md) 与 [验收记录](docs/verification-0.7.9.md)。Windows 11 仍待实机验收。
+**0.7.10** 手机连接首页改为公网、局域网、自建中继三个卡片；选择后分别进入登录、直连指引或自建扫码页面，均可返回重选。已连接用户可从「设置 → 选择连接方式」进入。保留紧凑工作空间和桌面跟随同步。详见 [更新说明](docs/patch-0.7.10.md) 与 [验收记录](docs/verification-0.7.10.md)。Windows 11 仍待实机验收。
 
 ## 开发与自建
 

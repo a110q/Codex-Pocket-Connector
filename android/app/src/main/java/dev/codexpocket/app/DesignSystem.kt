@@ -85,6 +85,9 @@ val PocketGreen = Color(0xFF16AD70)
             "停止"->drawRoundRect(color,Offset(s*.25f,s*.25f),Size(s*.5f,s*.5f),CornerRadius(s*.06f))
             "检查"->{line(.2f,.52f,.4f,.72f);line(.4f,.72f,.8f,.28f)}
             "网页"->{drawCircle(color,s*.38f,style=stroke);drawOval(color,Offset(.33f*s,.12f*s),Size(.34f*s,.76f*s),style=stroke);line(.13f,.5f,.87f,.5f)}
+            "局域网"->{drawArc(color,215f,110f,false,Offset(s*.06f,s*.16f),Size(s*.88f,s*.88f),style=stroke);drawArc(color,215f,110f,false,Offset(s*.23f,s*.36f),Size(s*.54f,s*.54f),style=stroke);drawArc(color,215f,110f,false,Offset(s*.4f,s*.56f),Size(s*.2f,s*.2f),style=stroke);drawCircle(color,s*.04f,Offset(s*.5f,s*.86f))}
+            "中继"->{rect(.15f,.12f,.7f,.31f,.06f);rect(.15f,.57f,.7f,.31f,.06f);drawCircle(color,s*.025f,Offset(s*.3f,s*.275f));drawCircle(color,s*.025f,Offset(s*.3f,s*.725f));line(.6f,.275f,.71f,.275f);line(.6f,.725f,.71f,.725f)}
+            "扫码"->{line(.13f,.35f,.13f,.13f);line(.13f,.13f,.35f,.13f);line(.65f,.13f,.87f,.13f);line(.87f,.13f,.87f,.35f);line(.87f,.65f,.87f,.87f);line(.87f,.87f,.65f,.87f);line(.35f,.87f,.13f,.87f);line(.13f,.87f,.13f,.65f);rect(.3f,.3f,.13f,.13f,.01f);rect(.57f,.3f,.13f,.13f,.01f);rect(.3f,.57f,.13f,.13f,.01f);line(.57f,.57f,.7f,.57f);line(.7f,.57f,.7f,.7f)}
             "文件"->{val p=Path().apply{moveTo(.23f*s,.12f*s);lineTo(.59f*s,.12f*s);lineTo(.8f*s,.33f*s);lineTo(.8f*s,.88f*s);lineTo(.23f*s,.88f*s);close()};drawPath(p,color,style=stroke);line(.58f,.13f,.58f,.34f);line(.58f,.34f,.79f,.34f)}
             "编辑"->{val p=Path().apply{moveTo(.16f*s,.65f*s);lineTo(.68f*s,.14f*s);lineTo(.85f*s,.31f*s);lineTo(.34f*s,.82f*s);lineTo(.13f*s,.87f*s);close()};drawPath(p,color,style=stroke);line(.57f,.25f,.74f,.42f)}
             "图片"->{rect(.1f,.17f,.8f,.66f);drawCircle(color,s*.06f,Offset(s*.32f,s*.36f));line(.13f,.76f,.41f,.51f);line(.41f,.51f,.57f,.65f);line(.57f,.65f,.72f,.46f);line(.72f,.46f,.87f,.67f)}

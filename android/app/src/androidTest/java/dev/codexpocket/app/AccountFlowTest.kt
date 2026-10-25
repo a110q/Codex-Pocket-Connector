@@ -26,6 +26,7 @@ class AccountFlowTest {
     private lateinit var pocket:PocketModel
     private lateinit var lanPocket:PocketModel
     private var scanRequests=0
+    private var page by mutableStateOf("account")
     private var local by mutableStateOf(false)
     private val password="Local-ui-test-password-060"
     @Before fun setup(){
@@ -35,22 +36,31 @@ class AccountFlowTest {
         val store=SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc");backup=store.load();store.save(JSONObject().put("deviceId",args.getString("accountDevice")))
         pocketBackup=SecureStore(context).load();SecureStore(context).save(JSONObject().put("appearance","light"))
         compose.runOnUiThread{pocket=PocketModel(context);account=AccountModel(context,api){auth->if(auth!=null)pocket.authorizeAccount(auth)else pocket.clearAccountAccess()};lanPocket=PocketModel(context,"qa-lan.enc",true);lanPocket.forget()}
-        compose.setContent{PocketTheme("light"){if(local)PocketApp(lanPocket,{},null,{},onExitLan={lanPocket.stop();local=false},onSwitchService={scanRequests++})else if(account.canUse)PocketApp(pocket,{},null,{},account,onSwitchService={scanRequests++})else AccountGate(account,onScan={scanRequests++},onLan={local=true;lanPocket.start()})}}
+        compose.setContent{PocketTheme("light"){
+            when(page){
+                "choose"->ConnectionChooser(onCloud={page="account"},onLan={page="lan"},onSelfHost={page="selfhost"})
+                "lan"->ConnectionGuide(true,onBack={page="choose"},onScan={local=true;page="account";lanPocket.start()})
+                "selfhost"->ConnectionGuide(false,onBack={page="choose"},onScan={scanRequests++})
+                else->if(local)PocketApp(lanPocket,{},null,{},onExitLan={lanPocket.stop();local=false},onSwitchService={page="choose"})else if(account.canUse)PocketApp(pocket,{},null,{},account,onSwitchService={page="choose"})else AccountGate(account,onBack={page="choose"})
+            }
+        }}
     }
     @After fun cleanup(){try{compose.runOnUiThread{account.stop();pocket.stop();lanPocket.stop()}}finally{SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc").save(backup);SecureStore(context).save(pocketBackup)}}
     private fun until(condition:()->Boolean){compose.waitUntil(15000){var value=false;compose.runOnUiThread{value=condition()};value}}
     private fun shot(name:String){compose.waitForIdle();val values=ContentValues().apply{put(MediaStore.Images.Media.DISPLAY_NAME,"account-$name-${System.currentTimeMillis()}.png");put(MediaStore.Images.Media.MIME_TYPE,"image/png");put(MediaStore.Images.Media.RELATIVE_PATH,"Pictures/CodexPocket-${BuildConfig.VERSION_NAME}");put(MediaStore.Images.Media.IS_PENDING,1)};val uri=context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,values)!!;context.contentResolver.openOutputStream(uri)!!.use{instrument.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it)};context.contentResolver.update(uri,ContentValues().apply{put(MediaStore.Images.Media.IS_PENDING,0)},null,null)}
-    @Test fun selfHostedServiceEntryIsVisibleBeforeLoginAndFromConnectedWorkspaceSettings(){
-        val entry="自建中继 / 切换服务"
-        compose.onNodeWithText(entry).assertIsDisplayed().assertHasClickAction()
-        shot("08-service-entry-login")
-        compose.onNodeWithText(entry).performClick()
+    @Test fun connectionChoicesAndWorkspaceSettingsKeepSelfHostingReachable(){
+        compose.onNodeWithContentDescription("返回选择连接方式").performClick()
+        listOf("公网使用","局域网使用","自建中继").forEach{compose.onNodeWithText(it).assertIsDisplayed().assertHasClickAction()}
+        shot("08-connection-choices")
+        compose.onNodeWithText("自建中继",substring=false).performClick()
+        compose.onNodeWithText("扫码配置服务").assertIsDisplayed().performClick()
         Assert.assertEquals(1,scanRequests)
-        compose.onNodeWithText("局域网直连 · 无需账号审批").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("返回选择连接方式").performClick()
+        compose.onNodeWithText("局域网使用").performClick()
+        compose.onNodeWithText("扫码连接电脑").performClick()
         compose.onNodeWithContentDescription("打开设置").performClick()
-        compose.onNodeWithText(entry).assertIsDisplayed().assertHasClickAction().performClick()
-        Assert.assertEquals(2,scanRequests)
-        shot("09-service-entry-settings")
+        compose.onNodeWithText("选择连接方式").assertIsDisplayed().assertHasClickAction().performClick()
+        listOf("公网使用","局域网使用","自建中继").forEach{compose.onNodeWithText(it).assertIsDisplayed()}
     }
     @Test fun realRegistrationApprovalRoleMenusSecurityAlertAndDisable(){
         val username="native_${System.currentTimeMillis()}"
@@ -139,7 +149,9 @@ class AccountFlowTest {
         val config=JSONObject(pairing);Assert.assertTrue(PocketConnection.isLanPairing(config))
         Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://203.0.113.10:24443")))
         Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://192.168.1.300:24444")))
-        compose.onNodeWithText("局域网直连 · 无需账号审批").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("返回选择连接方式").performClick()
+        compose.onNodeWithText("局域网使用").performClick()
+        compose.onNodeWithText("扫码连接电脑").performClick()
         compose.runOnUiThread{lanPocket.pair(pairing)}
         until{lanPocket.profile?.optBoolean("pairSubmitted")==true}
         Assert.assertNull(lanPocket.error)

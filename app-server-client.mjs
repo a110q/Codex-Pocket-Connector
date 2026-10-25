@@ -56,7 +56,7 @@ export class AppServerClient extends EventEmitter {
       }
     });
     try {
-      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: '0.7.9' }, capabilities: { experimentalApi: true } });
+      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: '0.7.10' }, capabilities: { experimentalApi: true } });
       this.send({ method: 'initialized', params: {} });
     } catch (error) { this.close(); throw error; }
   }

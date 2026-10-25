@@ -25,32 +25,32 @@ import java.util.Locale
 fun accountStateLabel(value:String)=when(value){"active"->"正常使用";"pending"->"等待审批";"rejected"->"申请未通过";"disabled"->"账号已停用";"expired"->"使用已到期";else->"待验证"}
 fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).format(Date(value))
 
-@Composable fun RelayServiceEntry(onClick:()->Unit,enabled:Boolean=true){
+@Composable fun ConnectionMethodEntry(onClick:()->Unit,enabled:Boolean=true){
     Surface(onClick=onClick,enabled=enabled,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.primaryContainer,border=BorderStroke(1.dp,MaterialTheme.colorScheme.primary.copy(alpha=.22f))){
         Row(Modifier.fillMaxWidth().heightIn(min=96.dp).padding(16.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){
             Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(12.dp),modifier=Modifier.size(40.dp)){
                 Box(contentAlignment=Alignment.Center){CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("网页",Modifier.size(24.dp))}}
             }
             Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)){
-                Text("自建中继 / 切换服务",fontSize=16.sp,lineHeight=23.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onPrimaryContainer)
-                Text("在电脑配置中继后，点这里扫码连接",fontSize=13.sp,lineHeight=20.sp,color=MaterialTheme.colorScheme.onPrimaryContainer)
+                Text("选择连接方式",fontSize=16.sp,lineHeight=23.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onPrimaryContainer)
+                Text("公网、局域网或自建中继",fontSize=13.sp,lineHeight=20.sp,color=MaterialTheme.colorScheme.onPrimaryContainer)
             }
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("展开",Modifier.size(22.dp))}
         }
     }
 }
 
-@Composable fun AccountGate(account:AccountModel,onScan:(()->Unit)?=null,onBuiltin:(()->Unit)?=null,onLan:(()->Unit)?=null){
+@Composable fun AccountGate(account:AccountModel,onBack:(()->Unit)?=null){
     var register by rememberSaveable{mutableStateOf(false)}
     var username by rememberSaveable{mutableStateOf("")};var password by remember{mutableStateOf("")}
     var displayName by rememberSaveable{mutableStateOf("")};var reason by rememberSaveable{mutableStateOf("")}
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(26.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+    val isBuiltin=AccountApi.same(account.api.defaults,AccountApi.bundled(LocalContext.current))
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
+        onBack?.let{ConnectionSetupHeader(if(isBuiltin)"公网使用"else"自建中继账号",it)}
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(26.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
         Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){CodexMark(Modifier.size(44.dp));Text("Codex Pocket",fontSize=26.sp,fontWeight=FontWeight.Bold)}
-        Text("连接你的电脑，随时继续工作。",color=MaterialTheme.colorScheme.onSurfaceVariant)
-        val isBuiltin=AccountApi.same(account.api.defaults,AccountApi.bundled(LocalContext.current))
-        onScan?.let{RelayServiceEntry(it,enabled=!account.busy)}
+        Text("登录后，扫描电脑配对码即可连接。",fontSize=14.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         Text(if(isBuiltin)"默认公网服务"else"自建中继：${account.api.defaults.getString("relay")}",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        if(!isBuiltin&&onBuiltin!=null)TextButton(onClick=onBuiltin,enabled=!account.busy){Text("返回默认公网服务")}
         account.error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
         account.notice?.let{Text(it,color=MaterialTheme.colorScheme.primary)}
         if(account.loggedIn){
@@ -75,10 +75,10 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
             }
             Button(onClick={if(register)account.register(username,password,displayName,reason)else account.login(username,password)},enabled=!account.busy&&username.length>=3&&password.length>=10&&(!register||(displayName.isNotBlank()&&reason.isNotBlank())),modifier=Modifier.fillMaxWidth().height(52.dp),shape=RoundedCornerShape(12.dp)){Text(if(account.busy)"正在处理…"else if(register)"提交申请"else"登录")}
             TextButton(onClick={register=!register;account.error=null;account.notice=null},modifier=Modifier.fillMaxWidth()){Text(if(register)"已有账号，前往登录"else"没有账号，申请使用")}
-            Text("首次申请由管理员批准。手机和电脑共用同一个账号。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("首次申请由当前服务的管理员批准。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if(onLan!=null){HorizontalDivider();OutlinedButton(onClick=onLan,modifier=Modifier.fillMaxWidth().heightIn(min=50.dp)){Text("局域网直连 · 无需账号审批")};Text("手机与电脑连接同一 Wi-Fi，扫描电脑的局域网配对码，并在电脑上确认。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
         Spacer(Modifier.height(20.dp));Text("Codex Pocket  ${BuildConfig.VERSION_NAME}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
