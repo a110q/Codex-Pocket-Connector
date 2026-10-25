@@ -111,6 +111,12 @@ class ConnectionRecoveryTest {
         @Volatile var denyPair=false
         @Volatile var transientPairStatus=0
         val messages=CopyOnWriteArrayList<JSONObject>()
+        val commands=CopyOnWriteArrayList<JSONObject>()
+        var extra:((String,JSONObject)->JSONObject?)?=null
+        var capabilities=JSONObject()
+        var accountResponse:JSONObject?=null
+        val accountReads=AtomicInteger()
+        private val channels=java.util.concurrent.ConcurrentHashMap<WebSocket,String>()
         val imageBytes=java.io.ByteArrayOutputStream()
         var dropFirstHello=false;var ignoreMessages=false;var rejectAuthorization=false
         @Volatile var holdPairStatus=false
@@ -126,7 +132,8 @@ class ConnectionRecoveryTest {
             val tls=HandshakeCertificates.Builder().heldCertificate(cert).build()
             server.useHttps(tls.sslSocketFactory(),false)
             server.dispatcher=object:okhttp3.mockwebserver.Dispatcher(){override fun dispatch(request:okhttp3.mockwebserver.RecordedRequest):MockResponse{
-                if(rejectAuthorization)return MockResponse().setResponseCode(401)
+                if(rejectAuthorization)return MockResponse().setResponseCode(401).setBody("{}")
+                if(request.path=="/api/account/me"){accountReads.incrementAndGet();return MockResponse().setBody((accountResponse?:JSONObject()).toString())}
                 if(request.path=="/api/pair") {postedPair=true;return MockResponse().setBody("{\"state\":\"pending\"}")}
                 if(request.path=="/api/pair/status"){
                     if(simulatePairing){
@@ -143,13 +150,13 @@ class ConnectionRecoveryTest {
                     override fun onMessage(webSocket:WebSocket,text:String){
                         val payload=codec.decode(text);val channel=payload.getString("channel")
                         if(payload.optString("type")=="hello"){
-                            val n=hellos.incrementAndGet();if(dropFirstHello&&n==1)return
-                            webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",true)));return
+                            channels[webSocket]=channel;val n=hellos.incrementAndGet();if(dropFirstHello&&n==1)return
+                            webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",true).put("capabilities",capabilities)));return
                         }
                         val action=payload.getString("action");actions.add(action)
                         if(action=="message.send"){messages.add(payload.getJSONObject("args"));if(ignoreMessages)return}
-                        val args=payload.getJSONObject("args")
-                        val result=when(action){
+                        val args=payload.getJSONObject("args");commands.add(payload)
+                        val result=extra?.invoke(action,args)?:when(action){
                             "image.upload.start"->JSONObject().put("nextOffset",imageBytes.size())
                             "image.upload.chunk"->{Assert.assertEquals(imageBytes.size(),args.getInt("offset"));imageBytes.write(android.util.Base64.decode(args.getString("data"),android.util.Base64.DEFAULT));JSONObject().put("nextOffset",imageBytes.size())}
                             "image.upload.finish"->JSONObject().put("done",true)
@@ -168,6 +175,7 @@ class ConnectionRecoveryTest {
             val pin=Encoding.hex(MessageDigest.getInstance("SHA-256").digest(cert.certificate.encoded))
             profile=JSONObject().put("relay",server.url("/").toString().trimEnd('/')).put("hostId",host).put("key",key).put("pin",pin).put("mobileToken",Encoding.secret()).put("approved",true)
         }
+        fun snapshot(value:JSONObject){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type","thread.updated").put("threadId",value.getJSONObject("thread").getString("id")).put("data",value))))}}
         fun status(online:Boolean){sockets.last().send(JSONObject().put("type","status").put("peerOnline",online).toString())}
         fun close(){releasePairStatus.countDown();try{sockets.forEach{it.close(1000,"Local test finished")}}finally{server.shutdown()}}
     }

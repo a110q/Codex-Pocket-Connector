@@ -25,4 +25,12 @@ test('actual encrypted companion routes multi-chunk images and text into one ada
   await request('message.send',args,id);await request('message.send',args,id);
   const messages=calls.filter(c=>c.action==='message.send');assert.equal(messages.length,1);assert.equal(messages[0].args.text,args.text);assert.equal(messages[0].args.clientUserMessageId,id);assert.equal(messages[0].args.imagePaths.length,1);assert(readFileSync(messages[0].args.imagePaths[0]).equals(bytes));
   await assert.rejects(request('message.send',{threadId:'other',text:'not this chat',imageUploadIds:[uploadId]}),/不属于/);
+  const fileId=randomUUID(),content=Buffer.alloc(400*1024,65);
+  await request('file.upload.start',{uploadId:fileId,threadId:'qa',name:'report.txt',mime:'text/plain',size:content.length,sha256:digest(content)});
+  for(let offset=0;offset<content.length;offset+=192*1024)await request('file.upload.chunk',{uploadId:fileId,offset,data:content.subarray(offset,offset+192*1024).toString('base64')});
+  await request('file.upload.finish',{uploadId:fileId});const fileCommand=randomUUID();const fileArgs={threadId:'qa',text:'review attached',fileUploadIds:[fileId],files:[{name:'forged',path:'/private/forged'}]};
+  await request('message.send',fileArgs,fileCommand);await request('message.send',fileArgs,fileCommand);
+  const fileMessages=calls.filter(c=>c.action==='message.send'&&c.args.clientUserMessageId===fileCommand);assert.equal(fileMessages.length,1);assert.equal(fileMessages[0].args.files[0].name,'report.txt');assert(readFileSync(fileMessages[0].args.files[0].path).equals(content));
+  await assert.rejects(request('message.send',{threadId:'other',text:'',fileUploadIds:[fileId]}),/不属于/);
+
 });

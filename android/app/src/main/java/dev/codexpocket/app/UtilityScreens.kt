@@ -78,6 +78,7 @@ import androidx.compose.ui.window.DialogProperties
         if(onEnterLan!=null)OutlinedButton(onClick=onEnterLan,modifier=Modifier.fillMaxWidth()){Text("切换到局域网直连")}
         UtilityRow("我的电脑","${model.computers.size} 台已添加 · 点击切换","电脑",onComputer)
         UtilityRow("任务动态","查看运行中、等待操作和出错的对话","任务",onTasks)
+        TaskNotificationSettings()
         Text("外观",Modifier.padding(top=12.dp,start=4.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
             FlowRow(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
@@ -88,7 +89,7 @@ import androidx.compose.ui.window.DialogProperties
         Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
             Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
                 Text("配对信息与聊天缓存加密保存在手机上。",fontSize=14.sp)
-                Text("回到 App 会重新连接并读取状态。当前没有锁屏推送。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("回到 App 会重新连接并读取状态。可开启后台任务提醒，在锁屏时接收任务动态。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("要撤销手机访问权限，请在电脑配对页面撤销设备。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -99,7 +100,7 @@ import androidx.compose.ui.window.DialogProperties
 }
 
 @Composable fun NewTaskDialog(model:PocketModel,preset:String?,onDismiss:()->Unit,create:(String,String?,String?)->Unit){
-    val pickImages=rememberImagePicker(model,"__new__")
+    val pickImages=rememberImagePicker(model,"__new__");val pickFiles=rememberFilePicker(model,"__new__")
     var text by rememberSaveable{mutableStateOf("")};var project by rememberSaveable{mutableStateOf(preset)};var selectedModel by rememberSaveable{mutableStateOf<String?>(null)}
     Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)){
         Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background){
@@ -112,10 +113,12 @@ import androidx.compose.ui.window.DialogProperties
                     DropdownPicker("项目",model.projects.map{it.getString("projectId") to it.label()},project,"独立会话"){project=it}
                     DropdownPicker("模型",model.models.map{it.getString("id") to it.getString("id")},selectedModel,"使用电脑默认模型"){selectedModel=it}
                     OutlinedButton(onClick=pickImages,enabled=!model.busy){PocketIcon("图片");Spacer(Modifier.width(8.dp));Text("添加图片（最多 4 张）")}
+                    OutlinedButton(onClick=pickFiles,enabled=!model.busy&&model.supportsFiles){PocketIcon("文件");Spacer(Modifier.width(8.dp));Text("添加文件（单个最多 50 MB）")}
                     OutgoingImageStrip(model,"__new__")
+                    OutgoingFileStrip(model,"__new__")
                     OutlinedTextField(text,{text=it},placeholder={Text("描述你希望 Codex 完成的工作…",fontSize=14.sp)},modifier=Modifier.fillMaxWidth().heightIn(min=180.dp).semantics{contentDescription="新对话指令"},shape=RoundedCornerShape(14.dp))
                 }
-                Button(onClick={create(text,project,selectedModel)},enabled=(text.isNotBlank()||model.imagesFor("__new__").isNotEmpty())&&model.connected&&!model.busy&&model.pendingOperation==null,modifier=Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=14.dp).height(52.dp),shape=RoundedCornerShape(12.dp)){Text("开始对话",fontWeight=FontWeight.SemiBold);Spacer(Modifier.width(8.dp));PocketIcon("前往",Modifier.size(18.dp))}
+                Button(onClick={create(text,project,selectedModel)},enabled=(text.isNotBlank()||model.imagesFor("__new__").isNotEmpty()||model.filesFor("__new__").isNotEmpty())&&model.connected&&!model.busy&&model.pendingOperation==null,modifier=Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=14.dp).height(52.dp),shape=RoundedCornerShape(12.dp)){Text("开始对话",fontWeight=FontWeight.SemiBold);Spacer(Modifier.width(8.dp));PocketIcon("前往",Modifier.size(18.dp))}
             }
         }
     }

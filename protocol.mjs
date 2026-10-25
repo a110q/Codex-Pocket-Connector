@@ -49,16 +49,17 @@ export class CipherChannel {
   }
 }
 
-export const ACTIONS = new Set(['image.upload.start', 'image.upload.chunk', 'image.upload.finish', 'image.upload.cancel', 'threads.list', 'projects.list', 'models.list', 'thread.read', 'thread.history', 'message.read', 'thread.create', 'message.send', 'turn.stop', 'approval.respond', 'file.read', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete', 'preview.open', 'preview.close', 'preview.connect', 'preview.write', 'preview.read', 'preview.disconnect']);
+export const ACTIONS = new Set(['file.upload.start', 'file.upload.chunk', 'file.upload.finish', 'file.upload.cancel', 'image.upload.start', 'image.upload.chunk', 'image.upload.finish', 'image.upload.cancel', 'threads.list', 'projects.list', 'models.list', 'thread.read', 'thread.history', 'message.read', 'thread.create', 'message.send', 'turn.stop', 'approval.respond', 'file.read', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete', 'preview.open', 'preview.close', 'preview.connect', 'preview.write', 'preview.read', 'preview.disconnect']);
 export const MUTATIONS = new Set(['thread.create', 'message.send', 'turn.stop', 'approval.respond', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete']);
 export function validateCommand(command) {
   if (!command || !/^[a-f0-9-]{36}$/i.test(command.id ?? '') || !ACTIONS.has(command.action)) throw new Error('Unsupported request');
   if (!Number.isFinite(command.sentAt) || Math.abs(Date.now() - command.sentAt) > 5 * 60_000) throw new Error('请求已过期，请重新操作');
   if (!command.args || typeof command.args !== 'object' || Array.isArray(command.args)) throw new Error('Invalid request arguments');
   if (command.action === 'message.send' || command.action === 'thread.create') {
-    if (typeof command.args.text !== 'string' || (!command.args.text.trim() && !command.args.imageUploadIds?.length) || command.args.text.length > 100_000) throw new Error('消息不能为空或过长');
+    if (typeof command.args.text !== 'string' || (!command.args.text.trim() && !command.args.imageUploadIds?.length && !command.args.fileUploadIds?.length) || command.args.text.length > 100_000) throw new Error('消息不能为空或过长');
   }
   if (command.args.imageUploadIds !== undefined && (!Array.isArray(command.args.imageUploadIds) || command.args.imageUploadIds.length > 4 || command.args.imageUploadIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)))) throw new Error('图片上传标识无效');
+  if (command.args.fileUploadIds !== undefined && (!Array.isArray(command.args.fileUploadIds) || command.args.fileUploadIds.length > 4 || command.args.fileUploadIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)))) throw new Error('文件上传标识无效');
   if (['thread.read','thread.history','message.read','message.send','turn.stop','approval.respond','file.read','thread.settings.update','thread.archive','thread.unarchive','thread.delete'].includes(command.action) && typeof command.args.threadId !== 'string') throw new Error('Missing thread');
   return command;
 }

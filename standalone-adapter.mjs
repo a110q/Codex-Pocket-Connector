@@ -1,3 +1,5 @@
+import { approvalResponse, APPROVAL_METHODS } from './approvals.mjs';
+import { attachmentText } from './file-uploads.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -212,10 +214,11 @@ export class StandaloneAdapter extends DesktopAdapter {
   async sendMessageLocked(args) {
     let threadId, text;
     try {
-      threadId = string(args.threadId, '对话 ID', 200); text = args.imagePaths?.length && !(args.text ?? args.prompt)?.trim() ? '' : string(args.text ?? args.prompt, '消息');
+      threadId = string(args.threadId, '对话 ID', 200); text = (args.imagePaths?.length || args.files?.length) && !(args.text ?? args.prompt)?.trim() ? '' : string(args.text ?? args.prompt, '消息');
       if (args.hostId && args.hostId !== 'local') throw new Error('此连接仅支持本机对话。');
     } catch (error) { throw notSubmitted(error); }
-    const input = [...(text ? [{ type: 'text', text, text_elements: [] }] : []), ...(args.imagePaths ?? []).map(path => ({ type: 'localImage', path }))];
+    const inputText=attachmentText(text,args.files);
+    const input = [...(inputText ? [{ type: 'text', text:inputText, text_elements: [] }] : []), ...(args.imagePaths ?? []).map(path => ({ type: 'localImage', path }))];
     let owner = !this.ownedThreads.has(threadId) ? await this.desktopOwner(threadId) : null;
     if (!owner) {
       try { await this.resume(threadId); }
@@ -237,7 +240,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       let method, params;
       if (snapshot.thread.activeTurnId) {
         method = 'thread-follower-steer-turn';
-        params = { conversationId: threadId, input, clientUserMessageId, restoreMessage: { id: clientUserMessageId, text, cwd: snapshot.thread.cwd, createdAt: Date.now(), context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: (args.imagePaths ?? []).map(path => ({ path })), workspaceRoots: snapshot.thread.cwd ? [snapshot.thread.cwd] : [] } } };
+        params = { conversationId: threadId, input, clientUserMessageId, restoreMessage: { id: clientUserMessageId, text, cwd: snapshot.thread.cwd, createdAt: Date.now(), context: { prompt: text, addedFiles: [], fileAttachments: (args.files ?? []).map(file => ({ label:file.name, path:file.path, fsPath:file.path })), ideContext: null, imageAttachments: (args.imagePaths ?? []).map(path => ({ path })), workspaceRoots: snapshot.thread.cwd ? [snapshot.thread.cwd] : [] } } };
       } else {
         method = 'thread-follower-start-turn';
         params = { conversationId: threadId, turnStart: { request: { threadId, input, clientUserMessageId }, context: { inheritThreadSettings: true } } };
@@ -259,8 +262,8 @@ export class StandaloneAdapter extends DesktopAdapter {
   async createThread(args) {
     let text, title, cwd, project;
     try {
-      text = args.imagePaths?.length && !(args.text ?? args.prompt)?.trim() ? '' : string(args.text ?? args.prompt, '消息');
-      title = args.title ? string(args.title, '标题', 200) : text.trim().split('\n')[0].slice(0, 80) || '图片对话';
+      text = (args.imagePaths?.length || args.files?.length) && !(args.text ?? args.prompt)?.trim() ? '' : string(args.text ?? args.prompt, '消息');
+      title = args.title ? string(args.title, '标题', 200) : text.trim().split('\n')[0].slice(0, 80) || (args.files?.length ? '文件对话' : '图片对话');
       if (args.projectId) {
         project = (await this.listProjects()).projects.find(p => p.projectId === args.projectId);
         if (!project?.path) throw new Error('项目不存在，请刷新后重试。');
@@ -284,7 +287,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       this.scheduleRelease(threadId);
       const turn = await this.withThread(threadId, async () => {
         await server.request('thread/name/set', { threadId, name: title });
-        return server.request('turn/start', { threadId, input: [...(text ? [{ type: 'text', text, text_elements: [] }] : []), ...(args.imagePaths ?? []).map(path => ({ type: 'localImage', path }))], ...(args.clientUserMessageId ? { clientUserMessageId: args.clientUserMessageId } : {}), ...(args.thinking ? { effort: args.thinking } : {}) });
+        return server.request('turn/start', { threadId, input: [...(attachmentText(text,args.files) ? [{ type: 'text', text:attachmentText(text,args.files), text_elements: [] }] : []), ...(args.imagePaths ?? []).map(path => ({ type: 'localImage', path }))], ...(args.clientUserMessageId ? { clientUserMessageId: args.clientUserMessageId } : {}), ...(args.thinking ? { effort: args.thinking } : {}) });
       });
       this.announceThread(threadId);
       const timer = setTimeout(() => { this.catalogRefreshTimers.delete(threadId); this.announceThread(threadId); }, 1000);
@@ -322,6 +325,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   onServerEvent({ method, params }) {
     const threadId = params?.threadId ?? params?.thread?.id;
+    if(method==='serverRequest/resolved')for(const [key,request]of this.approvals)if(String(request.id)===String(params?.requestId)&&request.params?.threadId===threadId)this.approvals.delete(key);
     if (method === 'thread/status/changed' && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId);
     if (method === 'turn/completed' && this.ownedThreads.has(threadId)) {
       for (const [id, request] of this.approvals) if (request.params?.threadId === threadId) this.approvals.delete(id);
@@ -335,8 +339,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.refreshTimers.set(threadId, timer);
   }
   onServerRequest(message, server = this.server) {
-    const allowed = ['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/tool/requestUserInput'];
-    if (!allowed.includes(message.method)) {
+    if (!APPROVAL_METHODS.has(message.method)) {
       server.send({ id: message.id, error: { code: -32601, message: 'Codex Pocket does not support this request type.' } }); return;
     }
     this.approvals.set(`${message.params.threadId}:${message.id}`, { ...message, completed: false });
@@ -405,16 +408,7 @@ export class StandaloneAdapter extends DesktopAdapter {
         const pending = this.approvals.get(`${args.threadId}:${args.requestId}`) ?? [...this.approvals.values()].find(p => String(p.id) === String(args.requestId));
         if (!pending) return super.call(action, args);
         if (pending.params.threadId !== args.threadId) throw new Error('权限请求属于其他对话');
-        let result;
-        if (pending.method === 'item/tool/requestUserInput') {
-          const answers = args.response?.answers;
-          if (!answers || typeof answers !== 'object' || Array.isArray(answers) || !Object.keys(answers).length) throw new Error('请输入回答');
-          const ids = new Set((pending.params.questions ?? []).map(q => q.id));
-          for (const [id, answer] of Object.entries(answers)) if (!ids.has(id) || !Array.isArray(answer?.answers) || answer.answers.some(value => typeof value !== 'string' || value.length > 20000)) throw new Error('回答格式无效');
-          result = { answers };
-        } else {
-          if (!['accept','acceptForSession','decline','cancel'].includes(args.decision)) throw new Error('授权选项无效'); result = { decision: args.decision };
-        }
+        const result=approvalResponse(pending,args);
         this.serverFor(args.threadId).send({ id: pending.id, result }); this.approvals.delete(`${args.threadId}:${pending.id}`); this.onServerEvent({ params: pending.params }); return { submitted: true };
       }
       default: return super.call(action, args);

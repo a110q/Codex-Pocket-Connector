@@ -70,7 +70,7 @@ cd android
 
 `androidTest` 内部分仪器测试需要模拟器和隔离中继夹具，不应连接正式服务。编译、单元测试和静态检查不等于实机交互验收。
 
-Node 测试包含真实 TLS / WebSocket 与加密传输、图片分片和断点恢复、自建服务验证与身份隔离、消息去重、回执核对和配对取消。
+Node 测试包含真实 TLS / WebSocket 与加密传输、图片/文件分片和断点恢复、权限范围验证与 MCP 表单、后台提醒状态转换、自建服务验证与身份隔离、消息去重、回执核对和配对取消。
 
 安卓不依赖外部夹具的仪器测试可以单独运行：
 
@@ -100,6 +100,8 @@ desktop-adapter.mjs       桌面 IPC 适配
 standalone-adapter.mjs    Codex App Server 适配
 relay-profiles.mjs        自建中继校验与服务身份隔离
 image-uploads.mjs         加密通道中的图片分片接收与校验
+file-uploads.mjs          普通文件上传、校验与本地附件引用
+approvals.mjs             目录/网络权限范围及 MCP 响应校验
 .private/                本机私密数据，禁止提交
 releases/                本地构建产物，只发布到 Release
 ```

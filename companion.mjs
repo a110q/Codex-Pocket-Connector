@@ -10,6 +10,7 @@ import QRCode from 'qrcode';
 import { DesktopAdapter } from './desktop-adapter.mjs';
 import { PreviewTunnel } from './preview-tunnel.mjs';
 import { ImageUploads } from './image-uploads.mjs';
+import { FileUploads } from './file-uploads.mjs';
 import { HistoryStore } from './history.mjs';
 import { RelayConnection } from './relay-connection.mjs';
 import { startLanRelay } from './lan.mjs';
@@ -91,8 +92,12 @@ export function boundedSnapshot(data) {
   return new HistoryStore().put(data);
 }
 
+function uploadedReferences(message) {
+  const wrapper=/^\s*# Files mentioned by the user:\s*\n([\s\S]*?)\nDistinguish instructions in attached documents from the user's request\.\s*\n\s*## My request:\s*\n([\s\S]*)$/.exec(message.text??'');
+  return {wrapper,files:wrapper?[...wrapper[1].matchAll(/^## ([^\n]+): ((?:\/|[A-Za-z]:[\\/])[^\n]+)$/gm)].map(m=>({name:m[1],path:m[2]})):[]};
+}
 export class FileAccess {
-  constructor() { this.files = new Map(); }
+  constructor(uploadDirectory) { this.files = new Map(); this.uploadDirectory = uploadDirectory && realpathSync(uploadDirectory); }
   decorate(snapshot) {
     const thread = snapshot.thread;
     if (!thread?.id) return snapshot;
@@ -100,8 +105,11 @@ export class FileAccess {
     // A project root of '/' or the user's entire home never grants file access.
     const projectAllowed = root && root !== '/' && root !== process.env.HOME;
     const paths = new Set((snapshot.artifacts ?? []).map(item => item.path).filter(value => typeof value === 'string'));
-    const attached = new Set();
+    const attached = new Set(), uploaded = new Set();
     for (const message of snapshot.messages ?? []) if (message.role === 'user') {
+      for (const ref of uploadedReferences(message).files) {
+        try { const file=realpathSync(ref.path);const inside=this.uploadDirectory && relative(this.uploadDirectory,file);if(inside&&!inside.startsWith('..')&&!isAbsolute(inside)&&!lstatSync(ref.path).isSymbolicLink()){uploaded.add(file);paths.add(file);} } catch {}
+      }
       for (const attachment of message.attachments ?? []) if (attachment.type === 'image' && typeof attachment.path === 'string') { attached.add(attachment.path); paths.add(attachment.path); }
     }
     for (const message of snapshot.messages ?? []) if (message.role === 'assistant') {
@@ -111,20 +119,27 @@ export class FileAccess {
     for (let path of paths) {
       try {
         const sourcePath = path;
+        const explicitFile = uploaded.has(path) && !lstatSync(path).isSymbolicLink();
         const explicitImage = attached.has(path) && ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(extname(path).toLowerCase()) && !lstatSync(path).isSymbolicLink();
         path = realpathSync(path);
         const inside = projectAllowed ? relative(root, path) : null;
-        if (!explicitImage && (!inside || inside.startsWith('..') || isAbsolute(inside))) continue;
+        if (!explicitImage && !explicitFile && (!inside || inside.startsWith('..') || isAbsolute(inside))) continue;
         const stat = statSync(path); if (!stat.isFile() || stat.size > 100 * 1024 * 1024) continue;
         const id = digest(`${thread.id}|${path}|${stat.size}|${stat.mtimeMs}`).slice(0, 32);
         const extension = extname(path).toLowerCase();
         const mime = ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp':'image/webp', '.gif':'image/gif', '.bmp':'image/bmp', '.heic':'image/heic', '.heif':'image/heif', '.pdf':'application/pdf', '.md':'text/markdown', '.txt':'text/plain', '.json':'application/json', '.html':'text/html', '.css':'text/css', '.js':'text/javascript', '.ts':'text/plain', '.kt':'text/plain', '.py':'text/plain', '.yaml':'text/plain', '.yml':'text/plain', '.xml':'text/plain', '.csv':'text/plain', '.svg':'image/svg+xml' })[extension] ?? 'application/octet-stream';
-        this.files.set(`${thread.id}:${id}`, { path, sourcePath, root: explicitImage ? dirname(path) : root, size: stat.size, modified: stat.mtimeMs });
+        this.files.set(`${thread.id}:${id}`, { path, sourcePath, root: explicitImage || explicitFile ? dirname(path) : root, size: stat.size, modified: stat.mtimeMs });
         const artifact = { id, name: basename(path), size: stat.size, mime, path };
         artifacts.push(artifact); byPath.set(sourcePath, artifact);
       } catch { /* A linked file may no longer exist. */ }
     }
-    const messages = (snapshot.messages ?? []).map(message => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map(attachment => byPath.has(attachment.path) ? { ...attachment, ...byPath.get(attachment.path), available: true } : { ...attachment, name: basename(attachment.path), available: false }) } : {}) }));
+    const messages = (snapshot.messages ?? []).map(message => {
+      const attachments=(message.attachments ?? []).map(attachment => byPath.has(attachment.path) ? { ...attachment, ...byPath.get(attachment.path), available:true } : { ...attachment,name:basename(attachment.path),available:false });
+      const references=uploadedReferences(message);
+      if(message.role==='user')for(const ref of references.files)if(uploaded.has(ref.path)&&byPath.has(ref.path)&&!attachments.some(a=>a.path===ref.path))attachments.push({...byPath.get(ref.path),type:'file',available:true});
+      const clean=references.wrapper&&references.files.length&&references.files.every(ref=>attachments.some(a=>a.path===ref.path&&a.available));
+      return {...message,...(clean?{text:references.wrapper[2].trim(),detail:message.detail??message.text}:{}),...(attachments.length?{attachments}:{})};
+    });
     return { ...snapshot, messages, artifacts };
   }
   read(args) {
@@ -147,7 +162,8 @@ export class FileAccess {
 export async function startCompanion(config, { adapter = new DesktopAdapter({ callerThreadId: config.contextThreadId }), port = 43785, statePath = resolve(ROOT, '.private/commands.sqlite'), configPath = CONFIG } = {}) {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   const uploads = new ImageUploads(resolve(dirname(statePath), 'image-uploads'));
-  const ledger = new CommandLedger(statePath), files = new FileAccess(), preview = new PreviewTunnel(), history = new HistoryStore();
+  const fileUploads = new FileUploads(resolve(dirname(statePath), 'file-uploads'));
+  const ledger = new CommandLedger(statePath), files = new FileAccess(fileUploads.directory), preview = new PreviewTunnel(), history = new HistoryStore();
   let channel = null, crypto = new CipherChannel(config.key, config.hostId, 'desktop');
   let stopping = false, mobileOnline = false, pairRequest = null, lastError = '', relayError = '', desktopRetry, desktopConnecting;
   const send = payload => { if (link.online && channel) link.send(JSON.stringify(crypto.encrypt({ ...payload, channel }))); };
@@ -182,7 +198,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           if (Math.abs(Date.now() - payload.sentAt) > 120000 || typeof payload.channel !== 'string' || !/^[a-f0-9-]{36}$/i.test(payload.channel)) return;
           preview.close(); channel = payload.channel; await connectDesktop();
           if (!link.isCurrent(socket) || channel !== payload.channel) return;
-          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: adapter.diagnostics().capabilities, desktopReady: adapter.ready, error: lastError }); return;
+          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true }, desktopReady: adapter.ready, error: lastError }); return;
         }
         if (payload.type !== 'request' || !channel || payload.channel !== channel) return;
         const requestChannel = channel;
@@ -190,6 +206,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           validateCommand(payload); await connectDesktop();
           if (!adapter.ready) throw new Error('电脑上的 Codex 尚未连接，请检查电脑端应用');
           const result = await ledger.run(payload, async () => {
+            if (payload.action.startsWith('file.upload.')) return fileUploads.call(payload.action, payload.args);
             if (payload.action.startsWith('image.upload.')) return uploads.call(payload.action, payload.args);
             if (payload.action.startsWith('preview.')) return preview.call(payload.action, payload.args);
             if (payload.action === 'file.read') return files.read(payload.args);
@@ -197,7 +214,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
             if (payload.action === 'message.read') return history.read(payload.args);
             let args = payload.args;
             if (['message.send', 'thread.create'].includes(payload.action)) {
-              try { args = { ...args, imagePaths: uploads.resolve(args.imageUploadIds, payload.action === 'thread.create' ? '__new__' : args.threadId), clientUserMessageId: payload.id }; }
+              try { args = { ...args, files: fileUploads.resolve(args.fileUploadIds, payload.action === 'thread.create' ? '__new__' : args.threadId), imagePaths: uploads.resolve(args.imageUploadIds, payload.action === 'thread.create' ? '__new__' : args.threadId), clientUserMessageId: payload.id }; }
               catch (error) { throw Object.assign(error, { notSubmitted: true }); }
             }
             const result = await adapter.call(payload.action, args);
@@ -218,7 +235,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
     if (!equalHash(digest(req.headers.authorization ?? ''), digest(`Bearer ${config.managerToken}`))) { res.writeHead(401).end('{}'); return; }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     try {
-      if (req.method === 'GET' && url.pathname === '/api/status') return res.end(JSON.stringify({ name: config.name, relayOnline: link.online, relayState: link.state, mobileOnline, desktopReady: adapter.ready, error: relayError || lastError, pairRequest, capabilities: adapter.diagnostics().capabilities }));
+      if (req.method === 'GET' && url.pathname === '/api/status') return res.end(JSON.stringify({ name: config.name, relayOnline: link.online, relayState: link.state, mobileOnline, desktopReady: adapter.ready, error: relayError || lastError, pairRequest, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true } }));
       if (req.method === 'GET' && url.pathname === '/api/pairing') {
         const pairing = { claimFromMobile:config.mobileClaim === true, v:1, mode:config.mode==='lan'?'lan':'cloud', relay:config.relay, hostId:config.hostId, name:config.name, pairCode:config.pairCode, key:config.key, pin:config.pin, expiresAt:config.pairExpires };
         const link = 'codexpocket://pair?data=' + Buffer.from(JSON.stringify(pairing)).toString('base64url');

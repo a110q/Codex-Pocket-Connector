@@ -1,3 +1,4 @@
+import { approvalResponse } from './approvals.mjs';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +24,8 @@ const VERSIONS = Object.freeze({
   'thread-follower-command-approval-decision': 1,
   'thread-follower-file-approval-decision': 1,
   'thread-follower-submit-user-input': 1,
+  'thread-follower-permissions-request-approval-response': 1,
+  'thread-follower-submit-mcp-server-elicitation-response': 1,
 });
 const DECISIONS = new Set(['accept', 'acceptForSession', 'decline', 'cancel']);
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -324,7 +327,7 @@ export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', re
     thread: { id: state.id, title: state.title || state.fallbackSearchTitle || 'Untitled', cwd: state.cwd, hostId,
       status: state.threadRuntimeStatus?.type ?? state.status ?? (activeTurn ? 'active' : 'idle'),
       model: settings.model, reasoningEffort: settings.reasoningEffort, settings, currentPermissions: state.currentPermissions ?? null, updatedAt: state.updatedAt,
-      activeTurnId: activeTurn?.turnId ?? activeTurn?.id ?? null },
+      lastTurnId: turns.at(-1)?.turnId ?? turns.at(-1)?.id ?? null, lastTurnStatus: turns.at(-1)?.status ?? null, activeTurnId: activeTurn?.turnId ?? activeTurn?.id ?? null },
     messages, requests: (state.requests ?? []).map(request => ({ id: request.id, method: request.method, params: request.params })),
     artifacts, diffs, revision, source: 'desktop-live',
     historyComplete: state.turnHistory?.history?.isComplete ?? state.turnsPagination?.hasLoadedOldest ?? false,
@@ -623,20 +626,9 @@ export class DesktopAdapter extends EventEmitter {
         const snapshot = this.snapshots.get(`${hostId}:${threadId}`);
         const request = snapshot?.state.requests?.find(item => String(item.id) === String(args.requestId) && item.completed !== true);
         if (!request) throw new Error('Approval is no longer pending; refresh the thread');
-        let method; let response;
-        if (request.method === 'item/commandExecution/requestApproval' || request.method === 'item/fileChange/requestApproval') {
-          if (!DECISIONS.has(args.decision)) throw new Error('Unsupported approval decision');
-          method = request.method.includes('commandExecution') ? 'thread-follower-command-approval-decision' : 'thread-follower-file-approval-decision'; response = { decision: args.decision };
-        } else if (request.method === 'item/tool/requestUserInput') {
-          const answers = args.response?.answers;
-          if (!answers || typeof answers !== 'object' || Array.isArray(answers)) throw new Error('Question answers are required');
-          const questionIds = new Set((request.params?.questions ?? []).map(question => question.id));
-          for (const [questionId, answer] of Object.entries(answers)) {
-            if (!questionIds.has(questionId) || !Array.isArray(answer?.answers) || answer.answers.length > 20 || answer.answers.some(value => typeof value !== 'string' || value.length > 20000)) throw new Error('Invalid question answer');
-          }
-          if (!Object.keys(answers).length) throw new Error('Question answers are required');
-          method = 'thread-follower-submit-user-input'; response = { response: args.response };
-        } else throw new Error('This approval type is not supported yet; use the desktop');
+        const result=approvalResponse(request,args);
+        const method=request.method==='item/commandExecution/requestApproval'?'thread-follower-command-approval-decision':request.method==='item/fileChange/requestApproval'?'thread-follower-file-approval-decision':request.method==='item/permissions/requestApproval'?'thread-follower-permissions-request-approval-response':request.method==='mcpServer/elicitation/request'?'thread-follower-submit-mcp-server-elicitation-response':'thread-follower-submit-user-input';
+        const response=['item/commandExecution/requestApproval','item/fileChange/requestApproval'].includes(request.method)?result:{response:result};
         const owner = await this.owner(threadId, hostId);
         if (!this.snapshots.get(`${hostId}:${threadId}`)?.state.requests?.some(item => item.id === request.id && item.method === request.method && item.completed !== true)) throw new Error('Approval is no longer pending; refresh the thread');
         return (await this.request(method, { conversationId: threadId, requestId: request.id, ...response }, { hostId, targetClientId: owner })).result;

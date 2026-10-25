@@ -23,7 +23,7 @@ object AccountNotifications {
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK,ExistingPeriodicWorkPolicy.KEEP,request)
     }
-    fun cancel(context:Context){WorkManager.getInstance(context).cancelUniqueWork(WORK);context.getSystemService(NotificationManager::class.java).cancelAll()}
+    fun cancel(context:Context){WorkManager.getInstance(context).cancelUniqueWork(WORK);context.getSystemService(NotificationManager::class.java).let{manager->manager.activeNotifications.filter{it.notification.channelId==CHANNEL}.forEach{manager.cancel(it.tag,it.id)}}}
     fun show(context:Context,events:List<JSONObject>){
         val manager=context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL,"账号申请与安全提醒",NotificationManager.IMPORTANCE_DEFAULT))
@@ -38,7 +38,7 @@ object AccountNotifications {
             val content=PendingIntent.getActivity(context,0,intent,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val title=if(event.optString("severity")=="warning")"客户端异常报告" else "新的使用申请"
             val summary=event.optString("username")+" · "+event.optString("summary")
-            manager.notify(id.hashCode(),NotificationCompat.Builder(context,CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info)
+            manager.notify("account",id.hashCode(),NotificationCompat.Builder(context,CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle(title).setContentText(summary).setStyle(NotificationCompat.BigTextStyle().bigText(summary))
                 .setContentIntent(content).setAutoCancel(true).build())
             seen.add(id)

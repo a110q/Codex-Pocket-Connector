@@ -89,8 +89,23 @@ class MainActivity : ComponentActivity() {
         val key=imagePickKey;imagePickKey=null
         if(key!=null&&uris.isNotEmpty())(if(imagePickLan)lanModel else model).addImages(uris,key)
     }
+    private var filePickKey:String?=null
+    private var filePickLan=false
+    private val filePicker=registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()){uris->
+        val key=filePickKey;filePickKey=null
+        if(key!=null&&uris.isNotEmpty())(if(filePickLan)lanModel else model).addFiles(uris,key)
+    }
     private var incoming by mutableStateOf<String?>(null)
     private var openAdmin by mutableStateOf(false)
+    private var pendingTask by mutableStateOf<JSONObject?>(null)
+    private fun receiveTaskIntent(intent:Intent?) {
+        val id=intent?.getStringExtra("taskThreadId")?:return;val host=intent.getStringExtra("taskHostId")?:return
+        if(intent.getBooleanExtra("taskLan",false)!=lanMode)switchMode(!lanMode)
+        val relay=intent.getStringExtra("taskRelay")
+        if(relay!=null&&activeModel.computers.none{it.optString("hostId")==host&&it.optString("relay")==relay}){scanError="此通知对应的电脑尚未连接，请切换到对应中继并登录";return}
+        activeModel.switchComputer(host);connectionPage=null;pendingTask=JSONObject().put("id",id).put("hostId",host)
+        intent.removeExtra("taskThreadId");intent.removeExtra("taskHostId")
+    }
     private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){}
     private fun scan(){scanner.launch(ScanOptions().setCaptureActivity(PocketCaptureActivity::class.java).setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(if(connectionPage=="lan"||(connectionPage==null&&lanMode))"扫描电脑上的局域网配对码"else"扫描电脑上的 Codex Pocket 配对码").setBeepEnabled(false).setOrientationLocked(true))}
     private fun selectPublic(){
@@ -125,12 +140,14 @@ class MainActivity : ComponentActivity() {
         lanModel=PocketModel(applicationContext,"pocket-lan-state.enc",true);lanMode=getSharedPreferences("connection-mode",MODE_PRIVATE).getBoolean("lan",false)
         loadCloud()
         connectionPage=savedInstanceState?.getString("connectionPage")
+        filePickKey=savedInstanceState?.getString("filePickKey");filePickLan=savedInstanceState?.getBoolean("filePickLan")?:false
         imagePickKey=savedInstanceState?.getString("imagePickKey");imagePickLan=savedInstanceState?.getBoolean("imagePickLan")?:false
         incoming = activeModel.consumePairingIntent(intent?.dataString)
         openAdmin = intent?.getBooleanExtra("openAdmin",false)==true
+        receiveTaskIntent(intent)
         intent?.data = null
         setContent { PocketTheme(activeModel.appearance) {
-            CompositionLocalProvider(LocalOutgoingImagePicker provides { target,key->imagePickKey=key;imagePickLan=target===lanModel;imagePicker.launch("image/*")}) {
+            CompositionLocalProvider(LocalOutgoingImagePicker provides { target,key->imagePickKey=key;imagePickLan=target===lanModel;imagePicker.launch("image/*")},LocalOutgoingFilePicker provides {target,key->filePickKey=key;filePickLan=target===lanModel;filePicker.launch(arrayOf("*/*"))}) {
             LaunchedEffect(account.isAdmin){
                 if(account.isAdmin&&android.os.Build.VERSION.SDK_INT>=33){
                     val preferences=getSharedPreferences("admin-alerts",MODE_PRIVATE)
@@ -138,6 +155,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             key(serviceRevision) {
+                LaunchedEffect(pendingTask,activeModel.connected){pendingTask?.let{target->if(activeModel.connected&&activeModel.profile?.optString("hostId")==target.optString("hostId")){activeModel.openThread(JSONObject().put("id",target.getString("id")).put("hostId","local").put("title","任务通知"));pendingTask=null}}}
                 LaunchedEffect(incoming){incoming?.let{receivePair(it);incoming=null}}
                 LaunchedEffect(account.canUse,connectionPage){if(account.canUse&&connectionPage=="account")connectionPage=null}
                 val hasWorkspace=if(lanMode)lanModel.profile!=null else account.canUse
@@ -162,10 +180,10 @@ class MainActivity : ComponentActivity() {
 
         } } }
     }
-    override fun onSaveInstanceState(outState:Bundle){super.onSaveInstanceState(outState);outState.putString("imagePickKey",imagePickKey);outState.putBoolean("imagePickLan",imagePickLan);outState.putString("connectionPage",connectionPage)}
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin){connectionPage=null;if(lanMode)switchMode(false)}; intent.data = null; setIntent(intent) }
-    override fun onStart() { super.onStart(); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
-    override fun onStop() { if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop(); super.onStop() }
+    override fun onSaveInstanceState(outState:Bundle){super.onSaveInstanceState(outState);outState.putString("filePickKey",filePickKey);outState.putBoolean("filePickLan",filePickLan);outState.putString("imagePickKey",imagePickKey);outState.putBoolean("imagePickLan",imagePickLan);outState.putString("connectionPage",connectionPage)}
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent);receiveTaskIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin){connectionPage=null;if(lanMode)switchMode(false)}; intent.data = null; setIntent(intent) }
+    override fun onStart() { super.onStart();TaskMonitorService.foreground(this); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
+    override fun onStop() { if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop();TaskMonitorService.background(this); super.onStop() }
 }
 
 @Composable fun PocketApp(model:PocketModel,scan:()->Unit,incoming:String?,dismissIncoming:()->Unit,account:AccountModel?=null,openAdmin:Boolean=false,consumeAdmin:()->Unit={},onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null,onSwitchService:(()->Unit)?=null){
@@ -311,7 +329,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
                 }
             }
             if(messages.isEmpty())item{EmptyState(if(model.loadingThread)"正在读取对话" else "工作从这里继续",if(model.connected)"发送指令，交给电脑上的 Codex。" else "连接后会读取最新内容。")}
-            items(messages,key={it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects(),model.connected,model::attachmentBitmap,model::preview)})}
+            items(messages,key={it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
             val artifacts=snapshot?.optJSONArray("artifacts").objects()
             if(artifacts.isNotEmpty())item{Surface(onClick={showResults=true},color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){
                 Row(Modifier.padding(horizontal=14.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){PocketIcon("文件",Modifier.size(17.dp));Spacer(Modifier.width(9.dp));Text("查看 ${artifacts.size} 个交付文件",Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);PocketIcon("展开",Modifier.size(14.dp))}
@@ -322,17 +340,16 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
             if(messages.isNotEmpty()&&!followBottom&&!(previewExpanded&&model.previewKind!=null))Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center){TextButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}){Text("跳到最新 ↓",fontSize=11.sp)}}
             PendingCard(model)
             OutgoingImageStrip(model,thread.getString("id"))
+            OutgoingFileStrip(model,thread.getString("id"))
             model.imageStatus?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)}
             if(active)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=model.connected&&!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
             Surface(shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
                 Row(Modifier.fillMaxWidth().padding(horizontal=3.dp,vertical=2.dp),verticalAlignment=Alignment.Bottom){
-                    IconButton(onClick=pickImages,enabled=!model.busy&&model.pendingOperation==null,modifier=Modifier.size(48.dp).semantics{contentDescription="添加图片"}){
-                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("附件",Modifier.size(21.dp))}
-                    }
+                    AttachmentPickerButton(model,thread.getString("id"))
                     BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),modifier=Modifier.weight(1f).heightIn(min=48.dp,max=136.dp).padding(top=13.dp,bottom=13.dp,end=4.dp).semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
                         Box { if(model.draft.isEmpty())Text(if(active)"补充你的想法…" else "继续向 Codex 发送指令…",fontSize=13.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis);inner() }
                     })
-                    val canSend=model.connected&&!model.busy&&(model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty())&&model.pendingOperation==null
+                    val canSend=model.connected&&!model.busy&&(model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty()||model.filesFor(thread.getString("id")).isNotEmpty())&&model.pendingOperation==null
                     IconButton(onClick={model.send(model.draft)},enabled=canSend,modifier=Modifier.size(48.dp).semantics{contentDescription="发送"}){
                         Surface(Modifier.size(36.dp),shape=CircleShape,color=if(canSend)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(canSend)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f)){
                             Box(contentAlignment=Alignment.Center){if(model.busy)CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=1.5.dp)else PocketIcon("发送",Modifier.size(18.dp))}
@@ -388,6 +405,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
 }
 
 @Composable fun ApprovalCard(request:JSONObject,model:PocketModel) {
+    if(request.optString("method") in listOf("item/permissions/requestApproval","mcpServer/elicitation/request")){ExtendedApprovalCard(request,model);return}
     val method=request.optString("method");val params=request.optJSONObject("params")?:JSONObject()
     val question=method=="item/tool/requestUserInput"
     val supported=question||method=="item/commandExecution/requestApproval"||method=="item/fileChange/requestApproval"

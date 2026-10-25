@@ -68,6 +68,37 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         }
     }
     private var outgoing by mutableStateOf(saved.optJSONObject("outgoingImages")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingImage.restore(it).takeIf{image->File(image.path).isFile}}catch(_:Exception){null}}}}.orEmpty())
+    private fun restoredFiles(value:JSONObject?)=value?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingFile.restore(it).takeIf{f->File(f.path).isFile}}catch(_:Exception){null}}}}.orEmpty()
+    private var outgoingFiles by mutableStateOf(restoredFiles(saved.optJSONObject("outgoingFiles")))
+    var supportsFiles by mutableStateOf(false);private set
+    fun filesFor(key:String)=outgoingFiles[key].orEmpty()
+    fun addFiles(uris:List<android.net.Uri>,key:String=imageDraftKey) {
+        if(busy||uris.isEmpty())return
+        if(!supportsFiles){error="请先更新电脑连接器，再上传文件";return}
+        if(filesFor(key).size+uris.size>4){error="每条消息最多添加 4 个文件";return}
+        scope.launch { busy=true;imageStatus="正在读取附件…";error=null
+            try { val added=withContext(Dispatchers.IO){val result=mutableListOf<OutgoingFile>();try{uris.forEach{result.add(OutgoingFile.import(context,it))};result}catch(e:Exception){result.forEach{File(it.path).delete()};throw e}}
+                outgoingFiles=outgoingFiles+(key to (filesFor(key)+added));persist()
+            }catch(e:CancellationException){throw e}catch(e:Exception){error=e.message?:"无法读取文件"}finally{busy=false;imageStatus=null}
+        }
+    }
+    fun removeFile(key:String,id:String) { if(busy)return;filesFor(key).find{it.id==id}?.let{File(it.path).delete()};outgoingFiles=outgoingFiles+(key to filesFor(key).filter{it.id!=id});persist() }
+    private suspend fun uploadFiles(key:String):List<String> {
+        if(filesFor(key).isNotEmpty())require(supportsFiles){"电脑连接器尚不支持附件，请先更新电脑端"}
+        return filesFor(key).mapIndexed { index,file->
+            val sha=withContext(Dispatchers.IO){val hash=java.security.MessageDigest.getInstance("SHA-256");File(file.path).inputStream().use{input->val bytes=ByteArray(64*1024);while(true){val count=input.read(bytes);if(count<0)break;hash.update(bytes,0,count)}};hash.digest().joinToString(""){"%02x".format(it)}}
+            val start=rpc("file.upload.start",JSONObject().put("uploadId",file.id).put("threadId",key).put("size",file.size).put("name",file.name).put("mime",file.mime).put("sha256",sha))
+            var offset=start.getLong("nextOffset");require(offset in 0..file.size){"文件上传进度无效"}
+            while(offset<file.size) {
+                imageStatus="上传附件 ${index+1}/${filesFor(key).size} · ${offset*100/file.size}%"
+                val bytes=withContext(Dispatchers.IO){java.io.RandomAccessFile(file.path,"r").use{input->input.seek(offset);ByteArray(minOf(192L*1024,file.size-offset).toInt()).also{input.readFully(it)}}}
+                val next=offset+bytes.size
+                val part=rpc("file.upload.chunk",JSONObject().put("uploadId",file.id).put("offset",offset).put("data",android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)))
+                require(part.getLong("nextOffset")==next){"文件传输不完整"};offset=next
+            }
+            rpc("file.upload.finish",JSONObject().put("uploadId",file.id));file.id
+        }
+    }
     var imageStatus by mutableStateOf<String?>(null);private set
     val imageDraftKey get()=selected?.optString("id")?:"__new__"
     fun imagesFor(key:String)=outgoing[key].orEmpty()
@@ -104,11 +135,11 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             busy=true;error=null
             try {
                 val ids=uploadImages(key)
-                args.put("imageUploadIds",JSONArray(ids))
+                args.put("imageUploadIds",JSONArray(ids)).put("fileUploadIds",JSONArray(uploadFiles(key)))
                 if(action=="message.send"){draft="";scrollRequest++}
                 persist();busy=false
                 mutate(action,args){result->success(result)}
-            }catch(e:CancellationException){throw e}catch(e:Exception){busy=false;error=e.message?:"图片发送失败，草稿已保留"}finally{imageStatus=null}
+            }catch(e:CancellationException){throw e}catch(e:Exception){busy=false;error=e.message?:"附件发送失败，草稿已保留"}finally{imageStatus=null}
         }
     }
     var loadingThread by mutableStateOf(false); private set
@@ -152,13 +183,14 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private var cacheWrite: Runnable? = null
     private fun persist() {
         try {
+            saved.put("outgoingFiles",JSONObject().also{obj->outgoingFiles.forEach{(key,files)->obj.put(key,JSONArray(files.map{it.json()}))}})
             saved.put("outgoingImages",JSONObject().also{obj->outgoing.forEach{(key,images)->obj.put(key,JSONArray(images.map{it.json()}))}})
             saved.put("timelineFormat", 3).put("profile", profile ?: JSONObject.NULL).put("threads", JSONArray(threads)).put("snapshot", snapshot ?: JSONObject.NULL)
                 .put("pending", pendingOperation ?: JSONObject.NULL).put("drafts", JSONObject(drafts.entries)).put("projects", JSONArray(projects)).put("appearance", appearance)
             saved.remove("draft")
             profile?.let{p->
                 computers=computers.filter{it.optString("hostId")!=p.optString("hostId")}+JSONObject(p.toString())
-                val cache=JSONObject();listOf("threads","projects","snapshot","pending","drafts","outgoingImages").forEach{cache.put(it,saved.opt(it))};computerStates.put(p.getString("hostId"),cache)
+                val cache=JSONObject();listOf("threads","projects","snapshot","pending","drafts","outgoingImages","outgoingFiles").forEach{cache.put(it,saved.opt(it))};computerStates.put(p.getString("hostId"),cache)
             }
             saved.put("computers",JSONArray(computers)).put("computerStates",computerStates)
             saved.put("pendingScan",pendingScannedPair?:JSONObject.NULL)
@@ -198,7 +230,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }, { event -> handler.post {
             if (connection !== candidate || !foreground) return@post
             when (event.optString("type")) {
-                "hello" -> { previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; refresh(); selected?.let { openThread(it) } }
+                "hello" -> { if(event.has("capabilities"))supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; refresh(); selected?.let { openThread(it) } }
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
                     if (change.optString("type") == "thread.updated" && change.optString("threadId") == selected?.optString("id")) {
@@ -218,6 +250,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
         drafts=DraftBook(cache.optJSONObject("drafts")?.let{obj->obj.keys().asSequence().associateWith{obj.optString(it)}}.orEmpty())
         outgoing=cache.optJSONObject("outgoingImages")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingImage.restore(it).takeIf{image->File(image.path).isFile}}catch(_:Exception){null}}}}.orEmpty()
+        outgoingFiles=restoredFiles(cache.optJSONObject("outgoingFiles"));supportsFiles=false
         selected=null;threadBackStack.clear();closeMessage();models=emptyList();busy=false;loadingThread=false;loadingHistory=false
         projectSearch="";taskSearch="";showArchived=false;collapsedProjects=emptySet();error=null;downloadStatus=null
         pairing=profile!=null&&profile?.optBoolean("approved")!=true;status=if(profile==null)"尚未连接电脑"else"等待连接"
@@ -351,6 +384,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         accepted.put("messages", JSONArray(merged.map { it.value }))
         accepted.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }
         snapshot = accepted
+        if(!olderPage)profile?.let{TaskNotifications.observe(context,it,accepted,false)}
     }
     fun loadEarlier() {
         val thread = selected ?: return
@@ -403,6 +437,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             } else if (result != null) {
                 val sentIds=op.optJSONObject("args")?.optJSONArray("imageUploadIds")?.let{array->(0 until array.length()).map{array.getString(it)}.toSet()}.orEmpty()
                 if(sentIds.isNotEmpty()){outgoing=outgoing.mapValues{(_,images)->images.filter{it.id !in sentIds}};persist()}
+                val fileIds=op.optJSONObject("args")?.optJSONArray("fileUploadIds")?.let{array->(0 until array.length()).map{array.getString(it)}.toSet()}.orEmpty()
+                if(fileIds.isNotEmpty()){outgoingFiles.values.flatten().filter{it.id in fileIds}.forEach{File(it.path).delete()};outgoingFiles=outgoingFiles.mapValues{(_,files)->files.filter{it.id !in fileIds}};persist()}
                 error = null; onSuccess(result); refresh(); selected?.let { openThread(it) } }
         }
     }
@@ -410,14 +446,14 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun clearPendingAfterInspection() { pendingOperation = null; persist(); error = null }
     fun send(text: String, model: String? = null) {
         val thread = selected ?: return
-        if ((text.isBlank() && imagesFor(imageDraftKey).isEmpty()) || busy || !connected) return
+        if ((text.isBlank() && imagesFor(imageDraftKey).isEmpty() && filesFor(imageDraftKey).isEmpty()) || busy || !connected) return
         if (pendingOperation != null) { error = "上一条操作结果待确认，请先检查会话"; return }
         val args = JSONObject().put("threadId", thread.getString("id")).put("hostId", thread.optString("hostId", "local")).put("text", text)
         if (!model.isNullOrBlank()) args.put("model", model)
         sendWithImages("message.send",args,thread.getString("id"))
     }
     fun create(text: String, projectId: String?, model: String?) {
-        if ((text.isBlank() && imagesFor("__new__").isEmpty()) || busy || !connected) return
+        if ((text.isBlank() && imagesFor("__new__").isEmpty() && filesFor("__new__").isEmpty()) || busy || !connected) return
         val args = JSONObject().put("text", text)
         if (!projectId.isNullOrBlank()) args.put("projectId", projectId)
         if (!model.isNullOrBlank()) args.put("model", model)
@@ -500,6 +536,11 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             finally { if (previewFile !== file) file?.delete(); if (previewArtifact === artifact) previewLoading = false }
         }
     }
+    fun respondApproval(request:JSONObject,decision:String,response:JSONObject?=null) {
+        val thread=selected?:return
+        val args=JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("requestId",request.get("id")).put("decision",decision)
+        response?.let{args.put("response",it)};mutate("approval.respond",args)
+    }
     fun approve(request: JSONObject, decision: String, answers: JSONObject? = null) {
         val thread = selected ?: return
         val args = JSONObject().put("threadId", thread.getString("id")).put("hostId", thread.optString("hostId", "local")).put("requestId", request.get("id")).put("decision", decision)
@@ -511,7 +552,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     private fun forgetAll() {
         pairingRequest?.cancel();pairingRequest=null
-        stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; outgoing=emptyMap();pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
+        stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; outgoing=emptyMap();outgoingFiles=emptyMap();pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
         computers=emptyList();computerStates=JSONObject();pendingScannedPair=null;persist()
     }
     suspend fun chunk(threadId: String, artifactId: String, offset: Long): JSONObject = suspendCancellableCoroutine { continuation ->

@@ -21,8 +21,9 @@
 | --- | --- |
 | 项目与对话 | 查看本地项目及其对话，搜索、新建、继续聊天，长按归档、恢复或删除 |
 | 完整过程 | 问答、可见思考摘要、命令、文件修改及工具调用；历史分页、长内容详情 |
-| 模型与权限 | 切换可用模型、推理强度、权限模式，处理受支持的审批和提问，停止任务 |
-| 图片发送 | 多选图片，搭配文字在同一条消息中发送，支持预览、移除与加密分片传输 |
+| 模型与权限 | 切换可用模型、推理强度、权限模式，处理命令、文件修改、目录/网络权限审批及常见 MCP 表单，停止任务 |
+| 图片与文件发送 | 图片、文档、代码等附件配合文字发送；普通文件每条最多 4 个、每个最多 50 MB，支持断点恢复 |
+| 后台任务提醒 | 自愿开启后台连接；任务完成、出错和等待审批时通知，点击回到对应电脑和对话 |
 | 自建中继 | 电脑配置地址与公开证书，手机扫码切换服务，无需重新构建客户端 |
 | 文件与网页 | 图片缩放、文本和代码预览、PDF 分页、文件下载，以及电脑本地网页预览 |
 | 多台电脑 | 保存多个配对并切换，按电脑隔离聊天缓存与草稿 |
@@ -32,13 +33,13 @@
 
 ## 下载安装
 
-**安卓与电脑连接器：0.7.10。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**安卓与电脑连接器：0.8.0。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-0.7.10.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-Connector-0.7.10-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-Connector-0.7.10-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.10/Codex-Pocket-Connector-0.7.10-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.8.0/Codex-Pocket-0.8.0.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.8.0/Codex-Pocket-Connector-0.8.0-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.8.0/Codex-Pocket-Connector-0.8.0-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.8.0/Codex-Pocket-Connector-0.8.0-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -76,11 +77,11 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 使用 HTTPS / WSS、证书固定和 AES-256-GCM。中继可以看到账号、设备和连接元数据；任务内容按配对密钥加密传输。
 - 手机配对与缓存加密保存。安装包包含公开连接配置，不包含服务器 root 密码、SSH 私钥、管理员密码或其他用户配对数据。
 - 混淆和完整性检测增加篡改成本，无法保证禁止反编译或发现离线分析。
-- 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端、通用文件上传和部分高级审批尚未覆盖（已支持图片上传）。
+- 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端、复杂 MCP 表单及需电脑完成的身份验证尚未覆盖。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
 
-**0.7.10** 手机连接首页改为公网、局域网、自建中继三个卡片；选择后分别进入登录、直连指引或自建扫码页面，均可返回重选。已连接用户可从「设置 → 选择连接方式」进入。保留紧凑工作空间和桌面跟随同步。详见 [更新说明](docs/patch-0.7.10.md) 与 [验收记录](docs/verification-0.7.10.md)。Windows 11 仍待实机验收。
+**0.8.0** 新增普通文件上传、目录/网络权限审批与常见 MCP 表单、后台任务提醒。电脑和手机均需更新；中继无需升级。后台提醒需开启通知与后台运行权限，强行停止 App 后不会继续提醒。详见 [更新说明](docs/patch-0.8.0.md) 与 [验收记录](docs/verification-0.8.0.md)。Windows 11 仍待实机验收。
 
 ## 开发与自建
 

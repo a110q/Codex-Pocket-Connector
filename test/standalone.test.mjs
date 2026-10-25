@@ -381,3 +381,14 @@ test('authoritative idle runtime releases a stale historical inProgress turn but
   assert.equal(await a.releaseThread('phone-thread'),false);
   a.approvals.clear(); assert.equal(await a.releaseThread('phone-thread'),true);
 });
+
+test('ordinary file references use native text input on creation and owned followups, with no unsupported input type',async t=>{
+ const {a,server}=publicCreateFixture(t);const files=[{name:'report.txt',path:'/controlled-uploads/id/report.txt'}];await a.createThread({text:'review',files});await a.sendMessage({threadId:'phone-thread',text:'',files});
+ const turns=server.calls.filter(c=>c.method==='turn/start');assert.equal(turns.length,2);for(const turn of turns){assert.equal(turn.params.input[0].type,'text');assert.match(turn.params.input[0].text,/## report\.txt: \/controlled-uploads\/id\/report\.txt/);assert(!turn.params.input.some(p=>p.type==='localFile'));}
+});
+
+test('standalone extended approvals clear on resolution and respond on the owning process',async t=>{
+ const server=new Server(),a=fixtureAdapter({server,catalog:false});t.after(()=>a.close());a.ready=true;
+ a.onServerRequest({id:9,method:'item/permissions/requestApproval',params:{threadId:'qa',permissions:{network:{enabled:true}}}});await a.call('approval.respond',{threadId:'qa',requestId:9,decision:'accept'});assert.deepEqual(server.replies[0],{id:9,result:{permissions:{network:{enabled:true}},scope:'turn'}});assert.equal(a.approvals.size,0);
+ a.onServerRequest({id:10,method:'mcpServer/elicitation/request',params:{threadId:'qa',mode:'url'}});a.onServerEvent({method:'serverRequest/resolved',params:{threadId:'qa',requestId:10}});assert.equal(a.approvals.size,0);assert.equal(server.replies.length,1);
+});
