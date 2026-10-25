@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { DesktopAdapter, FramedSocket, normalizeSnapshot, orderedTurns } from './desktop-adapter.mjs';
 import { AppServerClient } from './app-server-client.mjs';
+import { DesktopOwnerBridge } from './desktop-owner-bridge.mjs';
 
 const modes = { 'read-only': { permissions: ':read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, auto: { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, 'full-access': { permissions: ':danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' } };
 const string = (value, label, length = 100000) => { if (typeof value !== 'string' || !value.trim() || value.length > length) throw new Error(`${label}无效`); return value; };
@@ -15,6 +16,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     super(options); this.server = options.server ?? new AppServerClient(options);
     this.models = []; this.ownedThreads = new Set(); this.createdThreads = new Set(); this.catalogRefreshTimers = new Map(); this.states = new Map(); this.approvals = new Map(); this.refreshTimers = new Map(); this.ipcAvailable = false;
     this.ipcConnecting = null; this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
+    this.ownerBridge = new DesktopOwnerBridge(this);
     this.server.on('notification', message => this.onServerEvent(message));
     this.server.on('request', message => this.onServerRequest(message));
     this.server.on('disconnect', error => {
@@ -57,19 +59,23 @@ export class StandaloneAdapter extends DesktopAdapter {
     if (this.ipcAvailable) return;
     if (this.ipcConnecting) return this.ipcConnecting;
     this.ipcConnecting = (async () => {
-      this.ipc?.close(); this.owners.clear(); this.snapshots.clear(); this.subscriptions.clear();
+      this.ipc?.close(); this.owners.clear(); this.snapshots.clear(); this.subscriptions.clear(); this.ownerBridge.reset();
       const ipcPath = this.options.ipcPath ?? process.env.POCKET_CODEX_IPC_PATH ?? (process.platform === 'win32' ? '\\\\.\\pipe\\codex-ipc' : path.join(this.options.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), 'ipc/ipc.sock'));
       const transport = new FramedSocket(ipcPath, timeoutMs); this.ipc = transport;
       transport.on('message', message => this.handleIpc(message));
-      transport.on('disconnect', () => { if (this.ipc === transport) this.ipcAvailable = false; });
+      transport.on('disconnect', () => { if (this.ipc === transport) { this.ipcAvailable = false; this.ownerBridge.reset(); } });
       try {
         await transport.connect();
         const response = await transport.exchange({ type: 'request', requestId: randomUUID(), sourceClientId: 'initializing-client', version: 0, method: 'initialize', params: { clientType: 'desktop' } });
         if (response.resultType !== 'success') throw new Error('Desktop IPC unavailable');
         this.clientId = response.result.clientId; this.ipcAvailable = true;
+        for (const conversationId of this.ownedThreads) this.broadcast('thread-stream-following-status-requested', { hostId: 'local', conversationId });
       } catch (error) { transport.close(); throw error; }
     })();
     try { return await this.ipcConnecting; } finally { this.ipcConnecting = null; }
+  }
+  handleIpc(message) {
+    if (!this.ownerBridge?.handle(message)) super.handleIpc(message);
   }
   announceThread(threadId, { removed = false, cwd } = {}) {
     if (!this.ipcAvailable) return false;
@@ -120,14 +126,18 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   async releaseThreadLocked(threadId, notify = true) {
       if (!this.ownedThreads.has(threadId)) return false;
+      if (this.ownerBridge.retain(threadId)) return false;
       const state = await this.storedState(threadId);
-      if (state.turns.some(turn => turn.status === 'inProgress') || state.status?.type === 'active' || [...this.approvals.values()].some(request => request.params?.threadId === threadId)) return false;
+      // Runtime status is authoritative. Interrupted historical turns may
+      // retain an old inProgress flag even though the loaded thread is idle.
+      if (state.status?.type === 'active' || (state.status?.type !== 'idle' && state.turns.some(turn => turn.status === 'inProgress')) || [...this.approvals.values()].some(request => request.params?.threadId === threadId)) return false;
+      if (this.ownerBridge.retain(threadId)) return false;
       const client = this.serverFor(threadId);
       // Unsubscribe alone retains the engine's writer lock. A separate process
       // per mobile-owned thread lets an idle chat release it without stopping
       // another running chat. The catalog process never resumes threads.
       if (client.closeAndWait) await client.closeAndWait(); else client.close();
-      this.threadServers.delete(threadId); this.ownedThreads.delete(threadId); if (notify) this.announceThread(threadId); return true;
+      this.threadServers.delete(threadId); this.ownedThreads.delete(threadId); this.ownerBridge.forget(threadId); if (notify) this.announceThread(threadId); return true;
   }
   scheduleRelease(threadId, attempt = 0) {
     if (this.releaseTimers.has(threadId)) return;
@@ -135,8 +145,9 @@ export class StandaloneAdapter extends DesktopAdapter {
       this.releaseTimers.delete(threadId);
       if (!this.ready) return;
       try { if (await this.releaseThread(threadId)) return; } catch {}
-      if (this.ready && this.ownedThreads.has(threadId) && attempt < 8) this.scheduleRelease(threadId, attempt + 1);
-    }, 250);
+      if (this.ready && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId, attempt + 1);
+    }, Math.min(250 * 2 ** Math.min(attempt, 5), this.options.releaseMaxDelayMs ?? 5000));
+    timer.unref?.();
     this.releaseTimers.set(threadId, timer);
   }
   async storedState(threadId) {
@@ -169,18 +180,19 @@ export class StandaloneAdapter extends DesktopAdapter {
   rememberSettings(response) {
     const value = response.thread;
     const state = this.states.get(value.id) ?? value;
-    state.latestThreadSettings = { model: response.model, effort: response.reasoningEffort, approvalPolicy: response.approvalPolicy, approvalsReviewer: response.approvalsReviewer, activePermissionProfile: response.activePermissionProfile, sandboxPolicy: response.sandbox };
+    state.latestThreadSettings = { model: response.model, effort: response.reasoningEffort, approvalPolicy: response.approvalPolicy, approvalsReviewer: response.approvalsReviewer, activePermissionProfile: response.activePermissionProfile, sandboxPolicy: response.sandbox, collaborationMode: response.collaborationMode };
     this.states.set(value.id, state);
   }
   async resume(threadId) {
     if (this.ownedThreads.has(threadId)) return;
     const state = await this.storedState(threadId);
-    if (state.status?.type === 'active' || state.turns.some(t => t.status === 'inProgress')) throw Object.assign(notSubmitted(new Error('这条对话正在电脑运行，桌面连接尚未恢复。请保持 Codex 打开后重试，消息尚未发送。')), { desktopOwned: true });
+    if (state.status?.type === 'active' || (state.status?.type !== 'idle' && state.turns.some(t => t.status === 'inProgress'))) throw Object.assign(notSubmitted(new Error('这条对话正在电脑运行，桌面连接尚未恢复。请保持 Codex 打开后重试，消息尚未发送。')), { desktopOwned: true });
     const server = await this.createThreadServer(); let result;
     try { result = await server.request('thread/resume', { threadId, excludeTurns: true }); }
     catch (error) { if (server !== this.server) server.close(); throw error; }
     this.threadServers.set(threadId, server);
     this.ownedThreads.add(threadId); this.rememberSettings(result);
+    this.scheduleRelease(threadId);
   }
   async sendMessage(args) {
     return this.withThread(args.threadId, () => this.sendMessageLocked(args));
@@ -240,7 +252,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     }
     let state;
     try { state = await this.storedState(threadId); } catch (error) { throw notSubmitted(error); }
-    const active = state.turns.findLast(t => t.status === 'inProgress');
+    const active = state.status?.type === 'idle' ? null : state.turns.findLast(t => t.status === 'inProgress');
     const server = this.serverFor(threadId);
     return active ? server.request('turn/steer', { threadId, expectedTurnId: active.id, input, ...(args.clientUserMessageId ? { clientUserMessageId: args.clientUserMessageId } : {}) }) : server.request('turn/start', { threadId, input, ...(args.clientUserMessageId ? { clientUserMessageId: args.clientUserMessageId } : {}), ...(args.model ? { model: args.model } : {}), ...(args.thinking ? { effort: args.thinking } : {}) });
   }
@@ -269,6 +281,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       const threadId = result.thread.id;
       this.threadServers.set(threadId, server);
       this.ownedThreads.add(threadId); this.createdThreads.add(threadId); this.rememberSettings(result);
+      this.scheduleRelease(threadId);
       const turn = await this.withThread(threadId, async () => {
         await server.request('thread/name/set', { threadId, name: title });
         return server.request('turn/start', { threadId, input: [...(text ? [{ type: 'text', text, text_elements: [] }] : []), ...(args.imagePaths ?? []).map(path => ({ type: 'localImage', path }))], ...(args.clientUserMessageId ? { clientUserMessageId: args.clientUserMessageId } : {}), ...(args.thinking ? { effort: args.thinking } : {}) });
@@ -309,6 +322,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   onServerEvent({ method, params }) {
     const threadId = params?.threadId ?? params?.thread?.id;
+    if (method === 'thread/status/changed' && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId);
     if (method === 'turn/completed' && this.ownedThreads.has(threadId)) {
       for (const [id, request] of this.approvals) if (request.params?.threadId === threadId) this.approvals.delete(id);
       this.scheduleRelease(threadId);
@@ -316,7 +330,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     if (!threadId || !this.ownedThreads.has(threadId) || this.refreshTimers.has(threadId)) return;
     const timer = setTimeout(async () => {
       this.refreshTimers.delete(threadId);
-      try { this.emit('event', { type: 'thread.updated', threadId, data: await this.readThread({ threadId }) }); } catch {}
+      try { this.emit('event', { type: 'thread.updated', threadId, data: await this.readThread({ threadId }) }); await this.ownerBridge.publish(threadId); } catch {}
     }, 150);
     this.refreshTimers.set(threadId, timer);
   }
@@ -411,6 +425,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.refreshTimers?.clear(); this.server?.close(); this.ipcAvailable = false;
     for (const server of new Set(this.threadServers.values())) if (server !== this.server) server.close();
     this.threadServers.clear(); this.ownedThreads.clear();
+    this.ownerBridge.reset();
     for (const timer of this.catalogRefreshTimers.values()) clearTimeout(timer);
     for (const timer of this.releaseTimers.values()) clearTimeout(timer);
     this.releaseTimers.clear(); this.catalogRefreshTimers.clear(); super.close();

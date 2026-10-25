@@ -163,23 +163,16 @@ class MainActivity : ComponentActivity() {
     BackHandler(model.selected!=null){if(model.previewKind!=null)model.closePreview()else model.back()}
     Scaffold(containerColor=MaterialTheme.colorScheme.background,snackbarHost={if(model.selected==null)SnackbarHost(snack)},
         topBar={if(model.selected==null){
-            Row(Modifier.statusBarsPadding().fillMaxWidth().heightIn(min=68.dp).padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
+            Row(Modifier.statusBarsPadding().fillMaxWidth().heightIn(min=56.dp).padding(start=16.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
                 if(tab==0){
-                    CodexMark();Spacer(Modifier.width(9.dp))
-                    Text("Codex Pocket",Modifier.weight(1f),fontSize=18.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    CodexMark(Modifier.size(28.dp));Spacer(Modifier.width(8.dp))
+                    Text("Codex Pocket",Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
                     if(model.profile!=null)ConnectionBadge(model){tab=2}
                     PocketAction("设置","打开设置"){tab=3}
                 }else{
                     PocketAction("返回","返回工作空间"){tab=0}
                     Text(when(tab){1->"任务动态";2->"我的电脑";4->"管理中心";5->"用户中心";else->"设置"},Modifier.weight(1f),fontSize=18.sp,fontWeight=FontWeight.SemiBold)
                     if(tab==1)PocketAction("刷新",enabled=model.connected){model.refresh()}
-                }
-            }
-        }},
-        bottomBar={if(model.selected==null&&model.profile!=null&&tab in 0..1){
-            Column(Modifier.background(MaterialTheme.colorScheme.background).navigationBarsPadding().padding(horizontal=20.dp).padding(top=10.dp,bottom=14.dp)){
-                Button(onClick={presetProject=null;showNew=true},enabled=model.connected&&!model.busy&&model.pendingOperation==null,modifier=Modifier.fillMaxWidth().height(52.dp),shape=RoundedCornerShape(12.dp)){
-                    PocketIcon("新增");Spacer(Modifier.width(10.dp));Text("新建对话",fontSize=15.sp,fontWeight=FontWeight.SemiBold)
                 }
             }
         }}
@@ -191,7 +184,7 @@ class MainActivity : ComponentActivity() {
                 if(model.pairing&&tab !in 2..5)PairingWaiting(model)
                 else if(model.profile==null&&tab !in 2..5)Welcome(scan,{showPair=true})
                 else when(tab){
-                    0,1->ThreadList(model,{tab=if(tab==0)1 else 0},{presetProject=it;showNew=true},tab==1)
+                    0,1->ThreadList(model,{tab=if(tab==0)1 else 0},{presetProject=it;showNew=true},tab==1,onCreate={presetProject=null;showNew=true})
                     2->ComputerScreen(model,scan,{showPair=true})
                     4,5->if(account?.isAdmin==true)key(tab){AdminScreen(account,if(tab==5)"all"else"pending")}else Text("需要管理员权限")
                     else->SettingsScreen(model,onComputer={tab=2},onTasks={tab=1},account=account,onAdmin={tab=4},onUsers={tab=5},onExitLan=onExitLan,onEnterLan=onEnterLan)

@@ -28,15 +28,17 @@
 | 多台电脑 | 保存多个配对并切换，按电脑隔离聊天缓存与草稿 |
 | 账号管理 | 一个 APK 按角色展示菜单；管理员审批、停用、续期、管理设备和查看安全提醒 |
 
+<p align="center"><img src="docs/images/workspace-compact.png" width="360" alt="手机紧凑工作空间，使用虚构测试数据"></p>
+
 ## 下载安装
 
-**安卓与电脑连接器：0.7.7。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**安卓与电脑连接器：0.7.8。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.7/Codex-Pocket-0.7.7.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.7/Codex-Pocket-Connector-0.7.7-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.7/Codex-Pocket-Connector-0.7.7-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.7/Codex-Pocket-Connector-0.7.7-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.8/Codex-Pocket-0.7.8.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.8/Codex-Pocket-Connector-0.7.8-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.8/Codex-Pocket-Connector-0.7.8-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.7.8/Codex-Pocket-Connector-0.7.8-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -78,7 +80,7 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
 
-**0.7.7** 新增自建中继配置和手机图片加文字发送，修复配对等待误报、临时消息重复，以及已送达但回执超时的确认问题。电脑和手机都需更新。详见 [更新说明](docs/patch-0.7.7.md) 与 [验收记录](docs/verification-0.7.7.md)。Windows 11 仍待实机验收。
+**0.7.8** 调整手机首页密度：搜索按需展开、新建入口移至顶部、精简项目和对话间距。补齐手机任务的桌面跟随同步，避免电脑再次获取同一会话的写入锁；加强空闲释放检查。电脑和手机都需更新。详见 [更新说明](docs/patch-0.7.8.md) 与 [验收记录](docs/verification-0.7.8.md)。Windows 11 仍待实机验收。
 
 ## 开发与自建
 

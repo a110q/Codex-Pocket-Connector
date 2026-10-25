@@ -49,6 +49,7 @@ class UiRedesignTest {
     }
     @Test fun projectsSearchCollapseAndCreateReachTheAuthenticatedPeer(){
         shot("01-workspace")
+        compose.onNodeWithContentDescription("展开搜索").performClick()
         compose.onNodeWithContentDescription("搜索项目或对话").performTextInput("图片")
         compose.onNodeWithText("图片预览优化").assertIsDisplayed()
         compose.onNodeWithText("个人网站").assertDoesNotExist()
@@ -62,6 +63,26 @@ class UiRedesignTest {
         compose.onNodeWithText("开始对话").performClick()
         until{peer.calls.any{it.optString("action")=="thread.create"}&&model.selected?.optString("id")=="ui-created"&&!model.loadingThread}
         Assert.assertEquals("p1",peer.calls.first{it.optString("action")=="thread.create"}.getJSONObject("args").getString("projectId"))
+    }
+    @Test fun compactWorkspaceKeepsSearchAndNavigationAccessible(){
+        compose.onNodeWithContentDescription("搜索项目或对话").assertDoesNotExist()
+        compose.onNodeWithText("移动端适配问题").assertIsDisplayed()
+        compose.onNodeWithContentDescription("新建对话").assertIsDisplayed().assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("新对话指令").assertIsDisplayed()
+        compose.onNodeWithContentDescription("取消新建对话").performClick()
+        compose.onNodeWithContentDescription("工作空间选项").performClick()
+        compose.onNodeWithText("任务动态").assertIsDisplayed()
+        compose.onNodeWithText("已归档").assertIsDisplayed()
+        compose.onNodeWithText("刷新项目与对话").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("展开搜索").performClick()
+        compose.onNodeWithContentDescription("搜索项目或对话").performClick().performTextInput("图片")
+        val bounds=compose.onNodeWithContentDescription("搜索项目或对话").fetchSemanticsNode().boundsInRoot
+        Assert.assertTrue("Expanded search must keep its touch height",bounds.height>=52*context.resources.displayMetrics.density-1)
+        compose.onNodeWithText("图片预览优化").assertIsDisplayed()
+        shot("12-compact-search-keyboard")
+        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        compose.onNodeWithContentDescription("收起搜索").performClick()
+        compose.onNodeWithText("个人网站").assertIsDisplayed()
     }
     @Test fun transcriptToolDetailsSettingsAndSendRemainFunctional(){
         chat()
@@ -131,6 +152,7 @@ class UiRedesignTest {
         compose.onNodeWithText("深色").performClick()
         Assert.assertEquals("dark",SecureStore(context).load().getString("appearance"))
         compose.onNodeWithContentDescription("返回工作空间").performClick();shot("05-dark-workspace")
+        compose.onNodeWithContentDescription("展开搜索").performClick()
         compose.onNodeWithContentDescription("搜索项目或对话").performTextInput("没有这样的项目或对话")
         compose.runOnUiThread{model.error="网络暂时不可用。已缓存的对话仍可查看，连接恢复后会重新同步。"}
         compose.onNodeWithText("没有找到相关项目或对话").assertIsDisplayed();shot("08-empty-error")

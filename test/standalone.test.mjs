@@ -312,3 +312,72 @@ test('text and uploaded images enter one public first turn with the same client 
   const input=server.calls.find(c=>c.method==='turn/start').params;
   assert.equal(input.clientUserMessageId,'client');assert.deepEqual(input.input.map(i=>i.type),['text','localImage','localImage']);
 });
+
+test('desktop discovery advertises only local Pocket-owned chats and supported protocol versions', async t => {
+  const { a, messages } = publicCreateFixture(t, { active: true });
+  await a.createThread({ text: 'first' });
+  const ask = (method, version, params = {}, hostId) => {
+    a.handleIpc({ type: 'client-discovery-request', requestId: 'discover', request: { method, version, params: { conversationId: 'phone-thread', hostId: 'local', ...params }, ...(hostId ? { hostId } : {}) } });
+    return messages.at(-1).response.canHandle;
+  };
+  assert(ask('thread-owner-discovery', 1));
+  assert(ask('thread-follower-start-turn', 2));
+  assert(!ask('thread-follower-start-turn', 99));
+  assert(!ask('thread-owner-discovery', 1, { conversationId: 'someone-else' }));
+  assert(!ask('thread-owner-discovery', 1, {}, 'remote'));
+  assert(!ask('ide-context', 0));
+});
+
+test('desktop follows an active mobile writer, receives complete tool history and keeps the idle input usable', async t => {
+  const opts = { active: true }, { a, server, messages } = publicCreateFixture(t, opts);
+  await a.createThread({ text: 'first' });
+  a.states.set('phone-thread', { id: 'phone-thread', latestThreadSettings: { model: 'test-model', effort: 'high' } });
+  const original = server.request.bind(server);
+  server.request = async (method, params) => method === 'thread/read' ? { thread: { id: params.threadId, status: { type: opts.active ? 'active' : 'idle' }, turns: [{ id: 't', status: opts.active ? 'inProgress' : 'completed', items: [{ id: 'u', type: 'userMessage', content: [{type:'text',text:'first'}] }, { id: 'cmd', type:'commandExecution',command:'pwd',aggregatedOutput:'/project',status:'completed',exitCode:0 }] }] } } : original(method,params);
+  a.handleIpc({ type: 'broadcast', method: 'thread-stream-following-changed', version: 1, sourceClientId: 'desktop-window', params: { hostId: 'local', conversationId: 'phone-thread', following: true } });
+  await new Promise(setImmediate);
+  const snapshot = messages.find(m => m.method === 'thread-stream-state-changed');
+  assert.deepEqual(snapshot.targetClientIds, ['desktop-window']);
+  assert.equal(snapshot.version, 11);
+  const state = snapshot.params.change.conversationState;
+  assert.equal(state.resumeState, 'resumed'); assert.equal(state.latestCollaborationMode.settings.model, 'test-model');
+  assert.equal(state.turns[0].turnId, 't'); assert.equal(state.turns[0].params.input[0].text, 'first');
+  assert.equal(state.turns[0].items[1].aggregatedOutput, '/project');
+  opts.active = false;
+  assert.equal(await a.releaseThread('phone-thread'), false, 'desktop follower must retain its usable owner');
+  a.handleIpc({ type: 'broadcast', method: 'thread-stream-following-changed', version: 1, sourceClientId: 'desktop-window', params: { hostId: 'local', conversationId: 'phone-thread', following: false } });
+  assert.equal(await a.releaseThread('phone-thread'), true);
+});
+
+test('a desktop user turn reaches the existing worker once and app-tool deliveries stay blocked', async t => {
+  const { a, server, messages } = publicCreateFixture(t, { active: true });
+  await a.createThread({ text: 'first' });
+  const base = { type:'request', method:'thread-follower-start-turn', version:2, sourceClientId:'desktop-window' };
+  a.handleIpc({ ...base, requestId:'user', params:{ conversationId:'phone-thread',turnStart:{request:{threadId:'phone-thread',input:[{type:'text',text:'desktop input'}]}}} });
+  await new Promise(setImmediate);
+  assert.equal(messages.find(m=>m.requestId==='user').resultType,'success');
+  assert.equal(server.calls.filter(c=>c.method==='turn/start'&&c.params.input[0].text==='desktop input').length,1);
+  a.handleIpc({ ...base, requestId:'untrusted',params:{conversationId:'phone-thread',turnStart:{request:{input:[{type:'text',text:'must not send'}]},context:{responseItems:[{type:'function_call_output'}]}}} });
+  await new Promise(setImmediate);
+  assert.equal(messages.find(m=>m.requestId==='untrusted').resultType,'error');
+  assert(!server.calls.some(c=>c.params?.input?.[0]?.text==='must not send'));
+});
+
+test('idle watchdog survives more than eight active checks and a missing completion notification', async t => {
+  const options={active:true}, {a,server}=publicCreateFixture(t,options);
+  a.options.releaseMaxDelayMs=10;
+  await a.createThread({text:'first'});
+  await new Promise(r=>setTimeout(r,150));
+  assert(a.ownedThreads.has('phone-thread')); assert(server.calls.filter(c=>c.method==='thread/read').length>8);
+  options.active=false;
+  await new Promise(r=>setTimeout(r,50));
+  assert(!a.ownedThreads.has('phone-thread'));
+});
+
+test('authoritative idle runtime releases a stale historical inProgress turn but never a pending approval', async t => {
+  const { a }=publicCreateFixture(t); await a.createThread({text:'first'});
+  a.storedState=async()=>({status:{type:'idle'},turns:[{id:'old',status:'inProgress'}]});
+  a.approvals.set('phone-thread:1',{params:{threadId:'phone-thread'}});
+  assert.equal(await a.releaseThread('phone-thread'),false);
+  a.approvals.clear(); assert.equal(await a.releaseThread('phone-thread'),true);
+});
