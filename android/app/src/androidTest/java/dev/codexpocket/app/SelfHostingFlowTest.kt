@@ -24,13 +24,14 @@ class SelfHostingFlowTest {
     private lateinit var accountFile:String
     private val pocketFile="qa-selfhost-flow.enc"
     @Before fun setup(){
+        Assume.assumeTrue("Requires explicitly configured dedicated self-host QA environment",!args.getString("selfRelay").isNullOrBlank()&&!args.getString("selfPin").isNullOrBlank())
         api=AccountApi(JSONObject().put("relay",args.getString("selfRelay")).put("pin",args.getString("selfPin")))
         accountFile="pocket-account${AccountApi.suffix(context,api.defaults)}.enc";saved=SecureStore(context,accountFile).load();SecureStore(context,accountFile).save(JSONObject())
         SecureStore(context,pocketFile).save(JSONObject())
         compose.runOnUiThread{pocket=PocketModel(context,pocketFile);account=AccountModel(context,api){auth->if(auth!=null){pocket.authorizeAccount(auth);pocket.start()}else pocket.clearAccountAccess()};account.start()}
         compose.setContent{PocketTheme("light"){if(account.canUse)PocketApp(pocket,{},null,{},account)else AccountGate(account)}}
     }
-    @After fun cleanup(){compose.runOnUiThread{account.close();pocket.stop()};SecureStore(context,accountFile).save(saved);SecureStore(context,pocketFile).save(JSONObject())}
+    @After fun cleanup(){if(this::account.isInitialized)compose.runOnUiThread{account.close();pocket.stop()};if(this::saved.isInitialized)SecureStore(context,accountFile).save(saved);SecureStore(context,pocketFile).save(JSONObject())}
     private fun until(timeout:Long=20000,condition:()->Boolean){compose.waitUntil(timeout){var ready=false;compose.runOnUiThread{ready=condition()};ready}}
     @Test fun selfHostedRegistrationApprovalPairingImageTextAndReconnection(){
         val username="self_${System.currentTimeMillis()}";val password="Selfhost-user-password-077"

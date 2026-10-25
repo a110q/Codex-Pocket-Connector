@@ -98,6 +98,11 @@ val PocketGreen = Color(0xFF16AD70)
             "查看","只读"->{drawOval(color,Offset(s*.08f,s*.27f),Size(s*.84f,s*.46f),style=stroke);drawCircle(color,s*.12f,style=stroke)}
             "锁"->{rect(.23f,.42f,.54f,.45f);drawArc(color,180f,180f,false,Offset(s*.33f,s*.13f),Size(s*.34f,s*.58f),style=stroke)}
             "推理","任务"->{drawArc(color,140f,260f,false,Offset(s*.25f,s*.12f),Size(s*.5f,s*.56f),style=stroke);line(.34f,.61f,.38f,.77f);line(.66f,.61f,.62f,.77f);line(.38f,.77f,.62f,.77f);line(.42f,.88f,.58f,.88f)}
+            "差异"->{line(.3f,.15f,.3f,.84f);line(.7f,.15f,.7f,.84f);line(.14f,.36f,.46f,.36f);line(.54f,.64f,.86f,.64f);line(.7f,.48f,.7f,.8f)}
+            "时钟"->{drawCircle(color,s*.37f,style=stroke);line(.5f,.24f,.5f,.5f);line(.5f,.5f,.67f,.62f)}
+            "用量"->{line(.17f,.87f,.17f,.62f);line(.39f,.87f,.39f,.42f);line(.61f,.87f,.61f,.22f);line(.83f,.87f,.83f,.12f)}
+            "权限"->{val p=Path().apply{moveTo(.5f*s,.1f*s);lineTo(.82f*s,.25f*s);lineTo(.77f*s,.62f*s);lineTo(.5f*s,.89f*s);lineTo(.23f*s,.62f*s);lineTo(.18f*s,.25f*s);close()};drawPath(p,color,style=stroke);line(.36f,.48f,.46f,.59f);line(.46f,.59f,.66f,.37f)}
+            "工具"->{rect(.15f,.15f,.27f,.27f,.04f);rect(.58f,.15f,.27f,.27f,.04f);rect(.15f,.58f,.27f,.27f,.04f);rect(.58f,.58f,.27f,.27f,.04f)}
             else->{drawCircle(color,s*.26f,style=stroke);drawCircle(color,s*.08f,style=stroke);for(i in 0..7){val a=i*Math.PI/4;drawLine(color,Offset((s*.5+s*.31*kotlin.math.cos(a)).toFloat(),(s*.5+s*.31*kotlin.math.sin(a)).toFloat()),Offset((s*.5+s*.42*kotlin.math.cos(a)).toFloat(),(s*.5+s*.42*kotlin.math.sin(a)).toFloat()),s*.06f,cap=StrokeCap.Round)}}
         }
     }

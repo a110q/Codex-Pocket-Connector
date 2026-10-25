@@ -1,4 +1,6 @@
 import { approvalResponse, APPROVAL_METHODS } from './approvals.mjs';
+import { ExtensionTools } from './extensions-tools.mjs';
+import { WorkspaceTools } from './workspace-tools.mjs';
 import { attachmentText } from './file-uploads.mjs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,6 +21,8 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.models = []; this.ownedThreads = new Set(); this.createdThreads = new Set(); this.catalogRefreshTimers = new Map(); this.states = new Map(); this.approvals = new Map(); this.refreshTimers = new Map(); this.ipcAvailable = false;
     this.ipcConnecting = null; this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
     this.ownerBridge = new DesktopOwnerBridge(this);
+    this.workspace = new WorkspaceTools(this);
+    this.extensions = new ExtensionTools(this);
     this.server.on('notification', message => this.onServerEvent(message));
     this.server.on('request', message => this.onServerRequest(message));
     this.server.on('disconnect', error => {
@@ -38,7 +42,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   diagnostics() {
     return { connected: this.ready, backend: 'codex-app-server', desktopWindowConnected: this.ipcAvailable,
-      capabilities: Object.fromEntries(['threads.list','projects.list','thread.read','message.send','thread.create','models.list','turn.stop','approval.respond','thread.settings.update','thread.archive','thread.unarchive','thread.delete'].map(key => [key, true])),
+      capabilities: Object.fromEntries(['threads.list','projects.list','thread.read','message.send','thread.create','models.list','turn.stop','approval.respond','thread.settings.update','thread.archive','thread.unarchive','thread.delete','thread.rename','workspace.list','workspace.search','workspace.read','git.status','git.diff','git.commit','git.push','git.pr.create','review.start','extensions.list','skill.read','skill.set','skill.save','skill.delete','plugin.list','plugin.install','plugin.uninstall','plugin.set','account.usage','mcp.list','mcp.login'].map(key => [key, true])),
       limitations: ['Local Codex projects and chats use the installed Codex account. Remote hosts and ChatGPT-only conversations are not included.', ...(!this.ipcAvailable ? ['Open Codex to synchronize live desktop-owned conversations; concurrent desktop sessions cannot be controlled while its window is disconnected.'] : [])] };
   }
   modelCatalog() { return this.models; }
@@ -172,7 +176,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       const owner = await this.desktopOwner(threadId, args.hostId);
       if (owner) try { const result = await super.readThread(args, { owner }); if (result.source === 'desktop-live') return result; } catch {}
     }
-    return { ...normalizeSnapshot(await this.storedState(threadId)), source: 'codex-app-server', live: true };
+    return { ...normalizeSnapshot(await this.storedState(threadId)), tokenUsage:this.extensions.tokens.get(threadId)??null, source: 'codex-app-server', live: true };
   }
   async tool(name, args) {
     if (name !== 'read_thread') throw new Error('此独立连接不使用桌面工具管道。');
@@ -217,6 +221,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       threadId = string(args.threadId, '对话 ID', 200); text = (args.imagePaths?.length || args.files?.length) && !(args.text ?? args.prompt)?.trim() ? '' : string(args.text ?? args.prompt, '消息');
       if (args.hostId && args.hostId !== 'local') throw new Error('此连接仅支持本机对话。');
     } catch (error) { throw notSubmitted(error); }
+    try { args = { ...args, files: [...(args.files ?? []), ...await this.workspace.references(args)] }; } catch (e) { throw notSubmitted(e); }
     const inputText=attachmentText(text,args.files);
     const input = [...(inputText ? [{ type: 'text', text:inputText, text_elements: [] }] : []), ...(args.imagePaths ?? []).map(path => ({ type: 'localImage', path }))];
     let owner = !this.ownedThreads.has(threadId) ? await this.desktopOwner(threadId) : null;
@@ -324,6 +329,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     return { threadId: args.threadId, hostId: 'local', applied: true, verified, settings: current, appliesTo: 'subsequent-turns' };
   }
   onServerEvent({ method, params }) {
+    this.extensions?.onEvent({method,params});
     const threadId = params?.threadId ?? params?.thread?.id;
     if(method==='serverRequest/resolved')for(const [key,request]of this.approvals)if(String(request.id)===String(params?.requestId)&&request.params?.threadId===threadId)this.approvals.delete(key);
     if (method === 'thread/status/changed' && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId);
@@ -386,14 +392,40 @@ export class StandaloneAdapter extends DesktopAdapter {
       return { threadId, deleted, archived, verified: true, desktopNotified };
     });
   }
+  async renameThread(args) {
+    const threadId=string(args.threadId,'对话 ID',200),name=string(args.name,'对话名称',60).trim();
+    return this.withThread(threadId,async()=>{
+      const metadata=(await this.listThreads({includeArchived:true})).threads.find(t=>t.id===threadId);
+      await this.server.request('thread/name/set',{threadId,name});
+      this.announceThread(threadId,{removed:metadata?.archived===true,cwd:metadata?.cwd});
+      const {thread}=await this.server.request('thread/read',{threadId,includeTurns:false});
+      this.emit('event',{type:'catalog.updated'});
+      return {verified:thread.name===name,name:thread.name??name};
+    });
+  }
+  async startReview(args) {
+    const threadId=string(args.threadId,'对话 ID',200),target=args.target??{type:'uncommittedChanges'};
+    const labels={uncommittedChanges:'审查当前工作区所有未提交的修改（含暂存、未暂存和新文件）。',baseBranch:`审查当前分支相对基础分支 ${target.branch??''} 的修改。`,commit:`审查提交 ${target.sha??''} 的修改。`,custom:target.instructions};
+    if(!Object.hasOwn(labels,target.type))throw notSubmitted(new Error('审查类型无效'));
+    if(target.type==='baseBranch')string(target.branch,'基础分支',200);
+    if(target.type==='commit'&&!/^[a-f0-9]{7,64}$/i.test(target.sha??''))throw notSubmitted(new Error('提交 ID 无效'));
+    const instruction=string(labels[target.type],'审查说明',10000);
+    // Send through the current writer, including desktop-owned conversations.
+    // This is the same turn/start workflow used by the installed desktop review UI.
+    return this.sendMessage({...args,text:`请进行代码审查。${instruction}\n只报告可操作的问题，注明严重程度、文件与行号，解释影响并给出修复建议。不要直接修改文件。`,fileReferences:[],files:[],imagePaths:[]});
+  }
   async call(action, args = {}) {
     if (!this.ready) throw new Error('Codex 尚未连接');
     if (args.hostId && args.hostId !== 'local') throw new Error('独立连接只支持本机 Codex。');
+    if (['extensions.list','skill.read','skill.set','skill.save','skill.delete','plugin.list','plugin.install','plugin.uninstall','plugin.set','account.usage','mcp.list','mcp.login'].includes(action)) return this.extensions.call(action,args);
+    if (action.startsWith('workspace.') || action.startsWith('git.')) return this.workspace.call(action,args);
     switch (action) {
       case 'threads.list': return this.listThreads(args);
       case 'projects.list': return this.listProjects();
       case 'models.list': return { models: this.models, source: 'codex-app-server' };
       case 'thread.read': return this.readThread(args);
+      case 'thread.rename': return this.renameThread(args);
+      case 'review.start': return this.startReview(args);
       case 'message.send': return this.sendMessage(args);
       case 'thread.create': return this.createThread(args);
       case 'thread.settings.update': return this.updateSettings(args);

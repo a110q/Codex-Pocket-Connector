@@ -189,6 +189,7 @@ class MainActivity : ComponentActivity() {
 @Composable fun PocketApp(model:PocketModel,scan:()->Unit,incoming:String?,dismissIncoming:()->Unit,account:AccountModel?=null,openAdmin:Boolean=false,consumeAdmin:()->Unit={},onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null,onSwitchService:(()->Unit)?=null){
     var tab by rememberSaveable{mutableIntStateOf(0)}
     LaunchedEffect(openAdmin,account?.isAdmin){if(openAdmin){if(account?.isAdmin==true){model.back();tab=4};consumeAdmin()}}
+    var showTools by remember{mutableStateOf(false)}
     var showPair by remember{mutableStateOf(false)}
     var showNew by remember{mutableStateOf(false)}
     var presetProject by remember{mutableStateOf<String?>(null)}
@@ -203,6 +204,7 @@ class MainActivity : ComponentActivity() {
                     CodexMark(Modifier.size(28.dp));Spacer(Modifier.width(8.dp))
                     Text("Codex Pocket",Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
                     if(model.profile!=null)ConnectionBadge(model){tab=2}
+                    PocketAction("工具","打开工作空间工具"){showTools=true}
                     PocketAction("设置","打开设置"){tab=3}
                 }else{
                     PocketAction("返回","返回工作空间"){tab=0}
@@ -227,6 +229,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    if(showTools)ToolboxScreen(model,onClose={showTools=false})
     if(showPair||incoming!=null)PairDialog(incoming.orEmpty(),{showPair=false;dismissIncoming()}){model.pair(it);showPair=false;dismissIncoming()}
     if(showNew)NewTaskDialog(model,presetProject,{showNew=false}){text,project,id->model.create(text,project,id);showNew=false}
 }
@@ -272,6 +275,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
     val chatScope=rememberCoroutineScope()
     val pickImages=rememberImagePicker(model,thread.getString("id"))
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")};var expanded by remember{mutableStateOf(false)}
+    var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
     var addressFocused by remember { mutableStateOf(false) }
     var previewCollapsed by remember{mutableStateOf(false)}
     LaunchedEffect(model.previewKind,model.previewArtifact?.optString("id"),model.previewUrl){if(model.previewKind!=null){focus.clearFocus();previewCollapsed=false}}
@@ -302,10 +306,13 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
                 val project=model.projects.find{it.optString("projectId")==thread.optString("projectId")}
                 Text(project?.label()?:snapshot?.optJSONObject("thread")?.optString("cwd")?.takeIf{it.isNotBlank()&&it!="null"}?.substringAfterLast('/')?:"独立对话",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
+            PocketAction("文件","打开项目文件"){tools="files"}
             PocketAction("网页","打开网页预览"){model.showPreviewTab("browser")}
             Box{
                 PocketAction("更多","对话更多操作"){menu=true}
                 DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
+                    DropdownMenuItem(text={Text("重命名对话")},onClick={menu=false;rename=true})
+                    DropdownMenuItem(text={Text("工作空间工具")},onClick={menu=false;tools="home"})
                     DropdownMenuItem(text={Text("查看交付文件")},onClick={menu=false;showResults=true})
                     DropdownMenuItem(text={Text("模型与权限")},enabled=model.connected&&!model.loadingThread,onClick={menu=false;settingsSection="model";showSettings=true})
                     DropdownMenuItem(text={Text("刷新对话")},enabled=model.connected,onClick={menu=false;model.openThread(thread)})
@@ -339,8 +346,10 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
         if(!editingAddress)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal=12.dp).padding(top=5.dp,bottom=if(keyboardOpen)4.dp else 8.dp)){
             if(messages.isNotEmpty()&&!followBottom&&!(previewExpanded&&model.previewKind!=null))Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center){TextButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}){Text("跳到最新 ↓",fontSize=11.sp)}}
             PendingCard(model)
+            FileMentionSuggestions(model){tools="files"}
             OutgoingImageStrip(model,thread.getString("id"))
             OutgoingFileStrip(model,thread.getString("id"))
+            if(model.referencesFor().isNotEmpty())Row(Modifier.horizontalScroll(rememberScrollState())){model.referencesFor().forEach{path->InputChip(true,{model.removeReference(path)},label={Text("@$path ×",fontSize=11.sp)})}}
             model.imageStatus?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)}
             if(active)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=model.connected&&!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
             Surface(shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
@@ -361,6 +370,8 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
         }
     }
 
+    if(rename)RenameThreadDialog(model,thread){rename=false}
+    tools?.let{initial->ToolboxScreen(model,initial){tools=null}}
     if(showSettings)ThreadSettingsSheet(model,settingsSection){showSettings=false}
     if(showResults)ResultsDialog(model){showResults=false}
     if(model.detailMessage!=null)MessageDetails(model)
@@ -418,7 +429,12 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
             if(summary.isNotBlank())Text(summary,fontSize=12.sp,maxLines=2,overflow=TextOverflow.Ellipsis,fontFamily=if(question)FontFamily.SansSerif else FontFamily.Monospace)
             if(!supported)Text("此类授权请在电脑处理。",fontSize=12.sp)
             else if(question)Button(onClick={details=true},enabled=enabled){Text("回答问题")}
-            else Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){Button(onClick={model.approve(request,"accept")},enabled=enabled){Text("允许本次")};OutlinedButton(onClick={model.approve(request,"decline")},enabled=enabled){Text("拒绝")}}
+            else Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
+                val offered=params.optJSONArray("availableDecisions")?.let{a->(0 until a.length()).map{a.get(it)}}
+                if(offered==null||"accept" in offered)Button(onClick={model.approve(request,"accept")},enabled=enabled){Text("允许本次")}
+                if(offered==null||"decline" in offered)OutlinedButton(onClick={model.approve(request,"decline")},enabled=enabled){Text("拒绝")}
+                if(offered!=null&&"accept" !in offered)Button(onClick={details=true},enabled=enabled){Text("查看并审批")}
+            }
         }
     }
     if(details) {
@@ -428,6 +444,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
                 Column(Modifier.statusBarsPadding().navigationBarsPadding().imePadding().padding(20.dp)) {
                     Row(verticalAlignment=Alignment.CenterVertically){Text(if(question)"回答 Codex" else "审批详情",fontSize=22.sp,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f));PocketAction("关闭"){details=false}}
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical=18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+                        if(!question)ApprovalDecisionList(request,model){details=false}
                         if(question)params.optJSONArray("questions").objects().forEach{q->
                             val id=q.getString("id");Text(q.optString("question"),fontWeight=FontWeight.Medium)
                             q.optJSONArray("options").objects().forEach{o->FilterChip(selected=answers[id]==o.optString("label"),onClick={answers=answers+(id to o.optString("label"))},label={Column{Text(o.optString("label"));val d=o.optString("description");if(d.isNotBlank())Text(d,fontSize=11.sp)}})}
@@ -439,7 +456,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
                             if(method=="item/fileChange/requestApproval")SelectionContainer{Text(params.toString(2),fontFamily=FontFamily.Monospace,fontSize=12.sp)}
                         }
                     }
-                    if(supported)Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    if(supported&&question)Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                         if(question)Button(onClick={val response=JSONObject();answers.forEach{(id,value)->response.put(id,JSONObject().put("answers",org.json.JSONArray().put(value)))};model.approve(request,"answer",response);details=false},enabled=enabled&&params.optJSONArray("questions").objects().all{answers[it.optString("id")]?.isNotBlank()==true},modifier=Modifier.fillMaxWidth()){Text("提交回答")}
                         else {OutlinedButton(onClick={model.approve(request,"decline");details=false},enabled=enabled,modifier=Modifier.weight(1f)){Text("拒绝")};Button(onClick={model.approve(request,"accept");details=false},enabled=enabled,modifier=Modifier.weight(1f)){Text("允许本次")}}
                     }

@@ -1,0 +1,51 @@
+package dev.codexpocket.app
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.*
+import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.test.platform.app.InstrumentationRegistry
+import android.content.ContentValues
+import android.provider.MediaStore
+import android.graphics.Bitmap
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.*
+
+class ToolboxFlowTest {
+ @get:Rule val compose=createAndroidComposeRule<ComponentActivity>()
+ private val context get()=compose.activity.applicationContext
+ private lateinit var model:PocketModel
+ private lateinit var peer:ConnectionRecoveryTest.Peer
+ private var page by mutableStateOf("home")
+ private var title="测试对话"
+ private val store="qa-toolbox.enc"
+ private val job=JSONObject().put("id","job-qa").put("name","每日检查").put("prompt","只读检查").put("projectId","project-1").put("enabled",true).put("schedule",JSONObject().put("type","interval").put("hours",2)).put("nextAt",1792910000000)
+ @Before fun setup(){SecureStore(context,store).save(JSONObject());peer=ConnectionRecoveryTest.Peer();peer.extra={action,args->when(action){
+  "thread.rename"->{title=args.getString("name");JSONObject().put("verified",true).put("name",title)}
+  "workspace.list","workspace.search"->JSONObject().put("entries",JSONArray().put(JSONObject().put("name","src").put("path","src").put("directory",true)).put(JSONObject().put("name","report.kt").put("path","src/report.kt").put("directory",false))).put("nextOffset",JSONObject.NULL)
+  "workspace.read"->{val bytes="fun main() = println(\"QA\")".toByteArray();JSONObject().put("name","report.kt").put("size",bytes.size).put("total",bytes.size).put("data",android.util.Base64.encodeToString(bytes,2)).put("nextOffset",bytes.size).put("done",true).put("fingerprint","fixture")}
+  "git.status"->JSONObject().put("branch","feature").put("head","abc123").put("upstream","origin/feature").put("revision","revision-qa").put("branches",JSONArray().put("main").put("feature")).put("files",JSONArray().put(JSONObject().put("path","src/report.kt").put("status"," M")))
+  "git.diff"->JSONObject().put("path",args.getString("path")).put("diff","--- a/src/report.kt\n+++ b/src/report.kt\n@@ -1 +1 @@\n-before\n+after")
+  "extensions.list"->JSONObject().put("skills",JSONArray().put(JSONObject().put("name","qa-skill").put("path","/fixture/SKILL.md").put("scope","project").put("description","QA 技能描述").put("enabled",true)))
+  "skill.read"->JSONObject().put("content","# QA skill\nRead only").put("editable",false)
+  "plugin.list"->JSONObject().put("plugins",JSONArray().put(JSONObject().put("id","qa-plugin").put("name","qa-plugin").put("installed",true).put("enabled",true).put("marketplaceName","QA marketplace")))
+  "automations.list"->JSONObject().put("jobs",JSONArray().put(job)).put("timeZone","Asia/Shanghai")
+  "account.usage"->JSONObject().put("rateLimits",JSONObject().put("rateLimits",JSONObject().put("primary",JSONObject().put("usedPercent",20).put("resetsAt",1792910000)))).put("tokenUsage",JSONObject().put("total",JSONObject().put("totalTokens",12000).put("inputTokens",10000).put("outputTokens",2000)).put("last",JSONObject().put("totalTokens",5000)).put("modelContextWindow",100000))
+  "mcp.list"->JSONObject().put("servers",JSONArray().put(JSONObject().put("name","qa-tools").put("authStatus","notLoggedIn")))
+  "skill.set","plugin.set","automation.save","automation.run","automation.delete","git.commit","git.push","review.start"->JSONObject().put("saved",true)
+  else->null
+ }};SecureStore(context,store).save(JSONObject().put("profile",peer.profile));compose.runOnUiThread{model=PocketModel(context,store);model.start()};compose.setContent{PocketTheme("light"){key(page){if(page=="chat")PocketApp(model,{},null,{})else ToolboxScreen(model,page){page="chat"}}}};until{model.connected&&model.projects.isNotEmpty()};compose.runOnUiThread{model.openThread(JSONObject().put("id","local-network-test").put("hostId","local").put("title",title))};until{!model.loadingThread}}
+ @After fun cleanup(){compose.runOnUiThread{model.stop()};peer.close();SecureStore(context,store).save(JSONObject())}
+ private fun until(c:()->Boolean){compose.waitUntil(15000){var ok=false;compose.runOnUiThread{ok=c()};ok}}
+ private fun open(name:String){compose.runOnUiThread{page=name};compose.waitForIdle()}
+ private fun command(action:String)=peer.commands.last{it.optString("action")==action}.getJSONObject("args")
+ private fun shot(name:String){compose.waitForIdle();val v=ContentValues().apply{put(MediaStore.Images.Media.DISPLAY_NAME,"toolbox-$name.png");put(MediaStore.Images.Media.MIME_TYPE,"image/png");put(MediaStore.Images.Media.RELATIVE_PATH,"Pictures/CodexPocket-${BuildConfig.VERSION_NAME}");put(MediaStore.Images.Media.IS_PENDING,1)};val uri=context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,v)!!;context.contentResolver.openOutputStream(uri)!!.use{InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it)};context.contentResolver.update(uri,ContentValues().apply{put(MediaStore.Images.Media.IS_PENDING,0)},null,null)}
+ @Test fun toolboxOffersEveryRequestedCategory(){compose.onNodeWithText("项目文件").assertIsDisplayed();compose.onNodeWithText("代码与 Git").assertIsDisplayed();compose.onNodeWithText("定时任务").assertIsDisplayed();shot("home")}
+ @Test fun renameFromChatSendsRealIdentityAndTitle(){open("chat");compose.onNodeWithContentDescription("对话更多操作").performClick();compose.onNodeWithText("重命名对话").performClick();compose.onNodeWithText("对话名称").performTextReplacement("手机重命名");compose.onNodeWithText("保存").performClick();until{peer.commands.any{it.optString("action")=="thread.rename"}};Assert.assertEquals("手机重命名",command("thread.rename").getString("name"));Assert.assertEquals("local-network-test",command("thread.rename").getString("threadId"))}
+ @Test fun fileSearchReferenceIsSentWithTextAndSurvivesDraft(){open("files");compose.waitUntil(10000){compose.onAllNodesWithText("@引用").fetchSemanticsNodes().isNotEmpty()};shot("files");compose.onNodeWithText("@引用").performClick();until{page=="chat"};Assert.assertEquals(listOf("src/report.kt"),model.referencesFor());compose.onNodeWithContentDescription("发送").performClick();until{peer.messages.isNotEmpty()};Assert.assertEquals("src/report.kt",peer.messages.single().getJSONArray("fileReferences").getString(0));Assert.assertTrue(peer.messages.single().getString("text").contains("@src/report.kt"))}
+ @Test fun projectCodePreviewLoadsThroughEncryptedChunks(){open("files");compose.waitUntil(10000){compose.onAllNodesWithText("report.kt").fetchSemanticsNodes().isNotEmpty()};compose.onNodeWithText("report.kt").performClick();until{model.previewFile!=null};Assert.assertTrue(model.previewFile!!.readText().contains("println"));shot("preview")}
+ @Test fun gitDiffIsPerFileAndCommitCarriesReviewedRevision(){open("git");compose.waitUntil(10000){compose.onAllNodesWithText("src/report.kt").fetchSemanticsNodes().isNotEmpty()};compose.onNodeWithText("src/report.kt").performClick();compose.waitUntil(10000){compose.onAllNodesWithText("+after").fetchSemanticsNodes().isNotEmpty()};compose.onNodeWithText("-before").assertIsDisplayed();shot("diff");compose.onNodeWithText("返回修改文件").performClick();compose.onAllNodes(isToggleable()).onFirst().performClick();compose.onNodeWithText("提交").performClick();compose.onNodeWithText("提交说明").performTextInput("QA commit");compose.onNodeWithText("检查并继续").performClick();compose.onNodeWithText("确认执行").performClick();until{peer.commands.any{it.optString("action")=="git.commit"}};val a=command("git.commit");Assert.assertEquals("revision-qa",a.getString("revision"));Assert.assertEquals("src/report.kt",a.getJSONArray("paths").getString(0))}
+ @Test fun skillsPluginsAndSchedulesUseRealMutationActions(){open("skills");compose.waitUntil(10000){compose.onAllNodesWithText("qa-skill").fetchSemanticsNodes().isNotEmpty()};compose.onAllNodes(isToggleable()).onFirst().performClick();until{peer.commands.any{it.optString("action")=="skill.set"}&&!model.busy};Assert.assertFalse(command("skill.set").getBoolean("enabled"));open("plugins");compose.waitUntil(10000){compose.onAllNodesWithText("qa-plugin").fetchSemanticsNodes().isNotEmpty()};compose.onAllNodes(isToggleable()).onFirst().performClick();until{peer.commands.any{it.optString("action")=="plugin.set"}&&!model.busy};open("schedules");compose.waitUntil(10000){compose.onAllNodesWithText("每日检查").fetchSemanticsNodes().isNotEmpty()};shot("schedules");compose.onAllNodes(isToggleable()).onFirst().performClick();until{peer.commands.any{it.optString("action")=="automation.save"}};Assert.assertFalse(command("automation.save").getBoolean("enabled"))}
+ @Test fun usageShowsRealLimitsResetAndLastContextNotLifetime(){open("usage");compose.waitUntil(10000){compose.onAllNodesWithText("主要额度 · 剩余 80%").fetchSemanticsNodes().isNotEmpty()};compose.onNodeWithText("上下文：5000 / 100000（5%）").assertIsDisplayed();shot("usage")}
+ @Test fun mcpServicesExposeLoginEntry(){open("mcp");compose.waitUntil(10000){compose.onAllNodesWithText("qa-tools").fetchSemanticsNodes().isNotEmpty()};compose.onNodeWithText("登录 / 重新授权").assertIsDisplayed()}
+}

@@ -1,30 +1,24 @@
+import { isDeepStrictEqual } from 'node:util';
+import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 const decisions=new Set(['accept','acceptForSession','decline','cancel']);
 const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
-const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+const equal=isDeepStrictEqual;
 const fail=message=>{throw Object.assign(new Error(message),{notSubmitted:true});};
 
-export function validateForm(schema,content) {
-  if(!object(schema)||schema.type!=='object'||!object(schema.properties)||!object(content))fail('不支持的表单，请在电脑处理');
-  const unsupported=['pattern','oneOf','anyOf','allOf','$ref','not','if','then','else','dependentRequired','dependentSchemas','patternProperties'];
-  if(unsupported.some(key=>Object.hasOwn(schema,key))||!Array.isArray(schema.required??[])||(schema.required??[]).some(key=>!Object.hasOwn(schema.properties,key)))fail('此类表单验证需在电脑处理');
-  for(const field of Object.values(schema.properties))if(!object(field)||unsupported.some(key=>Object.hasOwn(field,key))||(field.format&&!['email','uri','date','date-time','password'].includes(field.format)))fail('此类表单验证需在电脑处理');
-  if(Object.keys(content).some(key=>!Object.hasOwn(schema.properties,key)))fail('表单包含未请求的字段');
-  for(const key of schema.required??[])if(!Object.hasOwn(content,key))fail('请完成所有必填字段');
-  for(const [key,value] of Object.entries(content)) {
-    const field=schema.properties[key];
-    if(field.enum&&!field.enum.some(v=>equal(v,value)))fail('表单选项无效');
-    if(field.type==='string') {
-      if(typeof value!=='string'||value.length>(field.maxLength??20000)||value.length<(field.minLength??0))fail('表单文本无效');
-      if(field.format==='email'&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))fail('邮箱格式无效');
-      if(field.format==='uri'){try{new URL(value);}catch{fail('地址格式无效');}}
-      if(field.format==='date'&&(!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(Date.parse(value))||new Date(value).toISOString().slice(0,10)!==value))fail('日期格式无效');
-      if(field.format==='date-time'&&(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)||!Number.isFinite(Date.parse(value))))fail('时间格式无效');
-    }
-    else if(field.type==='boolean') {if(typeof value!=='boolean')fail('表单开关无效');}
-    else if(['number','integer'].includes(field.type)) {if(typeof value!=='number'||!Number.isFinite(value)||(field.type==='integer'&&!Number.isInteger(value))||value<(field.minimum??-Infinity)||value>(field.maximum??Infinity))fail('表单数字无效');}
-    else if(field.type==='array'&&field.items?.type==='string'&&Array.isArray(field.items.enum)) {if(!Array.isArray(value)||value.length<(field.minItems??0)||value.length>(field.maxItems??100)||value.some(v=>!field.items.enum.includes(v))||(field.uniqueItems&&new Set(value).size!==value.length))fail('表单多选无效');}
-    else fail('此类表单字段需在电脑处理');
-  }
+const ajv=new Ajv({strict:false,allErrors:true,validateFormats:true});addFormats(ajv);ajv.addFormat('password',true);
+export function normalizeForm(schema){
+  const copy=structuredClone(schema);
+  for(const field of Object.values(copy.properties??{})){
+    if(Array.isArray(field.oneOf)&&field.oneOf.every(o=>Object.hasOwn(o,'const'))){field.enum=field.oneOf.map(o=>o.const);field.enumNames=field.oneOf.map(o=>o.title??String(o.const));delete field.oneOf;field.type??=typeof field.enum[0];}
+    if(Array.isArray(field.items?.anyOf)&&field.items.anyOf.every(o=>Object.hasOwn(o,'const'))){field.items.enum=field.items.anyOf.map(o=>o.const);field.items.enumNames=field.items.anyOf.map(o=>o.title??String(o.const));delete field.items.anyOf;field.items.type??='string';}
+  }return copy;
+}
+export function validateForm(schema,content){
+  if(!object(schema)||!object(content)||JSON.stringify(schema).length>200000||JSON.stringify(content).length>200000)fail('表单数据无效或过大');
+  if(Object.keys(content).some(k=>schema.properties&&!Object.hasOwn(schema.properties,k)))fail('表单包含未请求的字段');
+  let validate;try{validate=ajv.compile(normalizeForm(schema));}catch{fail('此表单的验证规则暂不支持，请在电脑完成');}
+  if(!validate(content))fail('表单无效：'+(validate.errors??[]).slice(0,3).map(e=>`${e.instancePath||'/'} ${e.message}`).join('；'));
   return content;
 }
 
@@ -43,7 +37,8 @@ function permissionsResponse(request,args) {
     if((wanted.fileSystem?.entries??[]).some(entry=>entry?.access==='deny'&&!(granted.fileSystem.entries??[]).some(value=>equal(entry,value))))fail('不能移除请求中的文件访问限制');
     if(granted.fileSystem.globScanMaxDepth!=null&&(!Number.isInteger(granted.fileSystem.globScanMaxDepth)||granted.fileSystem.globScanMaxDepth<1||granted.fileSystem.globScanMaxDepth>(wanted.fileSystem?.globScanMaxDepth??0)))fail('不能扩大目录扫描范围');
   }
-  return {permissions:granted,scope:response.scope??'turn'};
+  if(response.strictAutoReview!=null&&typeof response.strictAutoReview!=='boolean')fail('自动审查设置无效');
+  return {permissions:granted,scope:response.scope??'turn',...(response.strictAutoReview!=null?{strictAutoReview:response.strictAutoReview}:{})};
 }
 
 export function approvalResponse(request,args) {
@@ -54,7 +49,7 @@ export function approvalResponse(request,args) {
     if(!['accept','decline','cancel'].includes(response.action))fail('授权选项无效');
     if(response.action!=='accept')return {action:response.action,content:null};
     const mode=request.params?.mode;
-    if(mode==='form'||mode==='openai/form')return {action:'accept',content:validateForm(request.params.requestedSchema,response.content)};
+    if(mode==='form'||mode==='openai/form'||mode==='openaiForm')return {action:'accept',content:validateForm(request.params.requestedSchema,response.content)};
     if(mode==='url')return {action:'accept',content:null};
     fail('此类身份验证请在电脑完成');
   }
@@ -65,9 +60,11 @@ export function approvalResponse(request,args) {
     return {answers};
   }
   if(method==='item/commandExecution/requestApproval'||method==='item/fileChange/requestApproval') {
-    if(!decisions.has(args.decision))fail('Unsupported approval decision / 授权选项无效');
     const offered=request.params?.availableDecisions;
-    if(Array.isArray(offered)&&!offered.includes(args.decision))fail('此请求不允许该授权选项');
+    if(object(args.decision)){
+      const candidates=[...(offered??[]).filter(object),...(request.params?.proposedNetworkPolicyAmendments??[]).map(rule=>({applyNetworkPolicyAmendment:{network_policy_amendment:rule}})),...(request.params?.proposedExecpolicyAmendment?[{acceptWithExecpolicyAmendment:{execpolicy_amendment:request.params.proposedExecpolicyAmendment}}]:[])];
+      if(!candidates.some(value=>equal(value,args.decision)))fail('不能授予未请求的规则');
+    }else if(!decisions.has(args.decision)||Array.isArray(offered)&&!offered.some(value=>equal(value,args.decision)))fail('Unsupported approval decision / 无效或未提供的授权选项');
     return {decision:args.decision};
   }
   fail('此类授权请在电脑处理');

@@ -43,6 +43,21 @@ class FilesApprovalsTest {
  @Test fun mcpFormSendsTypedFieldsAndUnsupportedVerificationStaysOnComputer(){
   request("mcpServer/elicitation/request",JSONObject().put("mode","form").put("serverName","QA").put("requestedSchema",JSONObject().put("type","object").put("required",JSONArray().put("count")).put("properties",JSONObject().put("count",JSONObject().put("title","数量").put("type","integer")))))
   compose.onNodeWithText("查看并处理").performClick();compose.onNodeWithContentDescription("数量 *").performTextInput("3");shot("mcp");compose.onNodeWithText("提交").performClick();until{peer.commands.any{it.optString("action")=="approval.respond"}};Assert.assertEquals(3,peer.commands.last{it.optString("action")=="approval.respond"}.getJSONObject("args").getJSONObject("response").getJSONObject("content").getInt("count"))
-  until{!model.busy&&!model.loadingThread&&model.pendingOperation==null};request("mcpServer/elicitation/request",JSONObject().put("mode","openai/userVerification"));compose.onNodeWithText("此类身份验证或复杂表单需要在电脑完成。").assertIsDisplayed();compose.onNodeWithText("查看详情").performClick();compose.onNodeWithText("提交").assertDoesNotExist();compose.onNodeWithContentDescription("关闭授权详情").performClick()
+  until{!model.busy&&!model.loadingThread&&model.pendingOperation==null};request("mcpServer/elicitation/request",JSONObject().put("mode","openai/userVerification"));compose.onNodeWithText("此类官方身份验证或专用控件需要在电脑完成。").assertIsDisplayed();compose.onNodeWithText("查看详情").performClick();compose.onNodeWithText("提交").assertDoesNotExist();compose.onNodeWithContentDescription("关闭授权详情").performClick()
  }
+ @Test fun titledMcpOptionsPreserveDefaultsAndTypedValues(){
+  val properties=JSONObject().put("mode",JSONObject().put("type","string").put("oneOf",JSONArray().put(JSONObject().put("const","read").put("title","只读模式"))).put("default","read")).put("count",JSONObject().put("type","integer").put("default",0)).put("confirm",JSONObject().put("type","boolean").put("default",false)).put("scopes",JSONObject().put("type","array").put("items",JSONObject().put("anyOf",JSONArray().put(JSONObject().put("const","files").put("title","项目文件")))).put("default",JSONArray().put("files")))
+  request("mcpServer/elicitation/request",JSONObject().put("mode","form").put("requestedSchema",JSONObject().put("type","object").put("properties",properties).put("required",JSONArray().put("mode").put("count").put("confirm").put("scopes"))))
+  compose.onNodeWithText("查看并处理").performClick();compose.onNodeWithText("只读模式").assertIsDisplayed();compose.onNodeWithText("提交").performClick();until{peer.commands.any{it.optString("action")=="approval.respond"}};val c=peer.commands.last{it.optString("action")=="approval.respond"}.getJSONObject("args").getJSONObject("response").getJSONObject("content");Assert.assertEquals("read",c.getString("mode"));Assert.assertEquals(0,c.getInt("count"));Assert.assertFalse(c.getBoolean("confirm"));Assert.assertEquals("files",c.getJSONArray("scopes").getString(0))
+ }
+ @Test fun networkRuleOnlySubmitsTheOfferedObject(){
+  val decision=JSONObject().put("applyNetworkPolicyAmendment",JSONObject().put("network_policy_amendment",JSONObject().put("action","allow").put("host","qa.example.invalid")))
+  request("item/commandExecution/requestApproval",JSONObject().put("command","QA_NETWORK_ONLY").put("availableDecisions",JSONArray().put("decline").put(decision)))
+  compose.onNodeWithText("查看详情").performClick();compose.onNodeWithText("保存允许规则 · qa.example.invalid").performClick();until{peer.commands.any{it.optString("action")=="approval.respond"}};Assert.assertEquals(decision.toString(),peer.commands.last{it.optString("action")=="approval.respond"}.getJSONObject("args").getJSONObject("decision").toString())
+ }
+ @Test fun nestedMcpFormAcceptsExplicitJsonAndDoesNotPretendIdentityVerification(){
+  request("mcpServer/elicitation/request",JSONObject().put("mode","openai/form").put("requestedSchema",JSONObject().put("type","object").put("properties",JSONObject().put("nested",JSONObject().put("type","object").put("properties",JSONObject().put("value",JSONObject().put("type","integer")))))))
+  compose.onNodeWithText("查看并处理").performClick();compose.onNodeWithText("表单 JSON").performTextReplacement("{\"nested\":{\"value\":2}}");compose.onNodeWithText("提交").performClick();until{peer.commands.any{it.optString("action")=="approval.respond"}};Assert.assertEquals(2,peer.commands.last{it.optString("action")=="approval.respond"}.getJSONObject("args").getJSONObject("response").getJSONObject("content").getJSONObject("nested").getInt("value"))
+ }
+
 }

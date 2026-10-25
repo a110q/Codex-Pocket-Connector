@@ -116,7 +116,7 @@ internal fun threadTime(thread:JSONObject):String{
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable private fun WorkspaceThread(thread:JSONObject,model:PocketModel,nested:Boolean){
-    var menu by remember{mutableStateOf(false)};var deleting by remember{mutableStateOf(false)}
+    var menu by remember{mutableStateOf(false)};var deleting by remember{mutableStateOf(false)};var rename by remember{mutableStateOf(false)}
     val state=statusLabel(thread.optString("status"));val running=state=="进行中";val needs=state in listOf("等待操作","出错")
     Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
         if(nested){Spacer(Modifier.width(12.dp));Box(Modifier.width(1.dp).height(48.dp).background(MaterialTheme.colorScheme.outlineVariant));Spacer(Modifier.width(8.dp))}
@@ -131,10 +131,12 @@ internal fun threadTime(thread:JSONObject):String{
             }
         }
         DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
+            DropdownMenuItem(text={Text("重命名对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null,onClick={menu=false;rename=true})
             DropdownMenuItem(text={Text(if(thread.optBoolean("archived"))"恢复对话"else"归档对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!running,onClick={menu=false;model.manageThread(thread,if(thread.optBoolean("archived"))"unarchive"else"archive")})
             DropdownMenuItem(text={Text("删除对话",color=MaterialTheme.colorScheme.error)},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!running,onClick={menu=false;deleting=true})
         }
         }
     }
+    if(rename)RenameThreadDialog(model,thread){rename=false}
     if(deleting)AlertDialog(onDismissRequest={deleting=false},title={Text("删除对话？")},text={Text("将从 ${model.profile?.optString("name")?:"电脑"} 删除“${thread.label()}”及其对话记录，无法恢复。项目文件不会删除。")},confirmButton={TextButton(onClick={deleting=false;model.manageThread(thread,"delete")}){Text("确认删除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={deleting=false}){Text("取消")}})
 }

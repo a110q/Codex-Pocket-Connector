@@ -11,6 +11,7 @@ import { DesktopAdapter } from './desktop-adapter.mjs';
 import { PreviewTunnel } from './preview-tunnel.mjs';
 import { ImageUploads } from './image-uploads.mjs';
 import { FileUploads } from './file-uploads.mjs';
+import { PocketScheduler } from './pocket-scheduler.mjs';
 import { HistoryStore } from './history.mjs';
 import { RelayConnection } from './relay-connection.mjs';
 import { startLanRelay } from './lan.mjs';
@@ -164,6 +165,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
   const uploads = new ImageUploads(resolve(dirname(statePath), 'image-uploads'));
   const fileUploads = new FileUploads(resolve(dirname(statePath), 'file-uploads'));
   const ledger = new CommandLedger(statePath), files = new FileAccess(fileUploads.directory), preview = new PreviewTunnel(), history = new HistoryStore();
+  const scheduler=new PocketScheduler(adapter,resolve(dirname(statePath),'pocket-schedules.json'));
   let channel = null, crypto = new CipherChannel(config.key, config.hostId, 'desktop');
   let stopping = false, mobileOnline = false, pairRequest = null, lastError = '', relayError = '', desktopRetry, desktopConnecting;
   const send = payload => { if (link.online && channel) link.send(JSON.stringify(crypto.encrypt({ ...payload, channel }))); };
@@ -198,7 +200,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           if (Math.abs(Date.now() - payload.sentAt) > 120000 || typeof payload.channel !== 'string' || !/^[a-f0-9-]{36}$/i.test(payload.channel)) return;
           preview.close(); channel = payload.channel; await connectDesktop();
           if (!link.isCurrent(socket) || channel !== payload.channel) return;
-          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true }, desktopReady: adapter.ready, error: lastError }); return;
+          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true }, desktopReady: adapter.ready, error: lastError }); return;
         }
         if (payload.type !== 'request' || !channel || payload.channel !== channel) return;
         const requestChannel = channel;
@@ -206,6 +208,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           validateCommand(payload); await connectDesktop();
           if (!adapter.ready) throw new Error('电脑上的 Codex 尚未连接，请检查电脑端应用');
           const result = await ledger.run(payload, async () => {
+            if (payload.action==='automations.list'||payload.action.startsWith('automation.')) return scheduler.call(payload.action,payload.args);
             if (payload.action.startsWith('file.upload.')) return fileUploads.call(payload.action, payload.args);
             if (payload.action.startsWith('image.upload.')) return uploads.call(payload.action, payload.args);
             if (payload.action.startsWith('preview.')) return preview.call(payload.action, payload.args);
@@ -235,7 +238,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
     if (!equalHash(digest(req.headers.authorization ?? ''), digest(`Bearer ${config.managerToken}`))) { res.writeHead(401).end('{}'); return; }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     try {
-      if (req.method === 'GET' && url.pathname === '/api/status') return res.end(JSON.stringify({ name: config.name, relayOnline: link.online, relayState: link.state, mobileOnline, desktopReady: adapter.ready, error: relayError || lastError, pairRequest, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true } }));
+      if (req.method === 'GET' && url.pathname === '/api/status') return res.end(JSON.stringify({ name: config.name, relayOnline: link.online, relayState: link.state, mobileOnline, desktopReady: adapter.ready, error: relayError || lastError, pairRequest, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true } }));
       if (req.method === 'GET' && url.pathname === '/api/pairing') {
         const pairing = { claimFromMobile:config.mobileClaim === true, v:1, mode:config.mode==='lan'?'lan':'cloud', relay:config.relay, hostId:config.hostId, name:config.name, pairCode:config.pairCode, key:config.key, pin:config.pin, expiresAt:config.pairExpires };
         const link = 'codexpocket://pair?data=' + Buffer.from(JSON.stringify(pairing)).toString('base64url');
@@ -264,7 +267,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
   await new Promise((resolve, reject) => { manager.once('error', reject); manager.listen(port, '127.0.0.1', resolve); });
   link.start(); await connectDesktop(); desktopRetry = setInterval(connectDesktop, 10000);
   return { manager, adapter, status: () => ({ relayOnline: link.online, mobileOnline, desktopReady: adapter.ready }), close: async () => {
-    stopping = true; preview.close(); clearTimeout(eventTimer); clearInterval(desktopRetry); link.close(); adapter.close();
+    stopping = true; scheduler.close(); preview.close(); clearTimeout(eventTimer); clearInterval(desktopRetry); link.close(); adapter.close();
     await new Promise(resolve => manager.close(resolve)); ledger.close();
   } };
 }

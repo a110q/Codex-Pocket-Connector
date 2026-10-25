@@ -56,7 +56,7 @@ export class AppServerClient extends EventEmitter {
       }
     });
     try {
-      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: '0.8.0' }, capabilities: { experimentalApi: true } });
+      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: '0.9.0' }, capabilities: { experimentalApi: true } });
       this.send({ method: 'initialized', params: {} });
     } catch (error) { this.close(); throw error; }
   }
@@ -67,7 +67,7 @@ export class AppServerClient extends EventEmitter {
   request(method, params = {}, timeoutMs = this.timeoutMs) {
     return new Promise((resolve, reject) => {
       const id = ++this.serial;
-      const timer = setTimeout(() => { this.pending.delete(id); const error = new Error(`Codex 请求超时：${method}`); error.uncertain = /^(turn\/|thread\/(start|archive|unarchive|delete))/.test(method); reject(error); }, timeoutMs);
+      const timer = setTimeout(() => { this.pending.delete(id); const error = new Error(`Codex 请求超时：${method}`); error.uncertain = /^(turn\/|review\/start|thread\/(start|archive|unarchive|delete|name\/set)|skills\/config\/write|plugin\/(install|uninstall)|config\/value\/write|mcpServer\/oauth\/login)/.test(method); reject(error); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try { this.send({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });

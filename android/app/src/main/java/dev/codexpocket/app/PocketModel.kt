@@ -67,9 +67,16 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             drafts = drafts.withDraft(thread.optString("hostId", "local"), thread.optString("id"), legacy)
         }
     }
+    private var referenceDrafts by mutableStateOf(saved.optJSONObject("referenceDrafts")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key)?.let{a->(0 until a.length()).map{a.getString(it)}}.orEmpty()}}.orEmpty())
+    fun referencesFor(key:String=imageDraftKey)=referenceDrafts[key].orEmpty()
+    fun addReference(path:String){val key=imageDraftKey;if(referencesFor(key).size>=20){error="每条消息最多引用 20 个文件";return};referenceDrafts=referenceDrafts+(key to (referencesFor(key)+path).distinct());if(!draft.contains("@$path"))draft=draft+" @$path ";persist()}
+    fun removeReference(path:String){val key=imageDraftKey;referenceDrafts=referenceDrafts+(key to referencesFor(key).filter{it!=path});persist()}
+    fun toolMutation(action:String,args:JSONObject,onSuccess:(JSONObject)->Unit={}){if(!connected||busy)return;mutate(action,args,onSuccess)}
+    fun renameThread(thread:JSONObject,name:String){toolMutation("thread.rename",JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("name",name)){r->if(r.optBoolean("verified")){val copy=JSONObject(thread.toString()).put("title",r.optString("name",name));threads=threads.map{if(it.optString("id")==thread.optString("id"))copy else it};if(selected?.optString("id")==thread.optString("id"))selected=copy;notice="对话已重命名"}else error="名称已提交，请刷新确认"}}
     private var outgoing by mutableStateOf(saved.optJSONObject("outgoingImages")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingImage.restore(it).takeIf{image->File(image.path).isFile}}catch(_:Exception){null}}}}.orEmpty())
     private fun restoredFiles(value:JSONObject?)=value?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingFile.restore(it).takeIf{f->File(f.path).isFile}}catch(_:Exception){null}}}}.orEmpty()
     private var outgoingFiles by mutableStateOf(restoredFiles(saved.optJSONObject("outgoingFiles")))
+    var toolRevision by mutableIntStateOf(0);private set
     var supportsFiles by mutableStateOf(false);private set
     fun filesFor(key:String)=outgoingFiles[key].orEmpty()
     fun addFiles(uris:List<android.net.Uri>,key:String=imageDraftKey) {
@@ -135,7 +142,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             busy=true;error=null
             try {
                 val ids=uploadImages(key)
-                args.put("imageUploadIds",JSONArray(ids)).put("fileUploadIds",JSONArray(uploadFiles(key)))
+                args.put("fileReferences",JSONArray(referencesFor(key))).put("imageUploadIds",JSONArray(ids)).put("fileUploadIds",JSONArray(uploadFiles(key)))
                 if(action=="message.send"){draft="";scrollRequest++}
                 persist();busy=false
                 mutate(action,args){result->success(result)}
@@ -183,6 +190,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private var cacheWrite: Runnable? = null
     private fun persist() {
         try {
+            saved.put("referenceDrafts",JSONObject().also{obj->referenceDrafts.forEach{(key,refs)->obj.put(key,JSONArray(refs))}})
             saved.put("outgoingFiles",JSONObject().also{obj->outgoingFiles.forEach{(key,files)->obj.put(key,JSONArray(files.map{it.json()}))}})
             saved.put("outgoingImages",JSONObject().also{obj->outgoing.forEach{(key,images)->obj.put(key,JSONArray(images.map{it.json()}))}})
             saved.put("timelineFormat", 3).put("profile", profile ?: JSONObject.NULL).put("threads", JSONArray(threads)).put("snapshot", snapshot ?: JSONObject.NULL)
@@ -190,7 +198,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             saved.remove("draft")
             profile?.let{p->
                 computers=computers.filter{it.optString("hostId")!=p.optString("hostId")}+JSONObject(p.toString())
-                val cache=JSONObject();listOf("threads","projects","snapshot","pending","drafts","outgoingImages","outgoingFiles").forEach{cache.put(it,saved.opt(it))};computerStates.put(p.getString("hostId"),cache)
+                val cache=JSONObject();listOf("threads","projects","snapshot","pending","drafts","outgoingImages","outgoingFiles","referenceDrafts").forEach{cache.put(it,saved.opt(it))};computerStates.put(p.getString("hostId"),cache)
             }
             saved.put("computers",JSONArray(computers)).put("computerStates",computerStates)
             saved.put("pendingScan",pendingScannedPair?:JSONObject.NULL)
@@ -233,6 +241,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 "hello" -> { if(event.has("capabilities"))supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; refresh(); selected?.let { openThread(it) } }
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
+                    if(change.optString("type") in listOf("mcp.updated","automation.updated","catalog.updated")){toolRevision++;if(change.optString("type")=="catalog.updated")refresh()}
                     if (change.optString("type") == "thread.updated" && change.optString("threadId") == selected?.optString("id")) {
                         change.optJSONObject("data")?.let { acceptSnapshot(it) }; loadingThread = false; persistSoon()
                     }
@@ -248,6 +257,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         profile=next?.let{JSONObject(it.toString())};account?.let{profile?.put("accountToken",it.token)}
         val cache=next?.let{computerStates.optJSONObject(it.optString("hostId"))}?:JSONObject()
         threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
+        referenceDrafts=cache.optJSONObject("referenceDrafts")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key)?.let{a->(0 until a.length()).map{a.getString(it)}}.orEmpty()}}.orEmpty()
         drafts=DraftBook(cache.optJSONObject("drafts")?.let{obj->obj.keys().asSequence().associateWith{obj.optString(it)}}.orEmpty())
         outgoing=cache.optJSONObject("outgoingImages")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingImage.restore(it).takeIf{image->File(image.path).isFile}}catch(_:Exception){null}}}}.orEmpty()
         outgoingFiles=restoredFiles(cache.optJSONObject("outgoingFiles"));supportsFiles=false
@@ -439,6 +449,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 if(sentIds.isNotEmpty()){outgoing=outgoing.mapValues{(_,images)->images.filter{it.id !in sentIds}};persist()}
                 val fileIds=op.optJSONObject("args")?.optJSONArray("fileUploadIds")?.let{array->(0 until array.length()).map{array.getString(it)}.toSet()}.orEmpty()
                 if(fileIds.isNotEmpty()){outgoingFiles.values.flatten().filter{it.id in fileIds}.forEach{File(it.path).delete()};outgoingFiles=outgoingFiles.mapValues{(_,files)->files.filter{it.id !in fileIds}};persist()}
+                if(op.optString("action") in listOf("message.send","thread.create")){val key=if(op.optString("action")=="thread.create")"__new__"else op.optJSONObject("args")?.optString("threadId").orEmpty();referenceDrafts=referenceDrafts-key;persist()}
                 error = null; onSuccess(result); refresh(); selected?.let { openThread(it) } }
         }
     }
@@ -506,7 +517,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         previewKind = null; previewArtifact = null; previewError = null; previewLoading = false
     }
     fun preview(artifact: JSONObject) {
-        val threadId = selected?.optString("id") ?: return
+        val threadId = selected?.optString("id") ?: if(artifact.has("workspaceArgs"))"__workspace__"else return
         closePreview(); previewArtifact = artifact
         previewKind = if (artifact.optString("mime").startsWith("image/")) "image" else "file"
         previewLoading = true
@@ -521,7 +532,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                         temp.outputStream().use { output ->
                             var offset = 0L
                             while (true) {
-                                val part = chunk(threadId, artifact.getString("id"), offset)
+                                val part = if(artifact.has("workspaceArgs"))rpc("workspace.read",JSONObject(artifact.getJSONObject("workspaceArgs").toString()).put("offset",offset).put("fingerprint",artifact.optString("fingerprint")))else chunk(threadId, artifact.getString("id"), offset)
                                 val data = android.util.Base64.decode(part.getString("data"), android.util.Base64.DEFAULT)
                                 require(part.getLong("total") <= 50L * 1024 * 1024 && part.getLong("nextOffset") == offset + data.size)
                                 output.write(data); offset = part.getLong("nextOffset")
@@ -536,12 +547,13 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             finally { if (previewFile !== file) file?.delete(); if (previewArtifact === artifact) previewLoading = false }
         }
     }
+    fun previewProjectFile(args:JSONObject,path:String){scope.launch{try{val input=JSONObject(args.toString()).put("path",path);val result=rpc("workspace.read",input.put("offset",0));val ext=path.substringAfterLast('.').lowercase();val mime=when(ext){"pdf"->"application/pdf";"png","jpg","jpeg","gif","webp","bmp"->"image/"+if(ext=="jpg")"jpeg"else ext;else->"text/plain"};preview(JSONObject().put("name",result.getString("name")).put("size",result.getLong("size")).put("mime",mime).put("fingerprint",result.getString("fingerprint")).put("workspaceArgs",input))}catch(e:Exception){error=e.message}}}
     fun respondApproval(request:JSONObject,decision:String,response:JSONObject?=null) {
         val thread=selected?:return
         val args=JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("requestId",request.get("id")).put("decision",decision)
         response?.let{args.put("response",it)};mutate("approval.respond",args)
     }
-    fun approve(request: JSONObject, decision: String, answers: JSONObject? = null) {
+    fun approve(request: JSONObject, decision: Any, answers: JSONObject? = null) {
         val thread = selected ?: return
         val args = JSONObject().put("threadId", thread.getString("id")).put("hostId", thread.optString("hostId", "local")).put("requestId", request.get("id")).put("decision", decision)
         if (answers != null) args.put("response", JSONObject().put("answers", answers))
@@ -561,7 +573,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }
     }
     fun download(artifact: JSONObject) {
-        val threadId = selected?.optString("id") ?: return
+        val threadId = selected?.optString("id") ?: if(artifact.has("workspaceArgs"))"__workspace__"else return
         if (downloadStatus != null) return
         scope.launch {
             var uri: android.net.Uri? = null
@@ -574,7 +586,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                     context.contentResolver.openOutputStream(target)?.use { output ->
                         var offset = 0L
                         while (true) {
-                            val part = chunk(threadId, artifact.getString("id"), offset)
+                            val part = if(artifact.has("workspaceArgs"))rpc("workspace.read",JSONObject(artifact.getJSONObject("workspaceArgs").toString()).put("offset",offset).put("fingerprint",artifact.optString("fingerprint")))else chunk(threadId, artifact.getString("id"), offset)
                             output.write(android.util.Base64.decode(part.getString("data"), android.util.Base64.DEFAULT))
                             offset = part.getLong("nextOffset")
                             withContext(Dispatchers.Main) { downloadStatus = "已下载 ${offset / 1024} / ${part.getLong("total") / 1024} KB" }

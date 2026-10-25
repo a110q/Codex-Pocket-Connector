@@ -329,6 +329,7 @@ export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', re
       model: settings.model, reasoningEffort: settings.reasoningEffort, settings, currentPermissions: state.currentPermissions ?? null, updatedAt: state.updatedAt,
       lastTurnId: turns.at(-1)?.turnId ?? turns.at(-1)?.id ?? null, lastTurnStatus: turns.at(-1)?.status ?? null, activeTurnId: activeTurn?.turnId ?? activeTurn?.id ?? null },
     messages, requests: (state.requests ?? []).map(request => ({ id: request.id, method: request.method, params: request.params })),
+    tokenUsage: state.latestTokenUsageInfo ?? state.tokenUsage ?? null,
     artifacts, diffs, revision, source: 'desktop-live',
     historyComplete: state.turnHistory?.history?.isComplete ?? state.turnsPagination?.hasLoadedOldest ?? false,
   };
