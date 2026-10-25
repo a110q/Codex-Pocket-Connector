@@ -43,7 +43,7 @@ export class ExtensionTools {
         return {at:new Date().toISOString(),rateLimits:rate.status==='fulfilled'?rate.value:null,rateError:rate.status==='rejected'?rate.reason.message:null,usage:usage.status==='fulfilled'?usage.value:null,usageError:usage.status==='rejected'?usage.reason.message:null,tokenUsage:tokenUsage??null};
       }
       case 'mcp.list':{const list=await server.pages('mcpServerStatus/list',args.threadId?{threadId:args.threadId}:{});return {servers:list,logins:[...this.oauth.values()]};}
-      case 'mcp.login':{const servers=await server.pages('mcpServerStatus/list',args.threadId?{threadId:args.threadId}:{});if(!servers.some(s=>s.name===args.name))fail('工具服务不存在');const login=await server.request('mcpServer/oauth/login',{name:args.name,...(args.threadId?{threadId:args.threadId}:{}),timeoutSecs:300});this.oauth.set(login.loginId??args.name,{name:args.name,loginId:login.loginId,status:'pending'});return login;}
+      case 'mcp.login':{const servers=await server.pages('mcpServerStatus/list',args.threadId?{threadId:args.threadId}:{});const target=servers.find(s=>s.name===args.name);if(!target)fail('工具服务不存在');if(!['notLoggedIn','oAuth'].includes(target.authStatus))fail('此服务的认证由电脑管理，无需在手机登录');const login=await server.request('mcpServer/oauth/login',{name:args.name,...(args.threadId?{threadId:args.threadId}:{}),timeoutSecs:300});this.oauth.set(login.loginId??args.name,{name:args.name,loginId:login.loginId,status:'pending'});return login;}
       default:fail('不支持的扩展操作');
     }}catch(e){if(!e.uncertain&&typeof e.code==='number')e.notSubmitted=true;throw e;}
   }

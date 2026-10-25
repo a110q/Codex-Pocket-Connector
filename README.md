@@ -23,27 +23,27 @@
 | 完整过程 | 问答、可见思考摘要、命令、文件修改及工具调用；历史分页、长内容详情 |
 | 模型与权限 | 切换可用模型、推理强度、权限模式，处理命令、文件修改、目录/网络权限审批及常见 MCP 表单，停止任务 |
 | 图片与文件发送 | 图片、文档、代码等附件配合文字发送；普通文件每条最多 4 个、每个最多 50 MB，支持断点恢复 |
-| 后台任务提醒 | 自愿开启后台连接；任务完成、出错和等待审批时通知，点击回到对应电脑和对话 |
+| 多电脑任务提醒 | 前台切换电脑与后台运行时接收任务结果和审批提醒，点击打开对应电脑和对话 |
 | 自建中继 | 电脑配置地址与公开证书，手机扫码切换服务，无需重新构建客户端 |
 | 文件与网页 | 图片缩放、文本和代码预览、PDF 分页、文件下载，以及电脑本地网页预览 |
-| 工作空间工具 | 文件树、搜索、@引用、Git 状态与红绿差异、审查、提交/推送/草稿 PR |
+| 工作空间工具 | 文件树、搜索、@引用、Git 状态与红绿差异、审查、提交/推送；0.9.1 暂时移除手机草稿 PR 入口 |
 | 技能、插件与任务 | 技能与插件管理、Pocket 定时任务、额度及 Token/上下文统计 |
 | 多台电脑 | 保存多个配对并切换，按电脑隔离聊天缓存与草稿 |
 | 账号管理 | 一个 APK 按角色展示菜单；管理员审批、停用、续期、管理设备和查看安全提醒 |
 
 <p align="center"><img src="docs/images/connection-home-phone.png" width="280" alt="手机首页的三种连接方式"> <img src="docs/images/workspace-compact.png" width="280" alt="手机紧凑工作空间，使用虚构测试数据"></p>
 
-<p align="center"><img src="docs/images/toolbox-home.png" width="240" alt="工作空间工具目录"> <img src="docs/images/toolbox-diff.png" width="240" alt="按文件查看红绿差异与旧新行号"> <img src="docs/images/toolbox-usage.png" width="240" alt="用量页面，使用虚构测试数据"></p>
+<p align="center"><img src="docs/images/toolbox-home.png" width="240" alt="工作空间工具目录"> <img src="docs/images/toolbox-skills.png" width="240" alt="紧凑技能卡片与搜索"> <img src="docs/images/toolbox-services.png" width="240" alt="工具服务的真实认证状态"></p>
 
 ## 下载安装
 
-**安卓与电脑连接器：0.9.0。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**安卓与电脑连接器：0.9.1。** 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.0/Codex-Pocket-0.9.0.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.0/Codex-Pocket-Connector-0.9.0-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.0/Codex-Pocket-Connector-0.9.0-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.0/Codex-Pocket-Connector-0.9.0-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.1/Codex-Pocket-0.9.1.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.1/Codex-Pocket-Connector-0.9.1-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.1/Codex-Pocket-Connector-0.9.1-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.1/Codex-Pocket-Connector-0.9.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -85,7 +85,7 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
 
-**0.9.0** 新增重命名、文件树与 @引用、Git、技能/插件管理、Pocket 定时任务、用量与扩展审批。电脑和手机均需更新；中继无需升级。后台提醒需开启通知与后台运行权限，强行停止 App 后不会继续提醒。详见 [更新说明](docs/patch-0.9.0.md) 与 [验收记录](docs/verification-0.9.0.md)。Windows 11 仍待实机验收。
+**0.9.1** 重做紧凑工具页，隐藏无效授权和受限操作，并补齐前台与后台多电脑任务提醒。电脑和手机均建议更新；中继无需升级。提醒需开启通知与后台运行权限，强行停止 App 后不会继续提醒。详见 [更新说明](docs/patch-0.9.1.md) 与 [验收记录](docs/verification-0.9.1.md)。Windows 11 仍待实机验收。
 
 ## 开发与自建
 

@@ -51,65 +51,103 @@ object TaskNotifications {
         val manager=context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL,"任务完成与待处理提醒",NotificationManager.IMPORTANCE_DEFAULT))
         val identity=namespace(profile)+alert.threadId+alert.key
-        val intent=Intent(context,MainActivity::class.java).putExtra("taskHostId",profile.optString("hostId")).putExtra("taskThreadId",alert.threadId).putExtra("taskLan",PocketConnection.isLanPairing(profile)).putExtra("taskRelay",profile.optString("relay")).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val intent=Intent(context,MainActivity::class.java).putExtra("taskHostId",profile.optString("hostId")).putExtra("taskThreadId",alert.threadId).putExtra("taskLan",PocketConnection.isLanPairing(profile)).putExtra("taskRelay",profile.optString("relay")).putExtra("taskPin",profile.optString("pin")).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pending=PendingIntent.getActivity(context,identity.hashCode(),intent,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val title=when(alert.kind){"approval"->"Codex 等待你的操作";"failed"->"Codex 任务出错";else->"Codex 任务已完成"}
         manager.notify(identity.hashCode(),NotificationCompat.Builder(context,CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText("${profile.optString("name","电脑")} · ${alert.title}").setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())
     }
 }
 
-// One socket per computer: UI sockets close before background monitoring starts,
-// and all monitor sockets close synchronously before the Activity reconnects.
-// This uses the existing end-to-end encrypted relay and requires no cloud push
-// account, new relay API, or Google Play services.
+// A computer has exactly one mobile socket. The visible workspace claims that
+// socket synchronously before connecting; the monitor only owns other computers.
+// Switching workspaces preserves every unrelated monitoring connection.
 class TaskMonitorService:Service() {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
     private val handler=Handler(Looper.getMainLooper())
-    private val watchers=mutableListOf<Watcher>()
+    private val watchers=linkedMapOf<String,Watcher>()
     private var job:Job?=null
     companion object {
         private var instance:TaskMonitorService?=null
         private var uiVisible=false
-        fun foreground(context:Context) {
-            uiVisible=true;instance?.pause()
-            if(TaskNotifications.enabled(context))try{ContextCompat.startForegroundService(context,Intent(context,TaskMonitorService::class.java))}catch(_:Exception){}
+        private var foregroundSelection:String?=null
+        private val uiOwners=java.util.IdentityHashMap<Any,String>()
+        private fun reserved()=uiOwners.values.toSet()+listOfNotNull(foregroundSelection.takeIf{uiVisible})
+        private fun ensure(context:Context) {
+            if(TaskNotifications.enabled(context)&&TaskNotifications.allowed(context))try{ContextCompat.startForegroundService(context,Intent(context,TaskMonitorService::class.java))}catch(_:Exception){}
         }
-        fun background(context:Context) {uiVisible=false;instance?.monitor()}
+        fun claimUi(context:Context,owner:Any,profile:JSONObject) {
+            val id=TaskNotifications.namespace(profile)
+            if(uiOwners[owner]==id)return
+            uiOwners[owner]=id
+            if(uiVisible)foregroundSelection=id
+            instance?.removeReserved() // Close the old monitor before UI opens a socket.
+            instance?.refresh();ensure(context)
+        }
+        fun releaseUi(context:Context,owner:Any) {
+            val id=uiOwners.remove(owner)?:return
+            if(foregroundSelection==id)foregroundSelection=null
+            instance?.refresh()
+        }
+        fun configurationChanged(context:Context){instance?.refresh();ensure(context)}
+        fun foreground(context:Context) {
+            uiVisible=true
+            foregroundSelection=try{
+                val local=context.getSharedPreferences("connection-mode",MODE_PRIVATE).getBoolean("lan",false)
+                SecureStore(context,if(local)"pocket-lan-state.enc"else"pocket-state${AccountApi.suffix(context)}.enc").load().optJSONObject("profile")?.let{TaskNotifications.namespace(it)}
+            }catch(_:Exception){null}
+            instance?.removeReserved();instance?.refresh();ensure(context)
+        }
+        fun background(context:Context) {uiVisible=false;foregroundSelection=null;instance?.refresh()}
     }
     override fun onCreate(){super.onCreate();instance=this}
     override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
         if(intent?.action=="stop") {TaskNotifications.setEnabled(this,false);return START_NOT_STICKY}
         if(!TaskNotifications.enabled(this)||!TaskNotifications.allowed(this)){stopSelf();return START_NOT_STICKY}
         val manager=getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("task_connection","后台任务连接",NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel("task_connection","多电脑任务连接",NotificationManager.IMPORTANCE_LOW))
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val stop=PendingIntent.getService(this,1,Intent(this,TaskMonitorService::class.java).setAction("stop"),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        startForeground(7101,NotificationCompat.Builder(this,"task_connection").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Codex Pocket 任务提醒已开启").setContentText("保持后台连接，接收任务结果与审批提醒").setContentIntent(open).setOngoing(true).addAction(0,"关闭提醒",stop).build())
-        if(!uiVisible)monitor()
+        startForeground(7101,NotificationCompat.Builder(this,"task_connection").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Codex Pocket 多电脑提醒已开启").setContentText("切换电脑或锁屏后，继续接收任务与审批提醒").setContentIntent(open).setOngoing(true).addAction(0,"关闭提醒",stop).build())
+        monitor()
         return START_STICKY
     }
-    private fun pause(){job?.cancel();job=null;watchers.forEach{it.close()};watchers.clear()}
+    private fun removeReserved(){val keys=reserved();watchers.keys.filter{it in keys}.forEach{watchers.remove(it)?.close()}}
+    private fun refresh(){job?.cancel();job=null;removeReserved();monitor()}
     private suspend fun profiles():List<JSONObject> {
-        val local=getSharedPreferences("connection-mode",MODE_PRIVATE).getBoolean("lan",false)
-        val saved=SecureStore(this,if(local)"pocket-lan-state.enc"else"pocket-state${AccountApi.suffix(this)}.enc").load()
-        val values=saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(saved.optJSONObject("profile"))}.filter{it.optBoolean("approved")}
-        if(local)return values.filter{PocketConnection.isLanPairing(it)}
-        val api=AccountApi(AccountApi.defaults(this));val token=SecureStore(this,"pocket-account${AccountApi.suffix(this)}.enc").load().optString("token")
-        if(token.isBlank())return emptyList()
-        val me=withContext(Dispatchers.IO){api.post("/api/account/me",token=token)}
-        if(me.optJSONObject("user")?.optString("accessState")!="active")return emptyList()
+        val lan=SecureStore(this,"pocket-lan-state.enc").load().let{saved->saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(saved.optJSONObject("profile"))}}.filter{it.optBoolean("approved")&&PocketConnection.isLanPairing(it)}
+        val saved=SecureStore(this,"pocket-state${AccountApi.suffix(this)}.enc").load()
+        val values=saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(saved.optJSONObject("profile"))}.filter{it.optBoolean("approved")&&!PocketConnection.isLanPairing(it)}
+        if(values.isEmpty())return lan
+        val api=AccountApi(AccountApi.defaults(this));val account=SecureStore(this,"pocket-account${AccountApi.suffix(this)}.enc").load();val token=account.optString("token")
+        if(token.isBlank()||token=="null"||account.optJSONObject("user")?.optString("accessState")!="active")return lan
+        val me=try{withContext(Dispatchers.IO){api.post("/api/account/me",token=token)}}catch(e:CancellationException){throw e}catch(e:Exception){
+            if(e is AccountException&&(e.status==401||e.status==403))return lan
+            // Cloud outages must not prevent new LAN computers from being watched.
+            // Retain only existing cloud watchers for this same account and service.
+            return lan+watchers.values.map{it.profile}.filter{previous->previous.optString("accountToken")==token&&AccountApi.same(previous,api.defaults)&&values.any{TaskNotifications.namespace(it)==TaskNotifications.namespace(previous)&&listOf("mobileToken","key").all{field->it.optString(field)==previous.optString(field)}}}
+        }
+        if(me.optJSONObject("user")?.optString("accessState")!="active")return lan
         val hosts=me.optJSONArray("hosts").objects().map{it.optString("id")}.toSet()+listOfNotNull(me.optJSONObject("host")?.optString("id"))
-        return values.filter{!PocketConnection.isLanPairing(it)&&AccountApi.same(it,api.defaults)&&it.optString("hostId") in hosts}.map{JSONObject(it.toString()).put("accountToken",token)}
+        return lan+values.filter{AccountApi.same(it,api.defaults)&&it.optString("hostId") in hosts}.map{JSONObject(it.toString()).put("accountToken",token)}
+    }
+    private fun reconcile(profiles:List<JSONObject>) {
+        val allowed=profiles.distinctBy{TaskNotifications.namespace(it)}.filter{TaskNotifications.namespace(it) !in reserved()}.associateBy{TaskNotifications.namespace(it)}
+        watchers.keys.filter{it !in allowed||!watchers.getValue(it).matches(allowed.getValue(it))}.forEach{watchers.remove(it)?.close()}
+        allowed.forEach{(id,profile)->if(id !in watchers)watchers[id]=Watcher(profile)}
     }
     private fun monitor() {
-        if(uiVisible||job?.isActive==true||!TaskNotifications.enabled(this))return
+        if(job?.isActive==true||!TaskNotifications.enabled(this))return
         job=scope.launch {
-            while(isActive&&!uiVisible) {
+            while(isActive) {
                 try {
-                    val allowed=profiles();val current=watchers.map{TaskNotifications.namespace(it.profile)}.toSet()
-                    if(current!=allowed.map{TaskNotifications.namespace(it)}.toSet()) {watchers.forEach{it.close()};watchers.clear();allowed.forEach{watchers+=Watcher(it)}}
-                    repeat(4) { if(!isActive||uiVisible)return@launch;watchers.toList().forEach{it.poll()};delay(15000) }
-                }catch(e:CancellationException){throw e}catch(e:Exception){if(e is AccountException&&(e.status==401||e.status==403)){watchers.forEach{it.close()};watchers.clear()};delay(15000)}
+                    reconcile(profiles())
+                    repeat(4) {
+                        if(!isActive)return@launch
+                        removeReserved()
+                        coroutineScope{watchers.values.toList().map{watcher->async{watcher.poll()}}.awaitAll()}
+                        delay(15000)
+                    }
+                }catch(e:CancellationException){throw e}catch(_:Exception){delay(15000)}
             }
         }
     }
@@ -117,40 +155,64 @@ class TaskMonitorService:Service() {
         private var connection:PocketConnection?=null
         private var retry=false
         private var valid=true
-        private val seen=mutableMapOf<String,String>()
+        private val poller=TaskComputerPoller(this@TaskMonitorService,profile)
         init{connect()}
+        fun matches(next:JSONObject)=listOf("mobileToken","key","accountToken").all{profile.optString(it)==next.optString(it)}
+        private fun allowed()=valid&&TaskNotifications.namespace(profile) !in reserved()
         private fun connect() {
+            if(!allowed())return
             connection?.close();retry=false
             lateinit var candidate:PocketConnection
             candidate=PocketConnection(profile,{state->handler.post{if(connection===candidate)retry=state.retry}},{event->handler.post{
-                if(valid&&connection===candidate&&!uiVisible&&event.optString("type")=="event")event.optJSONObject("event")?.takeIf{it.optString("type")=="thread.updated"}?.optJSONObject("data")?.let{snapshot->try{TaskNotifications.observe(this@TaskMonitorService,profile,snapshot,true)}catch(_:Exception){}}
+                if(allowed()&&connection===candidate&&event.optString("type")=="event")event.optJSONObject("event")?.takeIf{it.optString("type")=="thread.updated"}?.optJSONObject("data")?.let{snapshot->try{TaskNotifications.observe(this@TaskMonitorService,profile,snapshot,true)}catch(_:Exception){}}
             }})
             connection=candidate;candidate.connect()
         }
-        private suspend fun read(action:String,args:JSONObject=JSONObject()):JSONObject=suspendCancellableCoroutine{continuation->
+        private suspend fun read(action:String,args:JSONObject):JSONObject=suspendCancellableCoroutine{continuation->
             val channel=connection
             if(channel==null){continuation.resumeWithException(IllegalStateException("离线"));return@suspendCancellableCoroutine}
             channel.request(action,args){result,error->if(continuation.isActive){if(error!=null)continuation.resumeWithException(IllegalStateException(error))else continuation.resume(result?:JSONObject())}}
         }
         suspend fun poll() {
-            if(!valid)return
+            if(!allowed())return
             if(retry){connect();return}
             if(connection?.ready!=true)return
-            try {
-                val threads=read("threads.list").optJSONArray("threads").objects()
-                val tracked=TaskNotifications.tracked(this@TaskMonitorService,profile)
-                val candidates=threads.filter{t->val id=t.optString("id");val version=t.optString("updatedAt");id in tracked||t.optString("status") in listOf("active","running","inProgress","waitingForApproval","waitingForUserInput","systemError")||(seen.containsKey(id)&&seen[id]!=version)}.toMutableList()
-                if(seen.isEmpty())candidates+=threads.take(6)
-                threads.forEach{seen[it.optString("id")]=it.optString("updatedAt")}
-                for(thread in candidates.distinctBy{it.optString("id")}.take(30)) {
-                    if(!valid||uiVisible)break
-                    val snapshot=read("thread.read",JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")))
-                    TaskNotifications.observe(this@TaskMonitorService,profile,snapshot,true)
-                }
-            }catch(e:CancellationException){throw e}catch(_:Exception){}
+            try{poller.poll(::read,canRead={allowed()})}catch(e:CancellationException){throw e}catch(_:Exception){}
         }
         fun close(){valid=false;connection?.close();connection=null}
     }
-    override fun onDestroy(){pause();scope.cancel();if(instance===this)instance=null;super.onDestroy()}
+    override fun onDestroy(){job?.cancel();watchers.values.forEach{it.close()};watchers.clear();scope.cancel();if(instance===this)instance=null;super.onDestroy()}
     override fun onBind(intent:Intent?):IBinder?=null
+}
+
+// Reuse the foreground workspace socket for other chats on that computer.
+// The service uses the same reader for the remaining paired computers.
+internal class TaskComputerPoller(private val context:Context,private val profile:JSONObject) {
+    private val seen=mutableMapOf<String,String>()
+    private val pending=linkedMapOf<String,JSONObject>()
+    suspend fun poll(read:suspend(String,JSONObject)->JSONObject,skipThread:()->String?={null},canRead:()->Boolean={true}) {
+        if(!canRead())return
+        val threads=read("threads.list",JSONObject()).optJSONArray("threads").objects()
+        val tracked=TaskNotifications.tracked(context,profile)
+        val candidates=threads.filter{t->val id=t.optString("id");id in tracked||t.optString("status") in listOf("active","running","inProgress","waitingForApproval","waitingForUserInput","systemError")||(seen.containsKey(id)&&seen[id]!=t.optString("updatedAt"))}.toMutableList()
+        if(seen.isEmpty())candidates+=threads.take(6)
+        threads.forEach{seen[it.optString("id")]=it.optString("updatedAt")}
+        val listed=threads.map{it.optString("id")}.toSet()
+        pending.keys.retainAll(listed)
+        candidates.forEach{pending[it.optString("id")]=it}
+        // Keep unvisited chats queued, so a busy computer with more than 30
+        // running chats cannot permanently starve the later ones.
+        for((id,thread) in pending.toList().take(30)) {
+            if(!canRead())break
+            if(id==skipThread()){pending.remove(id);continue}
+            try {
+                val snapshot=read("thread.read",JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")))
+                if(canRead())TaskNotifications.observe(context,profile,snapshot,true)
+                pending.remove(id)
+            }catch(e:CancellationException){throw e}catch(_:Exception){
+                // A removed or unreadable chat must not block every other chat.
+                pending.remove(id);pending[id]=thread
+            }
+        }
+    }
 }

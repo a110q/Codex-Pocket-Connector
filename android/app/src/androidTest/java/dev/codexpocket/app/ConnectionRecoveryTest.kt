@@ -101,7 +101,17 @@ class ConnectionRecoveryTest {
         until{model!!.connected&&model!!.projects.isNotEmpty()}
         Assert.assertNull(model!!.error)
     }
-    internal class Peer {
+    @Test fun stoppedWorkspaceCannotOverwriteAReplacementWithItsDelayedCacheWrite(){
+        start();until{model!!.connected&&model!!.projects.isNotEmpty()}
+        instrumentation.runOnMainSync{model!!.openThread(JSONObject().put("id","local-network-test").put("hostId","local"))}
+        until{!model!!.loadingThread}
+        instrumentation.runOnMainSync{model!!.draft="QA deferred draft";model!!.stop()}
+        val replacement=JSONObject().put("qaReplacement",true)
+        SecureStore(context).save(replacement)
+        Thread.sleep(1300);instrumentation.waitForIdleSync()
+        Assert.assertTrue(SecureStore(context).load().optBoolean("qaReplacement"))
+    }
+    internal class Peer(testHost:String="network-test-host-abcdefghijklmnop",lan:Boolean=false) {
         val server=MockWebServer()
         val opens=AtomicInteger();val hellos=AtomicInteger()
         val actions=CopyOnWriteArrayList<String>();val auth=CopyOnWriteArrayList<String?>()
@@ -123,12 +133,15 @@ class ConnectionRecoveryTest {
         val pairStatusRequests=AtomicInteger()
         val releasePairStatus=CountDownLatch(1)
         private val sockets=CopyOnWriteArrayList<WebSocket>()
-        private val host="network-test-host-abcdefghijklmnop"
+        private val host=testHost
         private val key=Encoding.secret()
         private val codec=DesktopCodec(key,host)
         val profile:JSONObject
         init{
-            val cert=HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost").build()
+            val address=if(lan)java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).flatMap{java.util.Collections.list(it.inetAddresses)}.first{it is java.net.Inet4Address&&it.isSiteLocalAddress}.hostAddress else null
+            val certificate=HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost")
+            address?.let{certificate.addSubjectAlternativeName(it)}
+            val cert=certificate.build()
             val tls=HandshakeCertificates.Builder().heldCertificate(cert).build()
             server.useHttps(tls.sslSocketFactory(),false)
             server.dispatcher=object:okhttp3.mockwebserver.Dispatcher(){override fun dispatch(request:okhttp3.mockwebserver.RecordedRequest):MockResponse{
@@ -171,9 +184,10 @@ class ConnectionRecoveryTest {
                     override fun onFailure(webSocket:WebSocket,t:Throwable,response:Response?){}
                 })
             }}
-            server.start()
+            if(lan)server.start(java.net.InetAddress.getByName("0.0.0.0"),0)else server.start()
+            val relay=if(lan)"https://$address:${server.port}"else server.url("/").toString().trimEnd('/')
             val pin=Encoding.hex(MessageDigest.getInstance("SHA-256").digest(cert.certificate.encoded))
-            profile=JSONObject().put("relay",server.url("/").toString().trimEnd('/')).put("hostId",host).put("key",key).put("pin",pin).put("mobileToken",Encoding.secret()).put("approved",true)
+            profile=JSONObject().put("mode",if(lan)"lan"else"cloud").put("relay",relay).put("hostId",host).put("key",key).put("pin",pin).put("mobileToken",Encoding.secret()).put("approved",true)
         }
         fun snapshot(value:JSONObject){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type","thread.updated").put("threadId",value.getJSONObject("thread").getString("id")).put("data",value))))}}
         fun status(online:Boolean){sockets.last().send(JSONObject().put("type","status").put("peerOnline",online).toString())}

@@ -98,12 +98,14 @@ class MainActivity : ComponentActivity() {
     private var incoming by mutableStateOf<String?>(null)
     private var openAdmin by mutableStateOf(false)
     private var pendingTask by mutableStateOf<JSONObject?>(null)
+    private var taskError by mutableStateOf<String?>(null)
     private fun receiveTaskIntent(intent:Intent?) {
         val id=intent?.getStringExtra("taskThreadId")?:return;val host=intent.getStringExtra("taskHostId")?:return
         if(intent.getBooleanExtra("taskLan",false)!=lanMode)switchMode(!lanMode)
-        val relay=intent.getStringExtra("taskRelay")
-        if(relay!=null&&activeModel.computers.none{it.optString("hostId")==host&&it.optString("relay")==relay}){scanError="此通知对应的电脑尚未连接，请切换到对应中继并登录";return}
-        activeModel.switchComputer(host);connectionPage=null;pendingTask=JSONObject().put("id",id).put("hostId",host)
+        val relay=intent.getStringExtra("taskRelay");val pin=intent.getStringExtra("taskPin")
+        if(relay!=null&&activeModel.computers.none{it.optString("hostId")==host&&it.optString("relay")==relay&&(pin==null||it.optString("pin")==pin)}){taskError="这条提醒对应的电脑已移除或连接信息已更新，请重新连接对应电脑。";return}
+        if(!activeModel.switchComputer(host)){taskError=activeModel.error?:"暂时无法切换电脑，请先确认当前操作结果后重试。";return}
+        connectionPage=null;pendingTask=JSONObject().put("id",id).put("hostId",host)
         intent.removeExtra("taskThreadId");intent.removeExtra("taskHostId")
     }
     private val notifications=registerForActivityResult(ActivityResultContracts.RequestPermission()){}
@@ -132,6 +134,7 @@ class MainActivity : ComponentActivity() {
     private fun changeService(server:JSONObject,pair:String?=null){
         activeModel.stop();account.close();AccountNotifications.cancel(applicationContext)
         AccountApi.select(applicationContext,server);lanMode=false;getSharedPreferences("connection-mode",MODE_PRIVATE).edit().putBoolean("lan",false).apply()
+        TaskMonitorService.configurationChanged(applicationContext)
         loadCloud();connectionPage="account";pair?.let{model.scannedPair(it)};serviceRevision++;account.start()
     }
     private val scanner = registerForActivityResult(ScanContract()) { result -> result.contents?.let(::receivePair) }
@@ -176,6 +179,7 @@ class MainActivity : ComponentActivity() {
                     Text("仅连接你信任的电脑所提供的服务。切换后需登录该服务的账号，原服务的登录信息不会发送过去。",fontSize=14.sp)
                 }},confirmButton={TextButton(onClick={pendingService=null;changeService(server,raw)}){Text("切换并登录")}},dismissButton={TextButton(onClick={pendingService=null}){Text("取消")}})
             }
+            taskError?.let{message->AlertDialog(onDismissRequest={taskError=null},title={Text("暂时无法打开提醒")},text={Text(message)},confirmButton={TextButton(onClick={taskError=null}){Text("知道了")}})}
             scanError?.let{message->AlertDialog(onDismissRequest={scanError=null},title={Text("无法读取配对码")},text={Text(message)},confirmButton={TextButton(onClick={scanError=null}){Text("知道了")}})}
 
         } } }

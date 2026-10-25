@@ -180,7 +180,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         val previous=saved.optString("accountUserId")
         if(previous.isNotBlank()&&previous!=next.userId)forgetAll()
         account=next;saved.put("accountUserId",next.userId)
-        computers.forEach{it.put("accountToken",next.token)};profile?.put("accountToken",next.token);persist()
+        computers.forEach{it.put("accountToken",next.token)};profile?.put("accountToken",next.token);persist();TaskMonitorService.configurationChanged(context)
         pendingScannedPair?.let{text->pendingScannedPair=null;persist();pair(text)}
     }
     fun clearAccountAccess() { stop();account=null;computers.forEach{it.remove("accountToken")};profile?.remove("accountToken");persist() }
@@ -209,11 +209,20 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         cacheWrite?.let(handler::removeCallbacks)
         cacheWrite = Runnable { persist() }.also { handler.postDelayed(it, 1000) }
     }
+    private var taskPolling:Job?=null
     fun start() {
         foreground = true
         if(requireLan&&profile!=null&&!PocketConnection.isLanPairing(profile!!)){error="局域网模式只允许连接私有 IPv4 地址，请重新扫码";return}
         if (profile != null) {
             if (profile?.optBoolean("approved") == true) {
+                TaskMonitorService.claimUi(context,this,profile!!)
+                if(taskPolling?.isActive!=true)taskPolling=scope.launch{
+                    val peer=JSONObject(profile!!.toString());val poller=TaskComputerPoller(context,peer)
+                    while(isActive&&foreground){
+                        if(TaskNotifications.enabled(context)&&connected)try{poller.poll({action,args->rpc(action,args)},skipThread={selected?.optString("id")},canRead={foreground&&connected&&TaskNotifications.enabled(context)})}catch(e:CancellationException){throw e}catch(_:Exception){}
+                        delay(15000)
+                    }
+                }
                 if (connection == null) connect()
             } else if (pairingRequest?.isActive != true) waitForApproval()
         }
@@ -221,7 +230,9 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun stop() {
         closePreview()
         foreground = false; reconnect?.let(handler::removeCallbacks); reconnect = null
-        pairingJob?.cancel(); pairingJob = null; connection?.close(); connection = null; connected = false; persist()
+        cacheWrite?.let(handler::removeCallbacks);cacheWrite=null
+        pairingJob?.cancel(); pairingJob = null;taskPolling?.cancel();taskPolling=null; connection?.close(); connection = null; connected = false; persist()
+        TaskMonitorService.releaseUi(context,this)
     }
     private fun connect() {
         val p = profile ?: return
@@ -242,6 +253,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
                     if(change.optString("type") in listOf("mcp.updated","automation.updated","catalog.updated")){toolRevision++;if(change.optString("type")=="catalog.updated")refresh()}
+                    if(change.optString("type")=="thread.updated"&&change.optString("threadId")!=selected?.optString("id"))change.optJSONObject("data")?.let{data->profile?.let{TaskNotifications.observe(context,it,data,true)}}
                     if (change.optString("type") == "thread.updated" && change.optString("threadId") == selected?.optString("id")) {
                         change.optJSONObject("data")?.let { acceptSnapshot(it) }; loadingThread = false; persistSoon()
                     }
@@ -266,16 +278,18 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         pairing=profile!=null&&profile?.optBoolean("approved")!=true;status=if(profile==null)"尚未连接电脑"else"等待连接"
         messageImages=MessageImageLoader(context,profile?.optString("hostId").orEmpty());persist();if(resume)start()
     }
-    fun switchComputer(id:String) {
-        if(busy||pendingOperation!=null){error="请先确认当前电脑上一次操作的结果，再切换电脑";return}
-        val next=computers.find{it.optString("hostId")==id}?:return
-        if(profile?.optString("hostId")==id)return
+    fun switchComputer(id:String):Boolean {
+        if(profile?.optString("hostId")==id)return true
+        if(busy||pendingOperation!=null){error="请先确认当前电脑上一次操作的结果，再切换电脑";return false}
+        val next=computers.find{it.optString("hostId")==id}?:return false
         activateComputer(next)
+        return true
     }
     fun removeComputer(id:String) {
         if(busy||pendingOperation!=null){error="请先确认当前操作的结果，再移除电脑";return}
         if(profile?.optString("hostId")==id){activateComputer(null)}
         computers=computers.filter{it.optString("hostId")!=id};computerStates.remove(id);persist()
+        TaskMonitorService.configurationChanged(context)
         if(profile==null&&computers.isNotEmpty())activateComputer(computers.first())
     }
     fun updateAppearance(value: String) { if (value in listOf("system", "light", "dark")) { appearance = value; persist() } }
@@ -303,9 +317,10 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             next.put("mobileToken",existing?.optString("mobileToken")?.takeIf{it.isNotBlank()}?:attempt?.optString("mobileToken")?.takeIf{it.isNotBlank()}?:Encoding.secret())
             attempts.put(next.getString("hostId"),JSONObject().put("pairCode",next.getString("pairCode")).put("mobileToken",next.getString("mobileToken")));saved.put("pairAttempts",attempts)
             next.put("approved", false)
-            persist();pairingJob?.cancel();pairingJob=null;reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();pairingRequest=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+            persist();cacheWrite?.let(handler::removeCallbacks);cacheWrite=null;pairingJob?.cancel();pairingJob=null;reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();pairingRequest=null;taskPolling=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
             closePreview(); closeMessage(); threadBackStack.clear(); threads = emptyList(); projects = emptyList(); models = emptyList(); snapshot = null; selected = null; drafts = DraftBook(); outgoing=emptyMap()
             profile = next;messageImages=MessageImageLoader(context,next.getString("hostId")); pairing = true; error = null; persist()
+            TaskMonitorService.releaseUi(context,this)
             status = "配对中，等待电脑确认"
             waitForApproval()
         } catch (e: Exception) { error = e.message ?: "配对内容无效，请重新扫码" }
@@ -342,7 +357,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                     }
                     p.put("pairSubmitted",true); error=null; status="配对中，等待电脑确认";persist()
                     if (result.optString("state") == "approved") {
-                        p.put("approved", true); p.remove("pairCode"); pairing = false; persist(); connect(); return@launch
+                        p.put("approved", true); p.remove("pairCode"); pairing = false; persist(); start(); return@launch
                     }
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {

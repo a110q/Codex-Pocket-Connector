@@ -101,13 +101,20 @@ export class WorkspaceTools {
     }catch(e){throw Object.assign(new Error(e.killed?'Git 操作超时，请检查电脑状态':String(e.stderr||e.message).slice(0,2000)),{uncertain:mutating,notSubmitted:!mutating});}
   }
   async status(args) {
-    const root=await this.root(args),repo=(await this.git(root,['rev-parse','--show-toplevel'])).trim();
-    if(!inside(root,repo)||!inside(repo,root))fail('请选择仓库根目录后操作 Git');
+    const root=await this.root(args);
+    let repo;
+    try { repo=(await this.git(root,['rev-parse','--show-toplevel'])).trim(); }
+    catch(error) {
+      if(/not a git repository/i.test(error.message))return {available:false,reason:'not-repository',root,message:'这个项目还没有 Git 仓库。选择已有 Git 仓库的项目后，即可查看分支和代码修改。'};
+      if(/ENOENT|not recognized|找不到指定的文件/i.test(error.message))return {available:false,reason:'git-not-installed',root,message:'电脑尚未安装 Git，安装后即可查看代码修改。'};
+      throw error;
+    }
+    if(!inside(root,repo)||!inside(repo,root))return {available:false,reason:'repository-root-required',root,message:'当前项目是仓库的子目录。请选择仓库根目录对应的项目。'};
     const [raw,branch,refs,head,upstream]=await Promise.all([
       this.git(root,['status','--porcelain=v1','-z','--untracked-files=all']),this.git(root,['branch','--show-current']),this.git(root,['for-each-ref','--format=%(refname:short)','refs/heads','refs/remotes']),this.git(root,['rev-parse','HEAD']).catch(()=>''),this.git(root,['rev-parse','--abbrev-ref','--symbolic-full-name','@{u}']).catch(()=>'')]);
     const parts=raw.split('\0'),files=[];
     for(let i=0;i<parts.length;i++)if(parts[i]){const code=parts[i].slice(0,2),file=parts[i].slice(3);let original=null;if(/[RC]/.test(code))original=parts[++i];files.push({path:file,status:code,original,staged:code[0]!==' '&&code[0]!=='?',unstaged:code[1]!==' '});}
-    return {root,branch:branch.trim()||'(detached HEAD)',head:head.trim(),upstream:upstream.trim(),branches:refs.trim().split('\n').filter(Boolean),files,revision:await this.revision(root,raw)};
+    return {available:true,root,branch:branch.trim()||'(detached HEAD)',head:head.trim(),upstream:upstream.trim(),branches:refs.trim().split('\n').filter(Boolean),files,revision:await this.revision(root,raw)};
   }
   async revision(root,raw) {
     raw??=await this.git(root,['status','--porcelain=v1','-z','--untracked-files=all']);
@@ -138,6 +145,7 @@ export class WorkspaceTools {
     const root=await this.root(args);
     return this.serial(root,async()=>{
       const status=await this.status(args);
+      if(status.available===false)fail(status.message);
       if(!args.revision||args.revision!==status.revision)fail('工作区已变化，请重新检查差异后提交');
       const message=text(args.message,'提交说明',2000);
       if(!Array.isArray(args.paths)||!args.paths.length||args.paths.length>200)fail('请选择要提交的文件');
@@ -151,6 +159,7 @@ export class WorkspaceTools {
   async push(args) {
     const root=await this.root(args);return this.serial(root,async()=>{
       const status=await this.status(args);
+      if(status.available===false)fail(status.message);
       if(!args.head||status.head!==args.head||status.branch!==args.branch)fail('分支或提交已变化，请刷新后推送');
       if(!status.upstream)fail('当前分支没有上游，请先在电脑设置上游分支');
       const output=await this.git(root,['push'],{mutating:true});return {submitted:true,output};
@@ -159,6 +168,7 @@ export class WorkspaceTools {
   async createPr(args) {
     const root=await this.root(args);return this.serial(root,async()=>{
       const status=await this.status(args);
+      if(status.available===false)fail(status.message);
       if(status.head!==args.head||status.branch!==args.branch)fail('分支已变化，请刷新后创建 PR');
       const base=text(args.base,'目标分支',200),title=text(args.title,'PR 标题',250);
       if(base.startsWith('-')||!status.branches.includes(base)||status.branch==='(detached HEAD)')fail('请选择有效的目标分支');
