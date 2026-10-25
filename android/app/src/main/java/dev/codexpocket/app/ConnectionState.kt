@@ -14,5 +14,7 @@ enum class ConnectionState(val label: String, val ready: Boolean = false, val re
     HANDSHAKE_TIMEOUT("连接确认超时，正在重连", retry=true),
     INVALID_DATA("连接数据验证失败，正在重连", retry=true),
     AUTH_FAILED("设备授权已失效"),
+    ACCESS_DENIED("账号或设备权限已失效，请检查登录状态"),
+    REPLACED("连接已由另一处接管，可手动重新连接"),
     REVOKED("设备已被撤销，请重新配对")
 }

@@ -33,12 +33,22 @@ export class RelayConnection {
     });
     socket.on('pong', () => { if (this.isCurrent(socket)) { clearTimeout(this.pongDeadline); this.pongDeadline = null; } });
     socket.on('message', data => { if (this.isCurrent(socket)) this.callbacks.onMessage(data, socket); });
+    socket.on('unexpected-response', (request, response) => {
+      response.resume();
+      const denied = response.statusCode === 401 || response.statusCode === 403;
+      this.disconnect(socket, denied ? 'authorization-failed' : 'transport-error', !denied);
+    });
     socket.on('error', () => this.disconnect(socket, 'transport-error'));
-    socket.on('close', () => this.disconnect(socket, 'transport-closed'));
+    socket.on('close', code => {
+      if (code === 4000) this.disconnect(socket, 'replaced', false);
+      else if (code === 4001 || code === 4003) this.disconnect(socket, 'authorization-failed', false);
+      else this.disconnect(socket, 'transport-closed');
+    });
   }
-  disconnect(socket, reason) {
+  disconnect(socket, reason, retry = true) {
     if (!this.isCurrent(socket)) return;
-    this.socket = null; this.clearHeartbeat(); this.state = 'reconnecting';
+    this.socket = null; this.clearHeartbeat(); this.state = retry ? 'reconnecting' : reason;
+    if (!retry) this.stopped = true;
     // Fence the old connection before terminate emits error/close callbacks.
     socket.terminate(); this.callbacks.onDisconnect(reason);
     const delay = Math.min(this.timing.retryMaxMs, this.timing.retryMinMs * 2 ** Math.min(this.failures++, 5));

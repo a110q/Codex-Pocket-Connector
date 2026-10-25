@@ -14,7 +14,7 @@ export class ConnectorRuntime {
     if (this.busy) throw new Error('正在连接，请稍候。');
     if (!existsSync(paths.config)) throw new Error('请先选择局域网连接，或公网连接。');
     const config = readJson(paths.config);
-    if (this.app && this.hostId === config.hostId) return { started: true };
+    if (this.app && this.hostId === config.hostId) { this.app.reconnect?.(); return { started: true }; }
     this.busy = true; this.error = '';
     try {
       await this.stop();

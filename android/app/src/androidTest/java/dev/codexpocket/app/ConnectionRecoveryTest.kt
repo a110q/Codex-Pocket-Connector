@@ -70,6 +70,23 @@ class ConnectionRecoveryTest {
         Assert.assertEquals(1,peer.server.requestCount)
         Assert.assertFalse(model!!.connected)
     }
+    @Test fun replacedConnectionDoesNotRetakeTheNewConnectionsSocket(){
+        start();until{model!!.connected}
+        peer.closeLatest(4000,"Reconnected")
+        until{!model!!.connected}
+        Thread.sleep(4500)
+        Assert.assertEquals("A replaced connection must not repeatedly evict another client",1,peer.opens.get())
+    }
+    @Test fun accountDenialAndRevocationDoNotCauseReconnectionLoops(){
+        peer.rejectAuthorization=true;peer.authorizationStatus=403;start()
+        until{model!!.status==ConnectionState.ACCESS_DENIED.label}
+        Thread.sleep(4500);Assert.assertEquals(1,peer.server.requestCount)
+        peer.rejectAuthorization=false
+        instrumentation.runOnMainSync{model!!.reconnectNow()};until{model!!.connected}
+        peer.closeLatest(4003,"Account no longer authorized")
+        until{model!!.status==ConnectionState.ACCESS_DENIED.label}
+        Thread.sleep(4500);Assert.assertEquals(1,peer.opens.get())
+    }
     @Test fun repeatedForegroundAndAccountStartsKeepTheExistingConnection(){
         start();until{model!!.connected&&model!!.projects.isNotEmpty()}
         instrumentation.runOnMainSync{
@@ -162,7 +179,7 @@ class ConnectionRecoveryTest {
         val accountReads=AtomicInteger()
         private val channels=java.util.concurrent.ConcurrentHashMap<WebSocket,String>()
         val imageBytes=java.io.ByteArrayOutputStream()
-        var dropFirstHello=false;var ignoreMessages=false;var rejectAuthorization=false
+        var dropFirstHello=false;var ignoreMessages=false;var rejectAuthorization=false;var authorizationStatus=401
         @Volatile var holdPairStatus=false
         val pairStatusRequests=AtomicInteger()
         val releasePairStatus=CountDownLatch(1)
@@ -179,7 +196,7 @@ class ConnectionRecoveryTest {
             val tls=HandshakeCertificates.Builder().heldCertificate(cert).build()
             server.useHttps(tls.sslSocketFactory(),false)
             server.dispatcher=object:okhttp3.mockwebserver.Dispatcher(){override fun dispatch(request:okhttp3.mockwebserver.RecordedRequest):MockResponse{
-                if(rejectAuthorization)return MockResponse().setResponseCode(401).setBody("{}")
+                if(rejectAuthorization)return MockResponse().setResponseCode(authorizationStatus).setBody("{}")
                 if(request.path=="/api/account/me"){accountReads.incrementAndGet();return MockResponse().setBody((accountResponse?:JSONObject()).toString())}
                 if(request.path=="/api/pair") {postedPair=true;return MockResponse().setBody("{\"state\":\"pending\"}")}
                 if(request.path=="/api/pair/status"){
@@ -225,6 +242,7 @@ class ConnectionRecoveryTest {
         }
         fun snapshot(value:JSONObject){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type","thread.updated").put("threadId",value.getJSONObject("thread").getString("id")).put("data",value))))}}
         fun status(online:Boolean){sockets.last().send(JSONObject().put("type","status").put("peerOnline",online).toString())}
+        fun closeLatest(code:Int,reason:String){sockets.last().close(code,reason)}
         fun close(){releasePairStatus.countDown();try{sockets.forEach{it.close(1000,"Local test finished")}}finally{server.shutdown()}}
     }
     // The fixture's server role follows the wire specification independently

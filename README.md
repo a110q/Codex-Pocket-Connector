@@ -37,13 +37,13 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.2。** 建议同时更新手机与电脑连接器，中继无需升级。 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.3。** 建议同时更新手机与电脑连接器，中继无需升级。 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.2/Codex-Pocket-0.9.2.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.2/Codex-Pocket-Connector-0.9.2-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.2/Codex-Pocket-Connector-0.9.2-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.2/Codex-Pocket-Connector-0.9.2-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.3/Codex-Pocket-0.9.3.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.3/Codex-Pocket-Connector-0.9.3-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.3/Codex-Pocket-Connector-0.9.3-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.3/Codex-Pocket-Connector-0.9.3-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -84,6 +84,8 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.3** 修复重复连接实例相互抢占导致的反复重连，并区分授权失效和临时断网；缩小聊天中的断线与待确认提示，键盘弹出时仍可编辑草稿。详见 [更新说明](docs/patch-0.9.3.md) 与 [验收记录](docs/verification-0.9.3.md)。
 
 **0.9.2** 支持点击顶部电脑名称下拉切换、给电脑设置易识别的名称；修复切后台或重连后发送一直等待确认的问题，自动查询操作结果而不重发。同时修复电脑移除后 `Unauthorized` 导致无法改绑账号。详见 [更新说明](docs/patch-0.9.2.md) 与 [验收记录](docs/verification-0.9.2.md)。
 

@@ -16,6 +16,19 @@ class Adapter extends EventEmitter {
   close() { this.ready = false; }
 }
 
+test('real relay takeover stays stable and reconnect button explicitly resumes the selected connector',async t=>{
+  const f=await fixture();const a=new ConnectorRuntime({createAdapter:()=>new Adapter()}),b=new ConnectorRuntime({createAdapter:()=>new Adapter()});
+  t.after(async()=>{await a.stop();await b.stop();await f.close()});
+  const {paths,config}=await f.enroll('takeover-a');const second=f.paths('takeover-b');writePrivate(second.config,config);
+  const until=async condition=>{const end=Date.now()+5000;while(!condition()){if(Date.now()>end)throw Error('Takeover did not settle');await new Promise(r=>setTimeout(r,20));}};
+  await a.connect(paths);await until(()=>a.app.status().relayOnline);
+  const original=a.app;
+  await b.connect(second);await until(()=>b.app.status().relayOnline&&a.app.status().relayState==='replaced');
+  await new Promise(r=>setTimeout(r,1200));assert.equal(a.app.status().relayState,'replaced');assert.equal(b.app.status().relayOnline,true);
+  await a.connect(paths);await until(()=>a.app.status().relayOnline&&b.app.status().relayState==='replaced');assert.equal(a.app,original);
+  await a.connect(paths);await new Promise(r=>setTimeout(r,1200));assert.equal(a.app.status().relayOnline,true);assert.equal(b.app.status().relayState,'replaced');
+});
+
 test('one-click connection refreshes an expired unpaired QR and preserves an authorized phone on restart', async t => {
   const f = await fixture(); t.after(() => f.close());
   const reservation = net.createServer();

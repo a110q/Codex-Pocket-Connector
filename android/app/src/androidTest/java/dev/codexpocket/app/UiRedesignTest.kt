@@ -5,6 +5,9 @@ import android.graphics.Bitmap
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -125,6 +128,35 @@ class UiRedesignTest {
         compose.waitUntil(5000){compose.onAllNodesWithContentDescription("选择模型").fetchSemanticsNodes().isNotEmpty()}
         shot("11-long-model-composer")
     }
+    @Test fun offlinePendingOperationDoesNotCollapseTheComposerBehindTheKeyboard(){
+        peer.active=true;chat();peer.ignoreMessages=true
+        compose.runOnUiThread{model.send("QA offline layout")}
+        until{model.pendingOperation!=null&&peer.calls.any{it.optString("action")=="message.send"}}
+        peer.offline();until{!model.connected&&!model.busy}
+        compose.onNodeWithContentDescription("聊天输入框").performClick().performTextInput("断线时仍可编辑草稿")
+        compose.waitForIdle()
+        val input=compose.onNodeWithContentDescription("聊天输入框")
+        input.assertIsDisplayed()
+        shot("offline-pending-keyboard")
+        val density=context.resources.displayMetrics.density
+        val composer=compose.onNodeWithTag("chat-composer").fetchSemanticsNode().layoutInfo.coordinates.boundsInWindow()
+        val textBounds=input.fetchSemanticsNode().boundsInRoot
+        val imeBottom=ViewCompat.getRootWindowInsets(compose.activity.window.decorView)!!.getInsets(WindowInsetsCompat.Type.ime()).bottom
+        Assert.assertTrue("The software keyboard must be visible",imeBottom>0)
+        Assert.assertTrue("Composer must retain a full touch row: $composer",composer.height>=48*density-1)
+        // BasicTextField semantics exclude its 13 dp top and bottom padding.
+        Assert.assertTrue("Input must retain a readable text line: $textBounds",textBounds.height>=22*density-1)
+        Assert.assertTrue("Composer must stay above the keyboard: $composer",composer.bottom<=compose.activity.window.decorView.height-imeBottom+1)
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("Codex 正在处理").assertDoesNotExist()
+        compose.onNodeWithText("查看",substring=false).performClick()
+        compose.onNodeWithText("操作结果待确认").assertIsDisplayed()
+        compose.onNodeWithText("已查看，清除记录").performClick()
+        compose.onNodeWithText("返回检查").performClick()
+        Assert.assertNotNull(model.pendingOperation)
+        Assert.assertEquals("断线时仍可编辑草稿",model.draft)
+        Assert.assertEquals(1,peer.calls.count{it.optString("action")=="message.send"})
+    }
     @Test fun webPreviewUsesTheRealTunnelAndCanCollapse(){
         chat();compose.runOnUiThread{model.openBrowser(peer.website.url("/").toString())}
         until(15000){peer.website.requestCount>0&&peer.calls.any{it.optString("action")=="preview.read"}}
@@ -162,6 +194,8 @@ class UiRedesignTest {
         val server=MockWebServer();val website=MockWebServer()
         val calls=CopyOnWriteArrayList<JSONObject>()
         private val sockets=CopyOnWriteArrayList<WebSocket>()
+        var ignoreMessages=false;var active=false
+        fun offline(){sockets.last().send(JSONObject().put("type","status").put("peerOnline",false).toString())}
         private val tcp=ConcurrentHashMap<String,Socket>()
         private val workers=Executors.newCachedThreadPool()
         private val host="ui-only-abcdefghijklmnopqrstuv"
@@ -195,19 +229,23 @@ class UiRedesignTest {
                 override fun onOpen(webSocket:WebSocket,response:Response){sockets.add(webSocket);webSocket.send(JSONObject().put("type","status").put("peerOnline",true).toString())}
                 override fun onMessage(webSocket:WebSocket,text:String){
                     val payload=codec.decode(text);val channel=payload.getString("channel")
-                    if(payload.optString("type")=="hello"){webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",true)));return}
+                    if(payload.optString("type")=="hello"){send(webSocket,JSONObject().put("type","hello").put("channel",channel).put("desktopReady",true));return}
                     calls.add(payload)
+                    if(ignoreMessages&&payload.optString("action")=="message.send")return
                     workers.execute{
-                        try{val result=handle(payload.getString("action"),payload.getJSONObject("args"));webSocket.send(codec.encode(JSONObject().put("type","response").put("channel",channel).put("id",payload.getString("id")).put("result",result)))}
-                        catch(e:Exception){webSocket.send(codec.encode(JSONObject().put("type","response").put("channel",channel).put("id",payload.getString("id")).put("error",e.message)))}
+                        try{val result=handle(payload.getString("action"),payload.getJSONObject("args"));send(webSocket,JSONObject().put("type","response").put("channel",channel).put("id",payload.getString("id")).put("result",result))}
+                        catch(e:Exception){send(webSocket,JSONObject().put("type","response").put("channel",channel).put("id",payload.getString("id")).put("error",e.message))}
                     }
                 }
             })}
             server.start()
             profile=JSONObject().put("relay",server.url("/").toString().trimEnd('/')).put("hostId",host).put("key",key).put("pin",Encoding.hex(MessageDigest.getInstance("SHA-256").digest(cert.certificate.encoded))).put("mobileToken",Encoding.secret()).put("approved",true).put("name","本地 UI 验收电脑")
         }
+        // Serialize encryption and enqueueing together so test workers cannot reorder sequence numbers.
+        private fun send(socket:WebSocket,payload:JSONObject)=synchronized(codec){socket.send(codec.encode(payload))}
         private fun snapshot(id:String):JSONObject{
             val thread=JSONObject(threads.optJSONObject(0).toString()).put("id",id).put("settings",JSONObject(settings.toString())).put("cwd","/workspace/codex_android")
+            if(active)thread.put("activeTurnId","qa-active-turn")
             return JSONObject().put("thread",thread).put("messages",JSONArray(messages.toString())).put("artifacts",artifacts).put("historyComplete",true).put("history",JSONObject().put("total",messages.length()).put("hasEarlier",false)).put("requests",if(approval)JSONArray().put(JSONObject().put("id","ui-approval").put("method","item/commandExecution/requestApproval").put("params",JSONObject().put("command","npm test").put("reason","仅用于隔离界面验收")))else JSONArray())
         }
         private fun handle(action:String,args:JSONObject):JSONObject=when(action){

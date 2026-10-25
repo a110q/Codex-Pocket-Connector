@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -248,14 +249,39 @@ class MainActivity : ComponentActivity() {
     Row(verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(6.dp).clip(RoundedCornerShape(50)).background(if(model.connected)PocketGreen else MaterialTheme.colorScheme.tertiary));Spacer(Modifier.width(7.dp));Text(model.status,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
 }
 
-@Composable fun PendingCard(model: PocketModel) {
+@Composable fun PendingCard(model: PocketModel, compact:Boolean=false) {
     if(model.pendingOperation==null)return
-    if(model.busy){ Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.CenterVertically){ CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(10.dp));Text(model.pendingStatus.ifBlank{"正在等待电脑确认操作…"},fontSize=12.sp) };return }
+    var details by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
+    val explanation=model.pendingStatus.ifBlank{"断线或超时后会自动查询执行结果。请先查看会话，避免重复发送。"}
+    if(compact){
+        Surface(color=MaterialTheme.colorScheme.tertiaryContainer,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth().padding(vertical=4.dp)){
+            Row(Modifier.padding(start=12.dp,end=4.dp).heightIn(min=44.dp),verticalAlignment=Alignment.CenterVertically){
+                if(model.busy&&model.connected){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp))}
+                Text(if(!model.connected)"上次操作待确认，草稿可继续编辑"else if(model.busy)"正在确认操作结果…"else"上次操作结果待确认",Modifier.weight(1f),fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                TextButton(onClick={details=true}){Text("查看",fontSize=12.sp)}
+            }
+        }
+    }else if(model.busy){Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(10.dp));Text(explanation,fontSize=12.sp)}}else{
     Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.tertiaryContainer),modifier=Modifier.fillMaxWidth().padding(vertical=6.dp)) {
-        Column(Modifier.padding(14.dp)) { Text("有一条操作等待确认",fontWeight=FontWeight.SemiBold);Text(model.pendingStatus.ifBlank{"断线或超时后会自动查询执行结果。请先查看会话，避免重复发送。"},fontSize=12.sp);Row { TextButton(onClick={model.confirmPending()},enabled=model.connected&&!model.busy){Text("重新确认")};TextButton(onClick={confirm=true}){Text("已查看，清除记录")} } }
+        Column(Modifier.padding(14.dp)) { Text("有一条操作等待确认",fontWeight=FontWeight.SemiBold);Text(explanation,fontSize=12.sp);Row { TextButton(onClick={model.confirmPending()},enabled=model.connected&&!model.busy){Text("重新确认")};TextButton(onClick={confirm=true}){Text("已查看，清除记录")} } }
     }
+    }
+    if(details)AlertDialog(onDismissRequest={details=false},title={Text("操作结果待确认")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){Text(explanation);model.error?.let{Text(it,fontSize=12.sp)};Text("清除记录不会停止电脑上的任务，请先核对会话中的实际结果。",fontSize=12.sp)}},confirmButton={TextButton(onClick={model.confirmPending();details=false},enabled=model.connected&&!model.busy){Text("重新确认")}},dismissButton={Row{TextButton(onClick={details=false;confirm=true},enabled=!model.busy){Text("已查看，清除记录")};TextButton(onClick={details=false}){Text("返回")}}})
     if(confirm)AlertDialog(onDismissRequest={confirm=false},title={Text("清除待确认记录？")},text={Text("请先在会话中检查这次操作是否已经执行。清除记录不会停止或撤销电脑上的任务。")},confirmButton={TextButton(onClick={model.clearPendingAfterInspection();confirm=false}){Text("已检查，清除")}},dismissButton={TextButton(onClick={confirm=false}){Text("返回检查")}})
+}
+
+@Composable private fun ChatConnectionNotice(model:PocketModel){
+    var details by remember { mutableStateOf(false) }
+    if(model.connected&&model.error==null)return
+    Surface(color=if(model.connected)MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer){
+        Row(Modifier.fillMaxWidth().padding(start=16.dp,end=4.dp),verticalAlignment=Alignment.CenterVertically){
+            Text(if(model.connected)model.error.orEmpty()else model.status,Modifier.weight(1f),fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+            if(!model.connected)TextButton(onClick={model.reconnectNow()}){Text("重连",fontSize=12.sp)}
+            TextButton(onClick={details=true}){Text("详情",fontSize=12.sp)}
+        }
+    }
+    if(details)AlertDialog(onDismissRequest={details=false},title={Text("连接与操作状态")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){Text(model.status);model.error?.let{Text(it)};if(!model.connected)Text("电脑、Codex 与连接器需保持运行。恢复连接后会重新读取会话；草稿会保留。",fontSize=12.sp)}},confirmButton={TextButton(onClick={details=false;model.error=null}){Text("知道了")}})
 }
 
 
@@ -324,9 +350,8 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
             }
         }
         HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-        if(!model.connected)Surface(color=MaterialTheme.colorScheme.tertiaryContainer){Row(Modifier.fillMaxWidth().padding(start=16.dp),verticalAlignment=Alignment.CenterVertically){Text("连接恢复后可继续发送",Modifier.weight(1f),fontSize=12.sp);TextButton(onClick={model.reconnectNow()}){Text("重新连接",fontSize=12.sp)}}}
-        model.error?.let{ErrorBanner(it){model.error=null}}
-        if(requests.isNotEmpty())Column(Modifier.heightIn(max=250.dp).verticalScroll(rememberScrollState()).padding(horizontal=14.dp)){requests.forEach{ApprovalCard(it,model)}}
+        ChatConnectionNotice(model)
+        if(requests.isNotEmpty())Column(Modifier.heightIn(max=if(keyboardOpen)104.dp else 250.dp).verticalScroll(rememberScrollState()).padding(horizontal=14.dp)){requests.forEach{ApprovalCard(it,model)}}
         if(model.loadingThread)LinearProgressIndicator(Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.secondary)
         if(model.previewKind!=null)PreviewPane(model,if(previewCollapsed)Modifier.fillMaxWidth() else Modifier.fillMaxWidth().weight(if(previewExpanded)1f else 1.1f),previewExpanded,toggleExpand={focus.clearFocus();previewCollapsed=false;expanded=!expanded},onAddressFocusChange={addressFocused=it},minimized=previewCollapsed,onMinimize={focus.clearFocus();previewCollapsed=!previewCollapsed;expanded=false})
         if(!(previewExpanded&&model.previewKind!=null))LazyColumn(state=list,modifier=Modifier.weight(1f).fillMaxWidth().nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
@@ -349,14 +374,14 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
         snackbar?.let{SnackbarHost(it,Modifier.fillMaxWidth().padding(horizontal=14.dp))}
         if(!editingAddress)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal=12.dp).padding(top=5.dp,bottom=if(keyboardOpen)4.dp else 8.dp)){
             if(messages.isNotEmpty()&&!followBottom&&!(previewExpanded&&model.previewKind!=null))Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center){TextButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}){Text("跳到最新 ↓",fontSize=11.sp)}}
-            PendingCard(model)
+            PendingCard(model,compact=true)
             FileMentionSuggestions(model){tools="files"}
             OutgoingImageStrip(model,thread.getString("id"))
             OutgoingFileStrip(model,thread.getString("id"))
             if(model.referencesFor().isNotEmpty())Row(Modifier.horizontalScroll(rememberScrollState())){model.referencesFor().forEach{path->InputChip(true,{model.removeReference(path)},label={Text("@$path ×",fontSize=11.sp)})}}
             model.imageStatus?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)}
-            if(active)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=model.connected&&!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
-            Surface(shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
+            if(active&&model.connected)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
+            Surface(modifier=Modifier.testTag("chat-composer"),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
                 Row(Modifier.fillMaxWidth().padding(horizontal=3.dp,vertical=2.dp),verticalAlignment=Alignment.Bottom){
                     AttachmentPickerButton(model,thread.getString("id"))
                     BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),modifier=Modifier.weight(1f).heightIn(min=48.dp,max=136.dp).padding(top=13.dp,bottom=13.dp,end=4.dp).semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->

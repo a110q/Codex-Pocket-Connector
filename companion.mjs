@@ -211,7 +211,12 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
   const url = new URL('/relay', config.mode==='lan'?`https://127.0.0.1:${config.lanPort}`:config.relay); url.protocol = 'wss:';
   const link = new RelayConnection(url, { ca: config.caCert, maxPayload: MAX_FRAME, headers: { Authorization: `Bearer ${config.desktopToken}`, 'X-Pocket-Host': config.hostId, 'X-Pocket-Role': 'desktop' } }, {
     onOpen: () => { relayError = ''; },
-    onDisconnect: reason => { preview.close(); mobileOnline = false; channel = null; relayError = reason === 'heartbeat-timeout' ? '中继心跳超时，正在自动重连' : '中继连接中断，正在自动重连'; },
+    onDisconnect: reason => {
+      preview.close(); mobileOnline = false; channel = null;
+      relayError = reason === 'replaced' ? '另一连接器已接管这台电脑，请关闭重复实例；需要时重新点击连接 Codex。'
+        : reason === 'authorization-failed' ? '连接授权已失效，请检查账号或重新连接并配对。'
+        : reason === 'heartbeat-timeout' ? '中继心跳超时，正在自动重连' : '中继连接中断，正在自动重连';
+    },
     onMessage: async (data, socket) => {
       try {
         const frame = JSON.parse(data.toString());
@@ -296,7 +301,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
   });
   await new Promise((resolve, reject) => { manager.once('error', reject); manager.listen(port, '127.0.0.1', resolve); });
   link.start(); await connectDesktop(); desktopRetry = setInterval(connectDesktop, 10000);
-  return { manager, adapter, status: () => ({ relayOnline: link.online, mobileOnline, desktopReady: adapter.ready }), close: async () => {
+  return { manager, adapter, reconnect: () => { if (!stopping) link.start(); }, status: () => ({ relayOnline: link.online, relayState: link.state, mobileOnline, desktopReady: adapter.ready }), close: async () => {
     stopping = true; scheduler.close(); preview.close(); clearTimeout(eventTimer); clearInterval(desktopRetry); link.close(); adapter.close();
     await new Promise(resolve => manager.close(resolve)); ledger.close();
   } };

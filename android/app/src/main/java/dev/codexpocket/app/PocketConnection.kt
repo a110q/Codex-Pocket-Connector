@@ -65,8 +65,8 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
                     }
                 } catch (_: Exception) { finish(ConnectionState.INVALID_DATA) }
             }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { finish(if (response?.code == 401) ConnectionState.AUTH_FAILED else ConnectionState.RECONNECTING) }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { finish(if (code == 4001) ConnectionState.REVOKED else ConnectionState.CLOSED) }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { finish(when(response?.code){401->ConnectionState.AUTH_FAILED;403->ConnectionState.ACCESS_DENIED;else->ConnectionState.RECONNECTING}) }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { finish(when(code){4000->ConnectionState.REPLACED;4001->ConnectionState.REVOKED;4003->ConnectionState.ACCESS_DENIED;else->ConnectionState.CLOSED}) }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         })
     }
