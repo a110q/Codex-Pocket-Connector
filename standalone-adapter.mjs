@@ -65,11 +65,11 @@ export class StandaloneAdapter extends DesktopAdapter {
     if (this.ipcAvailable) return;
     if (this.ipcConnecting) return this.ipcConnecting;
     this.ipcConnecting = (async () => {
-      this.ipc?.close(); this.owners.clear(); this.snapshots.clear(); this.subscriptions.clear(); this.ownerBridge.reset();
+      this.ipc?.close(); this.clearStreamState(); this.ownerBridge.reset();
       const ipcPath = this.options.ipcPath ?? process.env.POCKET_CODEX_IPC_PATH ?? (process.platform === 'win32' ? '\\\\.\\pipe\\codex-ipc' : path.join(this.options.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), 'ipc/ipc.sock'));
       const transport = new FramedSocket(ipcPath, timeoutMs); this.ipc = transport;
       transport.on('message', message => this.handleIpc(message));
-      transport.on('disconnect', () => { if (this.ipc === transport) { this.ipcAvailable = false; this.ownerBridge.reset(); } });
+      transport.on('disconnect', () => { if (this.ipc === transport) { this.ipcAvailable = false; this.clearStreamState(); this.ownerBridge.reset(); } });
       try {
         await transport.connect();
         const response = await transport.exchange({ type: 'request', requestId: randomUUID(), sourceClientId: 'initializing-client', version: 0, method: 'initialize', params: { clientType: 'desktop' } });
@@ -187,14 +187,15 @@ export class StandaloneAdapter extends DesktopAdapter {
     const state = { ...old, ...thread, title: thread.name || old.title || thread.preview || '新对话', turns, threadRuntimeStatus: thread.status, turnsPagination: { hasLoadedOldest: true }, requests: [...this.approvals.values()].filter(r => r.params.threadId === threadId), latestModel: thread.model ?? old.latestModel, latestReasoningEffort: thread.reasoningEffort ?? old.latestReasoningEffort };
     this.states.set(threadId, state); return state;
   }
-  async readThread(args) {
+  async readThread(args, options = {}) {
     const threadId = string(args.threadId, '对话 ID', 200);
     if (args.hostId && args.hostId !== 'local') throw new Error('独立连接暂不支持远程主机上的对话。');
     if (!this.ownedThreads.has(threadId)) {
       // The existing desktop remains the owner; never resume its running turn
       // in a second app-server merely to read or send a message.
-      const owner = await this.desktopOwner(threadId, args.hostId);
-      if (owner) try { const result = await super.readThread(args, { owner }); if (result.source === 'desktop-live') return result; } catch {}
+      const owner = options.owner ?? await this.desktopOwner(threadId, args.hostId);
+      if (owner) try { return await super.readThread(args, { ...options, owner, liveOnly: true }); } catch (error) { if (options.liveOnly) throw error; }
+      else if (options.liveOnly) throw this.ownerUnavailable(threadId);
     }
     return { ...normalizeSnapshot(await this.storedState(threadId)), tokenUsage:this.extensions.tokens.get(threadId)??null, source: 'codex-app-server', live: true };
   }
@@ -260,8 +261,11 @@ export class StandaloneAdapter extends DesktopAdapter {
     if (owner) {
       let snapshot;
       try {
-        if (args.model || args.thinking) await this.updateSettingsLocked({ threadId, ...(args.model ? { model: args.model } : {}), ...(args.thinking ? { reasoningEffort: args.thinking } : {}) }, owner);
-        snapshot = await super.readThread({ threadId }, { owner });
+        if (args.model || args.thinking) {
+          const result = await this.updateSettingsLocked({ threadId, ...(args.model ? { model: args.model } : {}), ...(args.thinking ? { reasoningEffort: args.thinking } : {}) }, owner);
+          if (!result.verified) throw new Error(result.error ?? '模型设置尚未确认，消息尚未发送，请重试。');
+        }
+        snapshot = await super.readThread({ threadId }, { owner, liveOnly: true, loadHistory: false });
         if (snapshot.source !== 'desktop-live') throw new Error('桌面实时连接尚未恢复，消息尚未发送，请稍后重试。');
       } catch (error) { throw notSubmitted(error); }
       const clientUserMessageId = args.clientUserMessageId ?? randomUUID();

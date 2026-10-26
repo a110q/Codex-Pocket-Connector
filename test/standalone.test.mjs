@@ -206,7 +206,8 @@ function desktopSendFixture(t, options = {}) {
 test('sending after desktop IPC disconnect reconnects and follows the existing desktop writer', async t => {
   const { a, server, calls } = desktopSendFixture(t);
   assert.deepEqual(await a.sendMessage({ threadId: 'qa', text: 'one message', model: 'test-model', thinking: 'high' }), { sent: true });
-  assert(calls.includes('connect')); assert(calls.includes('thread-follower-update-thread-settings'));
+  assert(calls.includes('connect')); assert(calls.includes('thread-follower-read-model-settings'));
+  assert(!calls.includes('thread-follower-update-thread-settings'));
   assert.equal(calls.filter(c => c === 'thread-follower-start-turn').length, 1);
   assert.equal(server.calls.length, 0); assert.equal(a.ownedThreads.size, 0);
 });

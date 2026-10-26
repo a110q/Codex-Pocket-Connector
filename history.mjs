@@ -15,6 +15,8 @@ export class HistoryStore {
   constructor() { this.snapshots = new Map(); }
   put(snapshot) {
     const key = storeKey({ hostId: snapshot.thread.hostId, threadId: snapshot.thread.id });
+    const current = this.snapshots.get(key);
+    if (current?.source === 'desktop-live' && snapshot.source === current.source && snapshot.streamId === current.streamId && Number.isSafeInteger(current.revision) && Number.isSafeInteger(snapshot.revision) && current.revision > snapshot.revision) return this.page({ hostId: current.thread.hostId, threadId: current.thread.id });
     this.snapshots.delete(key); this.snapshots.set(key, snapshot);
     while (this.snapshots.size > 4) this.snapshots.delete(this.snapshots.keys().next().value);
     return this.page({ hostId: snapshot.thread.hostId, threadId: snapshot.thread.id });

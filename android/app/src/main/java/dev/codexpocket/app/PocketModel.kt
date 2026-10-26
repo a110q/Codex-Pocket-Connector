@@ -428,7 +428,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private fun acceptSnapshot(next: JSONObject, olderPage: Boolean = false) {
         val current = snapshot
         val same = current?.optJSONObject("history") != null && current.optJSONObject("thread")?.optString("id") == next.optJSONObject("thread")?.optString("id")
-        val sameSource = same && current?.optString("source") == next.optString("source")
+        val sameSource = same && current?.optString("source") == next.optString("source") && current.optString("streamId") == next.optString("streamId")
         fun entries(value: JSONObject?) = value?.optJSONArray("messages").objects().mapIndexed { index, message -> TimelineEntry(message.optString("key", message.optString("turnId")+":"+message.optString("id")), message.optInt("order",index), message) }
         val stale = sameSource && !next.isNull("revision") && current?.isNull("revision") == false && current.optLong("revision") > next.optLong("revision")
         if (stale && !olderPage) return

@@ -24,7 +24,7 @@ export class AppServerClient extends EventEmitter {
     const env = { ...this.env };
     for (const key of ['CODEX_THREAD_ID', 'CODEX_DESKTOP_CONTEXT_THREAD_ID', 'CODEX_APP_TOOLS_PIPE_PATH']) delete env[key];
     const child = this.spawnProcess(this.binary ?? findCodexCLI({env:this.env}), ['app-server'], { env, cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-    this.child = child; let buffer = '';
+    this.child = child; let fragments = [], bufferedBytes = 0;
     const ended = message => {
       if (this.child !== child) return;
       this.child = null;
@@ -38,11 +38,17 @@ export class AppServerClient extends EventEmitter {
     child.stderr.on('data', () => {});
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
-      buffer += chunk;
-      if (Buffer.byteLength(buffer) > 64 * 1024 * 1024) { ended('Codex 返回的数据超过传输限制。'); child.kill(); return; }
-      for (;;) {
-        const end = buffer.indexOf('\n'); if (end < 0) break;
-        const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); if (!line.trim()) continue;
+      for (let offset = 0; offset < chunk.length;) {
+        const end = chunk.indexOf('\n', offset);
+        const part = chunk.slice(offset, end < 0 ? chunk.length : end);
+        bufferedBytes += Buffer.byteLength(part);
+        if (bufferedBytes > 64 * 1024 * 1024) { ended('Codex 返回的数据超过传输限制。'); child.kill(); return; }
+        fragments.push(part);
+        if (end < 0) break;
+        // Large history responses are joined once, not scanned and flattened
+        // again for every 64 KB stdout chunk.
+        const line = fragments.join(''); fragments = []; bufferedBytes = 0; offset = end + 1;
+        if (!line.trim()) continue;
         try {
           const value = JSON.parse(line);
           const waiter = value.method ? null : this.pending.get(value.id);
@@ -52,7 +58,7 @@ export class AppServerClient extends EventEmitter {
             else waiter.resolve(value.result);
           } else if (value.method && value.id != null) this.emit('request', value);
           else if (value.method) this.emit('notification', value);
-        } catch { ended('Codex 返回了无效的数据。'); child.kill(); }
+        } catch { ended('Codex 返回了无效的数据。'); child.kill(); return; }
       }
     });
     try {

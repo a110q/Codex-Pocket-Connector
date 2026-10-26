@@ -195,8 +195,15 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
   let eventTimer; const latestEvents = new Map();
   adapter.on('event', event => {
     if (event.type === 'thread.updated') {
-      try { latestEvents.set(event.threadId, { ...event, data: history.put(files.decorate(event.data)) }); } catch (e) { lastError = e.message; return; }
-      if (!eventTimer) eventTimer = setTimeout(() => { eventTimer = null; for (const event of latestEvents.values()) send({ type: 'event', event }); latestEvents.clear(); }, 150);
+      latestEvents.set(`${event.data.thread.hostId ?? 'local'}:${event.threadId}`, event);
+      if (!eventTimer) eventTimer = setTimeout(() => {
+        eventTimer = null;
+        for (const event of latestEvents.values()) {
+          try { send({ type: 'event', event: { ...event, data: history.put(files.decorate(event.data)) } }); }
+          catch (e) { lastError = e.message; }
+        }
+        latestEvents.clear();
+      }, 150);
     } else send({ type: 'event', event });
   });
   async function connectDesktop() {

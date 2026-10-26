@@ -141,16 +141,32 @@ export function encodeFrame(message, maxBytes = 64 * 1024 * 1024) {
 }
 
 export class FrameDecoder {
-  constructor(maxBytes = 64 * 1024 * 1024) { this.maxBytes = maxBytes; this.buffer = Buffer.alloc(0); }
+  constructor(maxBytes = 64 * 1024 * 1024) {
+    this.maxBytes = maxBytes; this.header = Buffer.allocUnsafe(4); this.headerBytes = 0;
+    this.payload = null; this.payloadBytes = 0;
+  }
+  // Diagnostic compatibility; the receive loop never rebuilds a partial frame.
+  get buffer() { return Buffer.concat([this.header.subarray(0, this.headerBytes), this.payload?.subarray(0, this.payloadBytes) ?? Buffer.alloc(0)]); }
   push(chunk) {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
     const messages = [];
-    while (this.buffer.length >= 4) {
-      const size = this.buffer.readUInt32LE(0);
-      if (!size || size > this.maxBytes) throw new Error('Invalid desktop frame length');
-      if (this.buffer.length < 4 + size) break;
-      messages.push(JSON.parse(this.buffer.subarray(4, 4 + size).toString('utf8')));
-      this.buffer = this.buffer.subarray(4 + size);
+    for (let offset = 0; offset < chunk.length;) {
+      if (this.headerBytes < 4) {
+        const count = Math.min(4 - this.headerBytes, chunk.length - offset);
+        chunk.copy(this.header, this.headerBytes, offset, offset + count); offset += count; this.headerBytes += count;
+        if (this.headerBytes < 4) break;
+        const size = this.header.readUInt32LE(0);
+        if (!size || size > this.maxBytes) throw new Error('Invalid desktop frame length');
+        // Allocate once. Repeated Buffer.concat made a large history frame
+        // quadratic in the number of socket chunks (tens of GB of copying).
+        this.payload = Buffer.allocUnsafe(size);
+      }
+      const count = Math.min(this.payload.length - this.payloadBytes, chunk.length - offset);
+      chunk.copy(this.payload, this.payloadBytes, offset, offset + count); offset += count; this.payloadBytes += count;
+      if (this.payloadBytes === this.payload.length) {
+        const payload = this.payload;
+        this.headerBytes = 0; this.payload = null; this.payloadBytes = 0;
+        messages.push(JSON.parse(payload.toString('utf8')));
+      }
     }
     return messages;
   }
@@ -336,20 +352,27 @@ export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', re
 }
 
 export function applyPatches(state, patches) {
-  const result = structuredClone(state);
+  let result = state;
   for (const patch of patches) {
-    if (!Array.isArray(patch.path) || !patch.path.length || patch.path.some(key => FORBIDDEN_KEYS.has(String(key)))) throw new Error('Unsupported desktop patch path');
-    let object = result;
-    for (const key of patch.path.slice(0, -1)) {
-      if (object == null || !Object.hasOwn(object, key)) throw new Error('Desktop patch target missing');
-      object = object[key];
-    }
-    const key = patch.path.at(-1);
-    if (patch.op === 'remove') { if (Array.isArray(object)) object.splice(Number(key), 1); else delete object[key]; }
-    else if (patch.op === 'replace' || patch.op === 'add') {
-      const value = structuredClone(patch.value);
-      if (patch.op === 'add' && Array.isArray(object)) object.splice(Number(key), 0, value); else object[key] = value;
-    } else throw new Error('Unsupported desktop patch operation');
+    if (!Array.isArray(patch.path) || !patch.path.length || patch.path.some(key => !['string', 'number'].includes(typeof key) || FORBIDDEN_KEYS.has(String(key)))) throw new Error('Unsupported desktop patch path');
+    if (!['remove', 'replace', 'add'].includes(patch.op)) throw new Error('Unsupported desktop patch operation');
+    const update = (object, depth) => {
+      if (object == null || typeof object !== 'object') throw new Error('Desktop patch target missing');
+      const key = patch.path[depth], last = depth === patch.path.length - 1;
+      if (Array.isArray(object) && key !== 'length' && (!/^(0|[1-9]\d*)$/.test(String(key)) || !Number.isSafeInteger(Number(key)) || Number(key) > object.length || (Number(key) === object.length && !(last && patch.op === 'add')))) throw new Error('Invalid desktop patch index');
+      if ((!last || patch.op === 'remove') && !Object.hasOwn(object, key)) throw new Error('Desktop patch target missing');
+      const copy = Array.isArray(object) ? object.slice() : { ...object };
+      if (!last) copy[key] = update(object[key], depth + 1);
+      else if (patch.op === 'remove') { if (Array.isArray(copy)) copy.splice(Number(key), 1); else delete copy[key]; }
+      else {
+        const value = structuredClone(patch.value);
+        if (patch.op === 'add' && Array.isArray(copy) && key !== 'length') copy.splice(Number(key), 0, value); else copy[key] = value;
+      }
+      return copy;
+    };
+    // Copy only the changed path; untouched turns and their large tool outputs
+    // remain shared. A rejected batch cannot partially mutate the prior state.
+    result = update(result, 0);
   }
   return result;
 }
@@ -382,6 +405,7 @@ export class DesktopAdapter extends EventEmitter {
     super(); this.options = options; this.timeoutMs = options.timeoutMs ?? 15000;
     this.callerThreadId = options.callerThreadId ?? process.env.CODEX_DESKTOP_CONTEXT_THREAD_ID ?? process.env.CODEX_THREAD_ID;
     this.snapshots = new Map(); this.owners = new Map(); this.subscriptions = new Map();
+    this.streamTimers = new Map();
     this.ready = false; this.tools = []; this.ipc = null; this.appTools = null; this.connecting = null; this.incompatible = false;
   }
   async connect() {
@@ -401,6 +425,7 @@ export class DesktopAdapter extends EventEmitter {
     this.appTools = new FramedSocket(toolsPath, this.timeoutMs);
     this.ipc.on('message', message => this.handleIpc(message));
     for (const transport of [this.ipc, this.appTools]) transport.on('disconnect', error => {
+      this.clearStreamState();
       if (this.ready) { this.ready = false; this.emit('event', { type: 'desktop.disconnected', error: error.message }); }
     });
     try {
@@ -454,6 +479,30 @@ export class DesktopAdapter extends EventEmitter {
   broadcast(method, params, targetClientIds) {
     this.ipc.write({ type: 'broadcast', method, params, sourceClientId: this.clientId, version: VERSIONS[method], ...(targetClientIds ? { targetClientIds } : {}) });
   }
+  snapshotData(key) {
+    const snapshot = this.snapshots.get(key);
+    if (!snapshot) return null;
+    const sub = this.subscriptions.get(key);
+    return snapshot.normalized ??= { ...normalizeSnapshot(snapshot.state, { hostId: sub?.hostId ?? 'local', revision: snapshot.revision }), streamId: sub?.streamId };
+  }
+  emitSnapshot(key) {
+    const sub = this.subscriptions.get(key);
+    if (!sub || sub.resyncRequestedAt || !this.snapshots.has(key)) return;
+    this.emit('event', { type: 'thread.updated', threadId: sub.threadId, data: this.snapshotData(key) });
+  }
+  requestSnapshot(key, owner) {
+    const sub = this.subscriptions.get(key);
+    if (!sub) return;
+    // Multiple late/mismatched deltas must not each enqueue another huge frame.
+    if (sub.resyncRequestedAt && Date.now() - sub.resyncRequestedAt < this.timeoutMs) return;
+    sub.resyncRequestedAt = Date.now();
+    this.broadcast('thread-stream-following-changed', { conversationId: sub.threadId, hostId: sub.hostId, following: true }, [owner]);
+  }
+  clearStreamState() {
+    for (const timer of this.streamTimers.values()) clearTimeout(timer);
+    this.streamTimers.clear(); this.subscriptions.clear(); this.snapshots.clear(); this.owners.clear();
+    this.emit('stream.reset');
+  }
   handleIpc(message) {
     if (message.type === 'client-discovery-request') { this.ipc.write({ type: 'client-discovery-response', requestId: message.requestId, response: { canHandle: false } }); return; }
     this.emit('notification', message);
@@ -470,53 +519,82 @@ export class DesktopAdapter extends EventEmitter {
     }
     const { hostId, conversationId, change } = message.params;
     const key = `${hostId}:${conversationId}`;
-    if (!this.subscriptions.has(key)) return;
+    const sub = this.subscriptions.get(key);
+    if (!sub || (sub.owner && sub.owner !== message.sourceClientId)) return;
     const current = this.snapshots.get(key);
     try {
-      if (change.type === 'snapshot') this.snapshots.set(key, { revision: change.revision, state: change.conversationState });
-      else if (change.type === 'patches' && current?.revision === change.baseRevision && !(change.acceptedTextChanges?.length)) {
+      if (!Number.isSafeInteger(change.revision)) throw new Error('Invalid desktop stream revision');
+      if (change.type === 'snapshot') {
+        if (current && current.revision > change.revision) return;
+        this.snapshots.set(key, { revision: change.revision, state: change.conversationState });
+        sub.resyncRequestedAt = null;
+      } else if (change.type === 'patches' && current && change.revision <= current.revision) return;
+      else if (change.type === 'patches' && current?.revision === change.baseRevision && !sub.resyncRequestedAt) {
+        // v11 includes text updates in the structural patches. The accompanying
+        // acceptedTextChanges are render hints, not additional state mutations.
         this.snapshots.set(key, { revision: change.revision, state: applyPatches(current.state, change.patches) });
-      } else { this.broadcast('thread-stream-following-changed', { conversationId, hostId, following: true }, [message.sourceClientId]); return; }
+      } else { this.requestSnapshot(key, message.sourceClientId); return; }
+      sub.owner = message.sourceClientId;
       this.owners.set(key, message.sourceClientId);
-      const snapshot = this.snapshots.get(key);
-      this.emit('event', { type: 'thread.updated', threadId: conversationId, data: normalizeSnapshot(snapshot.state, { hostId, revision: snapshot.revision }) });
-    } catch { this.broadcast('thread-stream-following-changed', { conversationId, hostId, following: true }, [message.sourceClientId]); }
+      // Update canonical state immediately, but project/render a burst only
+      // once. Reads still see the latest revision via snapshotData().
+      if (change.type === 'snapshot') {
+        clearTimeout(this.streamTimers.get(key)); this.streamTimers.delete(key); this.emitSnapshot(key);
+      } else if (!this.streamTimers.has(key)) {
+        const timer = setTimeout(() => { this.streamTimers.delete(key); this.emitSnapshot(key); }, this.options.streamThrottleMs ?? 100);
+        timer.unref?.(); this.streamTimers.set(key, timer);
+      }
+    } catch { this.requestSnapshot(key, message.sourceClientId); }
   }
   async owner(threadId, hostId = 'local') {
     const response = await this.request('thread-owner-discovery', { conversationId: threadId, hostId });
     const key = `${hostId}:${threadId}`; this.owners.set(key, response.handledByClientId); return response.handledByClientId;
   }
-  async readThread(args, { owner: knownOwner } = {}) {
+  async readThread(args, { owner: knownOwner, liveOnly = false, loadHistory = true, refresh = false } = {}) {
     const threadId = requireString(args.threadId, 'threadId'); const hostId = args.hostId ?? 'local'; const key = `${hostId}:${threadId}`;
     try {
-      const owner = knownOwner ?? await this.owner(threadId, hostId); this.subscriptions.set(key, { threadId, hostId });
+      const owner = knownOwner ?? await this.owner(threadId, hostId);
+      let sub = this.subscriptions.get(key);
+      if (!sub || sub.owner !== owner) {
+        this.snapshots.delete(key);
+        sub = { threadId, hostId, owner, streamId: randomUUID() }; this.subscriptions.set(key, sub);
+      } else {
+        this.subscriptions.delete(key); this.subscriptions.set(key, sub);
+      }
       // The phone displays one chat at a time; retain only a small recent set.
       while (this.subscriptions.size > 4) {
         const [oldKey, old] = this.subscriptions.entries().next().value;
         this.broadcast('thread-stream-following-changed', { conversationId: old.threadId, hostId: old.hostId, following: false }, this.owners.has(oldKey) ? [this.owners.get(oldKey)] : undefined);
         this.subscriptions.delete(oldKey); this.snapshots.delete(oldKey); this.owners.delete(oldKey);
+        clearTimeout(this.streamTimers.get(oldKey)); this.streamTimers.delete(oldKey);
       }
-      const snapshotPromise = new Promise((resolve, reject) => {
-        const listener = event => { if (event.type === 'thread.updated' && event.threadId === threadId && event.data.thread.hostId === hostId) { clearTimeout(timer); this.off('event', listener); resolve(event.data); } };
-        const timer = setTimeout(() => { this.off('event', listener); reject(new Error('Desktop snapshot timed out')); }, Math.min(this.timeoutMs, 5000));
-        this.on('event', listener);
-      });
-      this.broadcast('thread-stream-following-changed', { conversationId: threadId, hostId, following: true }, [owner]);
-      const initial = await snapshotPromise;
-      if (initial.historyComplete) return initial;
+      let initial = !refresh && !sub.resyncRequestedAt && this.snapshotData(key);
+      if (!initial) {
+        if (!sub.reading) sub.reading = new Promise((resolve, reject) => {
+          const cleanup = () => { clearTimeout(timer); this.off('event', listener); this.off('stream.reset', reset); };
+          const listener = event => { if (event.type === 'thread.updated' && event.threadId === threadId && event.data.thread.hostId === hostId) { cleanup(); resolve(event.data); } };
+          const reset = () => { cleanup(); reject(new Error('Desktop stream disconnected')); };
+          const timer = setTimeout(() => { cleanup(); reject(new Error('Desktop snapshot timed out')); }, Math.min(this.timeoutMs, 10000));
+          this.on('event', listener); this.once('stream.reset', reset);
+          try { this.requestSnapshot(key, owner); } catch (error) { cleanup(); reject(error); }
+        }).finally(() => { sub.reading = null; });
+        initial = await sub.reading;
+      }
+      if (initial.historyComplete || !loadHistory) return initial;
       try {
         const loaded = await this.request('thread-follower-load-complete-history', { conversationId: threadId }, { hostId, targetClientId: owner, timeoutMs: 20000 });
         const revision = loaded.result?.revision;
         const current = () => this.snapshots.get(key);
-        const matches = () => current() && (revision == null || current().revision >= revision) && normalizeSnapshot(current().state, { hostId }).historyComplete;
+        const matches = () => current() && !sub.resyncRequestedAt && (revision == null || current().revision >= revision) && this.snapshotData(key).historyComplete;
         if (!matches()) await new Promise((resolve, reject) => {
           const listener = () => { if (matches()) { clearTimeout(timer); this.off('event', listener); resolve(); } };
           const timer = setTimeout(() => { this.off('event', listener); reject(new Error('完整历史尚未同步，请刷新重试')); }, 4000);
           this.on('event', listener); listener();
         });
-        return normalizeSnapshot(current().state, { hostId, revision: current().revision });
+        return this.snapshotData(key);
       } catch (error) { return { ...initial, historyError: error.message }; }
     } catch (error) {
+      if (liveOnly) throw error;
       const result = await this.tool('read_thread', { threadId, hostId, turnLimit: Math.min(10, Math.max(1, args.turnLimit ?? 10)), includeOutputs: true, maxOutputCharsPerItem: 20000 });
       const turns = result.page?.order === 'newest_first' ? [...result.turns].reverse() : result.turns;
       const normalized = normalizeSnapshot({ ...result.thread, turns, requests: [] }, { hostId });
@@ -577,6 +655,10 @@ export class DesktopAdapter extends EventEmitter {
       throw new Error('Select a supported reasoning effort with this model');
     }
     if (!Object.keys(threadSettings).length) throw new Error('No thread settings were supplied');
+    const modelOnly = !Object.hasOwn(args, 'permissionMode');
+    const matchesModel = settings => !!settings && (!Object.hasOwn(args, 'model') || settings.model === args.model) &&
+      (!Object.hasOwn(args, 'reasoningEffort') || settings.reasoningEffort === args.reasoningEffort);
+    if (modelOnly && matchesModel(before)) return { threadId, hostId, applied: true, verified: true, unchanged: true, appliesTo: 'subsequent-turns', settings: { model: before.model, reasoningEffort: before.reasoningEffort } };
     const response = await this.request('thread-follower-update-thread-settings', { conversationId: threadId, threadSettings,
       ...(before ? { condition: { ifModelEquals: before.model, ifEffortEquals: before.reasoningEffort } } : {}) }, { hostId, targetClientId: owner });
     const applied = response.result.applied === true;
@@ -585,12 +667,18 @@ export class DesktopAdapter extends EventEmitter {
       // A transport success alone does not confirm that the setting persisted.
       // Refresh the actual owner snapshot; never synthesize a saved UI state.
       try {
-        const snapshot = await this.readThread({ threadId, hostId });
-        if (snapshot.source === 'desktop-live') {
+        if (modelOnly) {
+          const after = (await this.request('thread-follower-read-model-settings', { conversationId: threadId }, { hostId, targetClientId: owner })).result.settings;
+          settings = after ? { model: after.model, reasoningEffort: after.reasoningEffort } : null;
+          verified = matchesModel(settings);
+        } else {
+          const snapshot = await this.readThread({ threadId, hostId }, { owner, liveOnly: true, loadHistory: false, refresh: true });
+          if (snapshot.source === 'desktop-live') {
           settings = snapshot.thread.settings;
           verified = (!Object.hasOwn(args, 'model') || settings.model === args.model) &&
             (!Object.hasOwn(args, 'reasoningEffort') || settings.reasoningEffort === args.reasoningEffort) &&
             (!Object.hasOwn(args, 'permissionMode') || settings.permissionMode === args.permissionMode);
+          }
         }
       } catch {}
     }
@@ -642,7 +730,7 @@ export class DesktopAdapter extends EventEmitter {
     for (const [key, sub] of this.subscriptions) {
       try { this.broadcast('thread-stream-following-changed', { conversationId: sub.threadId, hostId: sub.hostId, following: false }, this.owners.has(key) ? [this.owners.get(key)] : undefined); } catch {}
     }
-    this.subscriptions.clear(); this.snapshots.clear(); this.owners.clear(); this.ipc?.close(); this.appTools?.close();
+    this.clearStreamState(); this.ipc?.close(); this.appTools?.close();
   }
 }
 

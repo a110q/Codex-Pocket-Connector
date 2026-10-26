@@ -320,17 +320,27 @@ test('settings follower request versions are two locally and three for a nonloca
   assert.equal(writes[0].version, 2); assert.equal(writes[1].version, 3); assert.equal(writes[1].hostId, 'remote');
 });
 
-test('stream text-change deltas and missing base revisions trigger a fresh snapshot', () => {
-  const adapter = new DesktopAdapter(); const broadcasts = []; const events = [];
+test('text render hints accompany canonical patches without double append or snapshot storms', async t => {
+  const adapter = new DesktopAdapter({ streamThrottleMs: 10 }); t.after(() => adapter.close()); const broadcasts = []; const events = [];
   adapter.broadcast = (...args) => broadcasts.push(args); adapter.on('event', event => events.push(event));
-  adapter.subscriptions.set('local:t', { threadId: 't', hostId: 'local' });
-  adapter.snapshots.set('local:t', { revision: 2, state: { id: 't', title: 'Before' } });
+  adapter.subscriptions.set('local:t', { threadId: 't', hostId: 'local', owner: 'owner' });
+  adapter.snapshots.set('local:t', { revision: 2, state: { id: 't', turnHistory: { kind: 'canonical', history: { isComplete: true, islands: [{ entries: [{ value: 'turn:t1' }] }], entitiesByKey: { 'turn:t1': { id: 't1', items: [{ id: 'a', type: 'agentMessage', text: 'before' }] } } } } } });
   const make = change => ({ type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'owner', params: { hostId: 'local', conversationId: 't', change } });
-  adapter.handleIpc(make({ type: 'patches', baseRevision: 2, revision: 3, patches: [], acceptedTextChanges: [{ key: { entityKey: 'turn' } }] }));
+  const delta = make({ type: 'patches', baseRevision: 2, revision: 3, patches: [{ op: 'replace', path: ['turnHistory', 'history', 'entitiesByKey', 'turn:t1', 'items', 0, 'text'], value: 'before after' }], acceptedTextChanges: [{ type: 'text', key: { hostId: 'local', threadId: 't', entityKey: 'turn:t1', itemId: 'a' }, target: { field: 'text' }, edits: [{ at: 6, deleteCount: 0, insert: ' after' }] }] });
+  adapter.handleIpc(delta); adapter.handleIpc(delta);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(events.length, 1); assert.equal(events[0].data.messages[0].text, 'before after');
+  assert.equal(broadcasts.length, 0); assert.equal(adapter.snapshots.get('local:t').revision, 3);
+  adapter.handleIpc(make({ type: 'patches', baseRevision: 1, revision: 2, patches: [] }));
+  assert.equal(broadcasts.length, 0, 'old duplicates need no resync');
+  for (let revision = 5; revision < 30; revision++) adapter.handleIpc(make({ type: 'patches', baseRevision: revision - 1, revision, patches: [] }));
   assert.equal(broadcasts[0][0], 'thread-stream-following-changed'); assert.equal(broadcasts[0][1].following, true);
-  adapter.handleIpc(make({ type: 'patches', baseRevision: 1, revision: 3, patches: [] }));
-  assert.equal(broadcasts.length, 2); assert.equal(events.length, 0);
-  assert.equal(adapter.snapshots.get('local:t').revision, 2);
+  assert.equal(broadcasts.length, 1); assert.equal(events.length, 1);
+  assert.equal(adapter.snapshots.get('local:t').revision, 3);
+  adapter.handleIpc(make({ type: 'snapshot', revision: 30, conversationState: { id: 't', title: 'Recovered' } }));
+  assert.equal(events.at(-1).data.thread.title, 'Recovered');
+  adapter.handleIpc({ ...make({ type: 'patches', baseRevision: 30, revision: 31, patches: [{ op: 'replace', path: ['title'], value: 'Wrong owner' }] }), sourceClientId: 'other' });
+  assert.equal(adapter.snapshots.get('local:t').revision, 30);
 });
 
 test('approval removed while owner is discovered cannot be sent', async () => {

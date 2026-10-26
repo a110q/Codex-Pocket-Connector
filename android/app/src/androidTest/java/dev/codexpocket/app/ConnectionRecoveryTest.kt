@@ -162,6 +162,25 @@ class ConnectionRecoveryTest {
         instrumentation.runOnMainSync{model!!.confirmPending()};until{peer.actions.count{it=="command.status"}>=2}
         Assert.assertEquals(1,peer.actions.count{it=="message.send"})
     }
+    @Test fun desktopStreamRestartAcceptsNewHistoryEvenWhenItsRevisionStartsAtZero(){
+        fun snapshot(stream:String,revision:Int,text:String)=JSONObject()
+            .put("thread",JSONObject().put("id","local-network-test").put("hostId","local"))
+            .put("source","desktop-live").put("streamId",stream).put("revision",revision)
+            .put("messages",JSONArray().put(JSONObject().put("key","turn:message").put("id","message").put("turnId","turn").put("order",0).put("role","assistant").put("text",text)))
+            .put("requests",JSONArray()).put("history",JSONObject().put("total",1).put("hasEarlier",false).put("complete",true))
+        peer.extra={action,_->if(action=="thread.read")snapshot("first",100,"before reconnect")else null}
+        start();until{model!!.connected}
+        instrumentation.runOnMainSync{model!!.openThread(JSONObject().put("id","local-network-test").put("hostId","local"))}
+        until{!model!!.loadingThread&&model!!.snapshot?.optLong("revision")==100L}
+        peer.snapshot(snapshot("second",0,"after reconnect"))
+        until{model!!.snapshot?.optString("streamId")=="second"}
+        Assert.assertEquals("after reconnect",model!!.snapshot!!.getJSONArray("messages").getJSONObject(0).getString("text"))
+        peer.snapshot(snapshot("second",2,"latest"));until{model!!.snapshot?.optLong("revision")==2L}
+        peer.snapshot(snapshot("second",1,"late old reply"))
+        Thread.sleep(200);instrumentation.waitForIdleSync()
+        Assert.assertEquals("latest",model!!.snapshot!!.getJSONArray("messages").getJSONObject(0).getString("text"))
+        Assert.assertNull(model!!.error)
+    }
     internal class Peer(testHost:String="network-test-host-abcdefghijklmnop",lan:Boolean=false) {
         val server=MockWebServer()
         val opens=AtomicInteger();val hellos=AtomicInteger()
