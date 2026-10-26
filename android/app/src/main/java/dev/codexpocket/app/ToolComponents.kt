@@ -39,7 +39,7 @@ import org.json.JSONObject
 }
 
 @Composable internal fun ToolCard(modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit) {
-    Surface(modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.7f))) {
+    Surface(modifier.fillMaxWidth(),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
         Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(10.dp),content=content)
     }
 }
@@ -53,7 +53,7 @@ import org.json.JSONObject
 @Composable internal fun ToolPill(label:String,positive:Boolean=false,attention:Boolean=false) {
     val tint=when{attention->MaterialTheme.colorScheme.tertiary;positive->if(MaterialTheme.colorScheme.background.luminance()>.5f)Color(0xFF278064)else Color(0xFF77D8B2);else->MaterialTheme.colorScheme.onSurfaceVariant}
     Surface(shape=RoundedCornerShape(6.dp),color=tint.copy(alpha=.09f)){
-        Text(label,Modifier.padding(horizontal=7.dp,vertical=3.dp),fontSize=10.sp,fontWeight=FontWeight.Medium,color=tint)
+        Text(label,Modifier.padding(horizontal=7.dp,vertical=3.dp),fontSize=11.sp,fontWeight=FontWeight.Medium,color=tint)
     }
 }
 
@@ -121,10 +121,10 @@ internal fun pluginCanManage(plugin:JSONObject)=plugin.optBoolean("installed")&&
         }
         item(span={GridItemSpan(maxLineSpan)}){Text("项目与工具",Modifier.padding(top=8.dp,bottom=2.dp),fontSize=12.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.onSurfaceVariant)}
         items(toolSections,key={it.first}){(id,name)->
-            Surface(onClick={onSelect(id)},shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.7f))){
+            Surface(onClick={onSelect(id)},shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
                 Column(Modifier.padding(14.dp).heightIn(min=104.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
                     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){ToolBadge(when(id){"files"->"项目";"git"->"差异";"skills"->"推理";"plugins"->"工具";"schedules"->"时钟";"usage"->"用量";else->"权限"});Spacer(Modifier.weight(1f));CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("展开",Modifier.size(16.dp))}}
-                    Column(verticalArrangement=Arrangement.spacedBy(3.dp)){Text(name,fontSize=14.sp,fontWeight=FontWeight.SemiBold);Text(when(id){"files"->"浏览、预览与引用";"git"->"分支与代码修改";"skills"->"查找与管理技能";"plugins"->"扩展与启用状态";"schedules"->"让电脑定时执行";"usage"->"Token 与上下文";else->"服务与授权状态"},fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)}
+                    Column(verticalArrangement=Arrangement.spacedBy(3.dp)){Text(name,fontSize=14.sp,fontWeight=FontWeight.SemiBold);Text(when(id){"files"->"浏览、预览与引用";"git"->"分支与代码修改";"skills"->"查找与管理技能";"plugins"->"扩展与启用状态";"schedules"->"让电脑定时执行";"usage"->"Token 与上下文";else->"服务与授权状态"},fontSize=12.sp,lineHeight=18.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2)}
                 }
             }
         }

@@ -11,9 +11,9 @@
 </p>
 <p align="center"><a href="#下载安装">下载安装</a> · <a href="#第一次使用">第一次使用</a> · <a href="docs/USER_GUIDE.md">使用手册</a> · <a href="docs/SELF_HOSTING.md">自建中继</a> · <a href="docs/DEVELOPMENT.md">源码构建</a></p>
 
-![产品与连接方式示意](docs/images/overview.png)
+![电脑连接器实际界面](design/review/0.9.6/desktop-overview.png)
 
-> 独立社区项目，与 OpenAI 无隶属关系。需要先安装并登录官方 Codex 桌面应用。概览配图使用虚构项目和对话绘制；自建设置截图来自隔离测试环境，均不包含真实账号、二维码或生产服务地址。
+> 独立社区项目，与 OpenAI 无隶属关系。需要先安装并登录官方 Codex 桌面应用。新版界面截图来自 Mac App 与 Android 模拟器；项目与对话使用隔离测试数据，不包含真实账号、二维码或生产服务地址。
 
 ## 能做什么
 
@@ -31,19 +31,19 @@
 | 多台电脑 | 保存多个配对并切换，按电脑隔离聊天缓存与草稿 |
 | 账号管理 | 一个 APK 按角色展示菜单；管理员审批、停用、续期、管理设备和查看安全提醒 |
 
-<p align="center"><img src="docs/images/connection-home-phone.png" width="280" alt="手机首页的三种连接方式"> <img src="docs/images/workspace-compact.png" width="280" alt="手机紧凑工作空间，使用虚构测试数据"></p>
+![手机连接入口、项目列表与聊天工具记录](design/review/0.9.6/mobile-overview.png)
 
 <p align="center"><img src="docs/images/toolbox-home.png" width="240" alt="工作空间工具目录"> <img src="docs/images/toolbox-skills.png" width="240" alt="紧凑技能卡片与搜索"> <img src="docs/images/toolbox-services.png" width="240" alt="工具服务的真实认证状态"></p>
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.5。** 修复公网首次打开大型开发页面时白屏：增加网页传输压缩与加载进度。请同时更新手机 App 和电脑连接器；中继无需为本次修复升级。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.6。** 更新两端界面：三种连接入口、项目分组、聊天与工具卡片采用统一样式，改善小屏和键盘布局。保留 0.9.5 的网页加载修复；中继无需为本次更新升级。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-0.9.5.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-Connector-0.9.5-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-Connector-0.9.5-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-Connector-0.9.5-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-0.9.6.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-Connector-0.9.6-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-Connector-0.9.6-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-Connector-0.9.6-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -84,6 +84,8 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.6** 统一电脑连接器与 Android 界面，完善浅色/深色主题、连接卡片、电脑切换、项目列表和聊天输入反馈。已验证原生界面及 360dp 小屏键盘布局。详见 [更新说明](docs/patch-0.9.6.md)、[验收记录](docs/verification-0.9.6.md) 与 [实际截图](design/review/0.9.6/)。
 
 **0.9.5** 为网页转发增加可协商压缩，减少大型脚本经过公网时的流量；显示下载进度，持续下载不会再被固定 30 秒超时中断，刷新会重建连接。详见 [更新说明](docs/patch-0.9.5.md) 与 [验收记录](docs/verification-0.9.5.md)。
 

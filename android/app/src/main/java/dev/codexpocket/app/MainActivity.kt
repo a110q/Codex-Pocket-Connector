@@ -40,6 +40,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -49,6 +50,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
@@ -207,7 +209,7 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.statusBarsPadding().fillMaxWidth().heightIn(min=56.dp).padding(start=16.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
                 if(tab==0){
                     CodexMark(Modifier.size(28.dp));Spacer(Modifier.width(8.dp))
-                    Text("Codex Pocket",Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Text(if(LocalConfiguration.current.screenWidthDp<400)"Pocket"else"Codex Pocket",Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
                     if(model.profile!=null)ConnectionBadge(model){tab=2}
                     PocketAction("工具","打开工作空间工具"){showTools=true}
                     PocketAction("设置","打开设置"){tab=3}
@@ -246,7 +248,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable fun StatusPill(model:PocketModel) {
-    Row(verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(6.dp).clip(RoundedCornerShape(50)).background(if(model.connected)PocketGreen else MaterialTheme.colorScheme.tertiary));Spacer(Modifier.width(7.dp));Text(model.status,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+    Row(verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(6.dp).clip(RoundedCornerShape(50)).background(if(model.connected)pocketSuccess() else MaterialTheme.colorScheme.tertiary));Spacer(Modifier.width(7.dp));Text(model.status,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
 }
 
 @Composable fun PendingCard(model: PocketModel, compact:Boolean=false) {
@@ -307,6 +309,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
     var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
     var addressFocused by remember { mutableStateOf(false) }
+    var composerFocused by remember { mutableStateOf(false) }
     var previewCollapsed by remember{mutableStateOf(false)}
     LaunchedEffect(model.previewKind,model.previewArtifact?.optString("id"),model.previewUrl,model.previewRevision){if(model.previewKind!=null){focus.clearFocus();previewCollapsed=false}}
     val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
@@ -383,15 +386,15 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
             if(model.referencesFor().isNotEmpty())Row(Modifier.horizontalScroll(rememberScrollState())){model.referencesFor().forEach{path->InputChip(true,{model.removeReference(path)},label={Text("@$path ×",fontSize=11.sp)})}}
             model.imageStatus?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)}
             if(active&&model.connected)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
-            Surface(modifier=Modifier.testTag("chat-composer"),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surface,border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
+            Surface(modifier=Modifier.testTag("chat-composer"),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surfaceContainerLow,border=BorderStroke(1.dp,if(composerFocused)MaterialTheme.colorScheme.primary.copy(alpha=.65f)else MaterialTheme.colorScheme.outlineVariant)){
                 Row(Modifier.fillMaxWidth().padding(horizontal=3.dp,vertical=2.dp),verticalAlignment=Alignment.Bottom){
                     AttachmentPickerButton(model,thread.getString("id"))
-                    BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),modifier=Modifier.weight(1f).heightIn(min=48.dp,max=136.dp).padding(top=13.dp,bottom=13.dp,end=4.dp).semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
+                    BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),modifier=Modifier.weight(1f).heightIn(min=48.dp,max=136.dp).padding(top=13.dp,bottom=13.dp,end=4.dp).onFocusChanged{composerFocused=it.isFocused}.semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
                         Box { if(model.draft.isEmpty())Text(if(active)"补充你的想法…" else "继续向 Codex 发送指令…",fontSize=13.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis);inner() }
                     })
                     val canSend=model.connected&&!model.busy&&(model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty()||model.filesFor(thread.getString("id")).isNotEmpty())&&model.pendingOperation==null
                     IconButton(onClick={model.send(model.draft)},enabled=canSend,modifier=Modifier.size(48.dp).semantics{contentDescription="发送"}){
-                        Surface(Modifier.size(36.dp),shape=CircleShape,color=if(canSend)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(canSend)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f)){
+                        Surface(Modifier.size(38.dp),shape=RoundedCornerShape(12.dp),color=if(canSend)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(canSend)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f)){
                             Box(contentAlignment=Alignment.Center){if(model.busy)CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=1.5.dp)else PocketIcon("发送",Modifier.size(18.dp))}
                         }
                     }

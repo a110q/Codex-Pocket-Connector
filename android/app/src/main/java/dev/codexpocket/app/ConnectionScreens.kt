@@ -9,44 +9,55 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable fun ConnectionChooser(onCloud:()->Unit,onLan:()->Unit,onSelfHost:()->Unit,onBack:(()->Unit)?=null){
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal=22.dp,vertical=20.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
-        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
-            CodexMark(Modifier.size(38.dp))
-            Text("Codex Pocket",Modifier.weight(1f),fontSize=20.sp,fontWeight=FontWeight.Bold)
+    val colors=MaterialTheme.colorScheme
+    Surface(Modifier.fillMaxSize(),color=colors.background){
+    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(20.dp)){
+        Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)){
+            Surface(shape=RoundedCornerShape(12.dp),color=colors.surface,border=BorderStroke(1.dp,colors.outlineVariant)){
+                Box(Modifier.size(42.dp),contentAlignment=Alignment.Center){CodexMark(Modifier.size(28.dp))}
+            }
+            Text("Codex Pocket",Modifier.weight(1f),fontSize=19.sp,fontWeight=FontWeight.Bold)
             onBack?.let{PocketAction("关闭","返回工作空间",onClick=it)}
         }
-        Column(Modifier.padding(top=8.dp,bottom=4.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
-            Text("让 Codex，随身而行。",fontSize=28.sp,lineHeight=38.sp,fontWeight=FontWeight.Bold)
-            Text("选择连接方式，在手机上继续你的项目与对话。",fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.padding(top=8.dp,bottom=2.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+            Text("YOUR CODEX, ANYWHERE",fontSize=10.sp,letterSpacing=1.5.sp,fontWeight=FontWeight.SemiBold,color=colors.primary)
+            Text("让 Codex，随身而行。",fontSize=28.sp,lineHeight=38.sp,fontWeight=FontWeight.Bold,letterSpacing=(-.5).sp)
+            Text("选择连接方式，继续你的项目与对话。",fontSize=14.sp,lineHeight=22.sp,color=colors.onSurfaceVariant)
         }
         Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
-            ConnectionModeCard("公网使用","手机流量或其他 Wi-Fi，也能继续工作。","登录并连接","网页",onClick=onCloud)
+            ConnectionModeCard("公网使用","手机流量或其他 Wi-Fi，也能继续工作。","登录并连接","网页",highlight=true,onClick=onCloud)
             ConnectionModeCard("局域网使用","连接同一 Wi-Fi，扫码直连，无需账号审批。","开始连接","局域网",onClick=onLan)
-            ConnectionModeCard("自建中继","使用自己的服务器，电脑配置，手机扫码加入。","配置服务","中继",highlight=true,onClick=onSelfHost)
+            ConnectionModeCard("自建中继","使用自己的服务器，电脑配置，手机扫码加入。","配置服务","中继",onClick=onSelfHost)
         }
-        Text("电脑需保持开机，Codex 与电脑连接器持续运行。",fontSize=12.sp,lineHeight=19.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("Codex Pocket  ${BuildConfig.VERSION_NAME}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-    }
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.Top){
+            CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant){PocketIcon("电脑",Modifier.padding(top=2.dp).size(16.dp))}
+            Text("电脑需保持开机，Codex 与电脑连接器持续运行。",fontSize=12.sp,lineHeight=19.sp,color=colors.onSurfaceVariant)
+        }
+        Text("Codex Pocket  /  ${BuildConfig.VERSION_NAME}",fontSize=11.sp,color=colors.onSurfaceVariant)
+    }}
 }
 
 @Composable private fun ConnectionModeCard(title:String,description:String,action:String,icon:String,highlight:Boolean=false,onClick:()->Unit){
     val colors=MaterialTheme.colorScheme
-    Surface(onClick=onClick,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(18.dp),color=if(highlight)colors.primaryContainer else colors.surface,border=BorderStroke(1.dp,if(highlight)colors.primary.copy(alpha=.26f)else colors.outlineVariant)){
-        Row(Modifier.fillMaxWidth().heightIn(min=124.dp).padding(18.dp),horizontalArrangement=Arrangement.spacedBy(16.dp),verticalAlignment=Alignment.Top){
-            Surface(color=if(highlight)colors.surface else colors.primaryContainer,shape=RoundedCornerShape(13.dp),modifier=Modifier.size(44.dp)){
-                Box(contentAlignment=Alignment.Center){CompositionLocalProvider(LocalContentColor provides colors.primary){PocketIcon(icon,Modifier.size(25.dp))}}
-            }
+    val tint=when(icon){"局域网"->pocketSuccess();"中继"->if(colors.background.luminance()>.5f)Color(0xFF7760AA)else Color(0xFFC5B2EC);else->colors.primary}
+    Surface(onClick=onClick,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(20.dp),color=if(highlight)colors.primaryContainer else colors.surface,border=BorderStroke(1.dp,if(highlight)colors.primary.copy(alpha=.28f)else colors.outlineVariant)){
+        Row(Modifier.fillMaxWidth().heightIn(min=122.dp).padding(17.dp),horizontalArrangement=Arrangement.spacedBy(14.dp),verticalAlignment=Alignment.Top){
+            PocketIconTile(icon,tint=tint,filled=highlight)
             Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(5.dp)){
-                Text(title,fontSize=18.sp,lineHeight=25.sp,fontWeight=FontWeight.SemiBold)
+                Text(title,fontSize=17.sp,lineHeight=24.sp,fontWeight=FontWeight.SemiBold)
                 Text(description,fontSize=13.sp,lineHeight=20.sp,color=colors.onSurfaceVariant)
-                Row(Modifier.padding(top=4.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
-                    Text(action,fontSize=14.sp,fontWeight=FontWeight.SemiBold,color=colors.primary)
-                    CompositionLocalProvider(LocalContentColor provides colors.primary){PocketIcon("前往",Modifier.size(17.dp))}
+                Row(Modifier.fillMaxWidth().padding(top=5.dp),verticalAlignment=Alignment.CenterVertically){
+                    Text(action,Modifier.weight(1f),fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=colors.primary)
+                    Surface(shape=RoundedCornerShape(50),color=if(highlight)colors.primary else colors.primaryContainer,contentColor=if(highlight)colors.onPrimary else colors.primary){
+                        Box(Modifier.size(24.dp),contentAlignment=Alignment.Center){PocketIcon("前往",Modifier.size(16.dp))}
+                    }
                 }
             }
         }

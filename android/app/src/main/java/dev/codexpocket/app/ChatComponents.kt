@@ -28,7 +28,7 @@ import org.json.JSONObject
     when(role){
         "tool","summary"->ToolRecord(message,onDetail,onRelated)
         "user"->Row(Modifier.fillMaxWidth().padding(start=34.dp),horizontalArrangement=Arrangement.End){
-            Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.onSurface,shape=RoundedCornerShape(16.dp,16.dp,5.dp,16.dp),modifier=Modifier.widthIn(max=350.dp)){
+            Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.onSurface,shape=RoundedCornerShape(18.dp,18.dp,6.dp,18.dp),modifier=Modifier.widthIn(max=350.dp)){
                 Column(Modifier.padding(horizontal=13.dp,vertical=11.dp)){
                     images()
                     if(text.isNotBlank())SelectionContainer{Text(text,fontSize=15.sp,lineHeight=24.sp)}
@@ -37,11 +37,11 @@ import org.json.JSONObject
             }
         }
         else->Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.Top){
-            CodexMark(Modifier.padding(top=3.dp));Spacer(Modifier.width(10.dp))
+            CodexMark(Modifier.padding(top=3.dp).size(24.dp));Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)){
                 MarkdownText(text,Modifier.fillMaxWidth().padding(top=3.dp),onLink)
                 if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容（${message.optInt("textLength")} 字符）",fontSize=12.sp)}
-                IconButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Codex",text)))}},modifier=Modifier.size(36.dp).semantics{contentDescription="复制回复"}){
+                IconButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Codex",text)))}},modifier=Modifier.size(48.dp).semantics{contentDescription="复制回复"}){
                     CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("复制",Modifier.size(15.dp))}
                 }
             }
@@ -59,16 +59,16 @@ import org.json.JSONObject
     val title=message.optString("title").ifBlank{if(message.optString("role")=="summary")"思考摘要" else "工具调用"}
     val icon=when{command!=null||type=="commandExecution"->"终端";type in listOf("fileChange","turnDiff")->"编辑";type.contains("search",true)->"搜索";message.optString("role")=="summary"->"推理";else->"文件"}
     val detail=message.optString("tool").takeIf{it.isNotBlank()&&it!="null"}
-    Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(12.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth().padding(start=38.dp)){
+    Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
         Column{
-            Row(Modifier.fillMaxWidth().clickable{expanded=!expanded}.padding(start=12.dp,end=8.dp,top=12.dp,bottom=12.dp).heightIn(min=38.dp),verticalAlignment=Alignment.CenterVertically){
-                Surface(color=MaterialTheme.colorScheme.surfaceVariant,shape=RoundedCornerShape(7.dp),modifier=Modifier.size(30.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(icon,Modifier.size(19.dp))}}
+            Row(Modifier.fillMaxWidth().clickable{expanded=!expanded}.heightIn(min=60.dp).padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
+                Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(10.dp),modifier=Modifier.size(34.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(icon,Modifier.size(19.dp))}}
                 Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){
                     Text(title+(command?.let{" · ${it.lineSequence().first().take(100)}"}?:""),fontSize=13.sp,lineHeight=19.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
                     Text(detail?:when{failed->if(state=="declined")"已拒绝" else "执行失败";running->"正在执行…";completed->"已完成";else->"点击查看记录"},fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.width(6.dp))
-                when{running->CircularProgressIndicator(Modifier.size(13.dp),strokeWidth=1.5.dp);completed->CompositionLocalProvider(LocalContentColor provides PocketGreen){PocketIcon("检查",Modifier.size(15.dp))};failed->Text("!",color=MaterialTheme.colorScheme.error,fontWeight=FontWeight.Bold)}
+                when{running->CircularProgressIndicator(Modifier.size(13.dp),strokeWidth=1.5.dp);completed->CompositionLocalProvider(LocalContentColor provides pocketSuccess()){PocketIcon("检查",Modifier.size(15.dp))};failed->Text("!",color=MaterialTheme.colorScheme.error,fontWeight=FontWeight.Bold)}
                 Spacer(Modifier.width(9.dp));PocketIcon(if(expanded)"上拉" else "下拉",Modifier.size(14.dp))
             }
             if(expanded){
@@ -94,13 +94,10 @@ import org.json.JSONObject
             Triple("effort","推理 · ${effortLabel(settings.optString("reasoningEffort"))}","选择推理强度"),
             Triple("permission",permissionLabel(settings.optString("permissionMode")),"选择访问权限")
         ).forEachIndexed{index,(section,label,description)->
-            Box(Modifier.weight(if(index==0)1.2f else 1f).height(48.dp),contentAlignment=Alignment.Center){
-                Surface(onClick={onOpen(section)},enabled=enabled,color=MaterialTheme.colorScheme.surfaceContainerLow,contentColor=if(enabled)MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,shape=RoundedCornerShape(10.dp),border=BorderStroke(.7.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.7f)),modifier=Modifier.fillMaxWidth().heightIn(min=40.dp).semantics{contentDescription=description}){
-                    Row(Modifier.padding(horizontal=8.dp,vertical=7.dp),verticalAlignment=Alignment.CenterVertically){
-                        if(index>0){PocketIcon(if(index==1)"推理" else if(settings.optString("permissionMode")=="auto")"项目" else "锁",Modifier.size(14.dp));Spacer(Modifier.width(5.dp))}
-                        Column(Modifier.weight(1f)){if(index==0)Text("当前模型",fontSize=8.sp,lineHeight=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);Text(label,fontSize=10.sp,lineHeight=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis)}
-                        Spacer(Modifier.width(2.dp));PocketIcon("下拉",Modifier.size(10.dp))
-                    }
+            Surface(onClick={onOpen(section)},enabled=enabled,color=MaterialTheme.colorScheme.surfaceContainerLow,contentColor=if(enabled)MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f),shape=RoundedCornerShape(10.dp),modifier=Modifier.weight(if(index==0)1.2f else 1f).heightIn(min=48.dp).semantics{contentDescription=description}){
+                Row(Modifier.padding(horizontal=8.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+                    Text(label,Modifier.weight(1f),fontSize=12.sp,lineHeight=18.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(3.dp));PocketIcon("下拉",Modifier.size(12.dp))
                 }
             }
         }

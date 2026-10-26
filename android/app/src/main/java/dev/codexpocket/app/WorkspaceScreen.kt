@@ -24,10 +24,10 @@ import java.time.format.DateTimeFormatter
 @Composable fun ConnectionBadge(model:PocketModel,onClick:()->Unit){
     var expanded by remember{mutableStateOf(false)}
     Box {
-    Surface(onClick={expanded=true},color=if(model.connected)PocketGreen.copy(alpha=.07f)else MaterialTheme.colorScheme.tertiaryContainer,shape=RoundedCornerShape(8.dp),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="快速切换电脑"}){
-        Row(Modifier.padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically){
-            Box(Modifier.size(6.dp).background(if(model.connected)PocketGreen else MaterialTheme.colorScheme.tertiary,RoundedCornerShape(50)))
-            Spacer(Modifier.width(6.dp));Text(model.profile?.computerName()?:"我的电脑",modifier=Modifier.widthIn(max=90.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=11.sp,fontWeight=FontWeight.Medium);PocketIcon("下拉",Modifier.size(14.dp))
+    Surface(onClick={expanded=true},color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(12.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="快速切换电脑"}){
+        Row(Modifier.padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
+            Box(Modifier.size(6.dp).background(if(model.connected)pocketSuccess() else MaterialTheme.colorScheme.tertiary,RoundedCornerShape(50)))
+            Spacer(Modifier.width(6.dp));Text(model.profile?.computerName()?:"我的电脑",modifier=Modifier.widthIn(max=90.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,fontWeight=FontWeight.Medium);Spacer(Modifier.width(5.dp));PocketIcon("下拉",Modifier.size(14.dp))
         }
     }
     DropdownMenu(expanded=expanded,onDismissRequest={expanded=false},modifier=Modifier.widthIn(min=250.dp,max=300.dp)) {
@@ -65,7 +65,7 @@ internal fun threadTime(thread:JSONObject):String{
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
             Text(if(activeOnly)"运行中与待处理"else if(model.showArchived)"已归档 · 长按恢复或删除"else "${model.projects.size} 个项目 · ${model.threads.size} 个对话",Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
             PocketAction("搜索",if(searching)"收起搜索"else"展开搜索"){searching=!searching;if(!searching)updateSearch("")}
-            PocketAction("新增","新建对话",model.connected&&!model.busy&&model.pendingOperation==null,onCreate)
+            FilledTonalIconButton(onClick=onCreate,enabled=model.connected&&!model.busy&&model.pendingOperation==null,shape=RoundedCornerShape(13.dp),modifier=Modifier.size(48.dp).semantics{contentDescription="新建对话"}){PocketIcon("新增")}
             Box{
                 PocketAction("更多","工作空间选项"){menu=true}
                 DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
@@ -107,12 +107,12 @@ internal fun threadTime(thread:JSONObject):String{
 
 @Composable private fun ProjectHeading(project:JSONObject,count:Int,open:Boolean,connected:Boolean,onToggle:()->Unit,onNew:()->Unit){
     var menu by remember{mutableStateOf(false)};var path by remember{mutableStateOf(false)}
-    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface,RoundedCornerShape(14.dp)).padding(start=10.dp),verticalAlignment=Alignment.CenterVertically){
         Row(Modifier.weight(1f).clickable(onClick=onToggle).heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
             PocketIcon(if(open)"下拉" else "展开",Modifier.size(14.dp));Spacer(Modifier.width(6.dp))
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("项目",Modifier.size(20.dp))}
             Spacer(Modifier.width(8.dp));Text(project.label(),Modifier.weight(1f,false),fontSize=14.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
-            Spacer(Modifier.width(6.dp));Text("$count",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(7.dp));Surface(shape=RoundedCornerShape(6.dp),color=MaterialTheme.colorScheme.surfaceVariant){Text("$count",Modifier.padding(horizontal=6.dp,vertical=1.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
         }
         PocketAction("新增","在 ${project.label()} 中新开对话",connected,onNew)
         Box{
@@ -133,13 +133,13 @@ internal fun threadTime(thread:JSONObject):String{
     Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
         if(nested){Spacer(Modifier.width(12.dp));Box(Modifier.width(1.dp).height(48.dp).background(MaterialTheme.colorScheme.outlineVariant));Spacer(Modifier.width(8.dp))}
         Box(Modifier.weight(1f)){
-        Surface(shape=RoundedCornerShape(9.dp),color=if(running)MaterialTheme.colorScheme.primaryContainer else Color.Transparent,modifier=Modifier.fillMaxWidth().combinedClickable(onClick={model.openThread(thread)},onLongClick={menu=true},onLongClickLabel="管理对话")){
+        Surface(shape=RoundedCornerShape(12.dp),color=if(running)MaterialTheme.colorScheme.primaryContainer else Color.Transparent,modifier=Modifier.fillMaxWidth().combinedClickable(onClick={model.openThread(thread)},onLongClick={menu=true},onLongClickLabel="管理对话")){
             Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(horizontal=8.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
-                CompositionLocalProvider(LocalContentColor provides if(running)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("文件",Modifier.size(17.dp))}
+                CompositionLocalProvider(LocalContentColor provides if(running)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("会话",Modifier.size(17.dp))}
                 Spacer(Modifier.width(10.dp));Text(thread.label(),Modifier.weight(1f),fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
                 if(running){Spacer(Modifier.width(8.dp));CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(5.dp))}
-                if(needs){Spacer(Modifier.width(6.dp));Text(state,fontSize=10.sp,color=if(state=="出错")MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary)}
-                val time=threadTime(thread);if(time.isNotBlank()){Spacer(Modifier.width(10.dp));Text(time,fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                if(needs){Spacer(Modifier.width(6.dp));Text(state,fontSize=11.sp,color=if(state=="出错")MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary)}
+                val time=threadTime(thread);if(time.isNotBlank()){Spacer(Modifier.width(10.dp));Text(time,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
             }
         }
         DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
