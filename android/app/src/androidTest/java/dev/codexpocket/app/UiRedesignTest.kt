@@ -2,6 +2,14 @@ package dev.codexpocket.app
 
 import android.content.ContentValues
 import android.graphics.Bitmap
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import android.webkit.WebView
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.matcher.ViewMatchers.*
+import androidx.test.espresso.action.*
+import org.hamcrest.Matchers.*
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
@@ -169,6 +177,36 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("关闭预览").performClick()
         compose.onNodeWithContentDescription("网页地址").assertDoesNotExist()
     }
+    @Test fun chatLinksOpenTheDesktopWebsiteInAppAndCanReturnToTheConversation(){
+        val url="http://127.0.0.1:${peer.website.port}/"
+        peer.messages.put(JSONObject().put("id","web-link").put("turnId","ui-turn").put("role","assistant").put("text","项目已启动：[点击打开]($url)\n\n地址：$url").put("textComplete",true))
+        chat()
+        fun clickLink(label:String){
+            onView(allOf(isAssignableFrom(TextView::class.java),withText(containsString("项目已启动：")))).perform(GeneralClickAction(Tap.SINGLE,{view->
+                val text=view as TextView;val offset=text.text.indexOf(label)+label.length/2;val line=text.layout.getLineForOffset(offset)
+                val location=IntArray(2);text.getLocationOnScreen(location)
+                floatArrayOf(location[0]+text.totalPaddingLeft+text.layout.getPrimaryHorizontal(offset)-text.scrollX,location[1]+text.totalPaddingTop+(text.layout.getLineTop(line)+text.layout.getLineBottom(line))/2f-text.scrollY)
+            },Press.FINGER,0,0))
+        }
+        fun webView(view:View):WebView?=if(view is WebView)view else if(view is ViewGroup)(0 until view.childCount).firstNotNullOfOrNull{webView(view.getChildAt(it))}else null
+        fun awaitPage(){
+            until(15000){peer.website.requestCount>0&&peer.calls.any{it.optString("action")=="preview.read"}}
+            var html=""
+            until(15000){webView(compose.activity.window.decorView)?.evaluateJavascript("document.body.innerText"){html=it};html.contains("构建下一种可能")}
+            Assert.assertTrue(peer.calls.any{it.optString("action")=="preview.connect"&&it.getJSONObject("args").optString("host")=="127.0.0.1"})
+        }
+        clickLink("点击打开");until{model.previewExpanded&&model.previewKind=="browser"};awaitPage()
+        compose.onNodeWithContentDescription("聊天输入框").assertDoesNotExist();shot("chat-link-fullscreen")
+        compose.onNodeWithContentDescription("退出展开预览").performClick()
+        compose.onNodeWithContentDescription("聊天输入框").assertIsDisplayed();shot("chat-link-small-window")
+        compose.onNodeWithContentDescription("收起面板").performClick()
+        clickLink("点击打开");until{model.previewExpanded};awaitPage()
+        compose.onNodeWithContentDescription("聊天输入框").assertDoesNotExist()
+        compose.onNodeWithContentDescription("关闭预览").performClick()
+        clickLink(url);until{model.previewExpanded&&model.previewKind=="browser"};awaitPage()
+        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        until{!model.previewExpanded};compose.onNodeWithContentDescription("聊天输入框").assertIsDisplayed()
+    }
     @Test fun approvalFilePreviewAppearancePersistenceAndErrorStates(){
         peer.approval=true;chat()
         compose.onNodeWithText("允许本次").performClick()
@@ -260,7 +298,7 @@ class UiRedesignTest {
             "approval.respond"->{approval=false;JSONObject().put("accepted",true)}
             "file.read"->{require(args.getString("threadId").startsWith("ui-"));val bytes=files[args.getString("artifactId")]!!;val offset=args.optInt("offset");val end=(offset+192*1024).coerceAtMost(bytes.size);JSONObject().put("data",android.util.Base64.encodeToString(bytes.copyOfRange(offset,end),android.util.Base64.NO_WRAP)).put("total",bytes.size).put("nextOffset",end).put("done",end==bytes.size)}
             "preview.open"->JSONObject().put("previewId","local-ui-preview")
-            "preview.connect"->{require(args.getString("host")=="localhost"&&args.getInt("port")==website.port);val id=UUID.randomUUID().toString();tcp[id]=Socket("127.0.0.1",website.port).apply{soTimeout=1500};JSONObject().put("socketId",id)}
+            "preview.connect"->{require(args.getString("host") in listOf("localhost","127.0.0.1")&&args.getInt("port")==website.port);val id=UUID.randomUUID().toString();tcp[id]=Socket("127.0.0.1",website.port).apply{soTimeout=1500};JSONObject().put("socketId",id)}
             "preview.write"->{tcp[args.getString("socketId")]!!.getOutputStream().apply{write(android.util.Base64.decode(args.getString("data"),android.util.Base64.DEFAULT));flush()};JSONObject()}
             "preview.read"->{val buffer=ByteArray(192*1024);val count=try{tcp[args.getString("socketId")]!!.getInputStream().read(buffer)}catch(_:java.net.SocketTimeoutException){0};JSONObject().put("data",android.util.Base64.encodeToString(buffer.copyOf(count.coerceAtLeast(0)),android.util.Base64.NO_WRAP)).put("done",count<0)}
             "preview.disconnect"->{tcp.remove(args.getString("socketId"))?.close();JSONObject()}

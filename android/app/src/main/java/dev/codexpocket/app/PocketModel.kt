@@ -169,6 +169,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     var downloadStatus by mutableStateOf<String?>(null); private set
     var previewKind by mutableStateOf<String?>(null); private set
     var previewUrl by mutableStateOf(""); private set
+    var previewExpanded by mutableStateOf(false); private set
     var previewArtifact by mutableStateOf<JSONObject?>(null); private set
     var previewFile by mutableStateOf<File?>(null); private set
     var previewLoading by mutableStateOf(false); private set
@@ -576,24 +577,26 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             if (continuation.isActive) { if (e != null) continuation.resumeWith(Result.failure(IllegalStateException(e))) else continuation.resumeWith(Result.success(r ?: JSONObject())) }
         } }
     }
-    fun openBrowser(url: String) {
+    fun expandPreview(value:Boolean){previewExpanded=value}
+    fun openBrowser(url: String, expand:Boolean=false) {
         try {
-            val uri = java.net.URI(url)
-            require(uri.scheme in listOf("http", "https") && uri.host != null) { "请输入完整的 HTTP 或 HTTPS 地址" }
-            closePreview(); previewUrl = url; previewKind = "browser"
+            val normalized=url.trim()
+            val uri = java.net.URI(normalized)
+            require(uri.scheme?.lowercase() in listOf("http", "https") && uri.host != null && uri.userInfo == null) { "请输入完整的 HTTP 或 HTTPS 地址" }
+            closePreview(); previewUrl = normalized; previewKind = "browser";previewExpanded=expand;previewRevision++
         } catch (e: Exception) { error = e.message ?: "网页地址无效" }
     }
     fun showPreviewTab(kind: String) { previewKind = kind }
     fun showArtifactList(kind: String) { closePreview(); previewKind = kind }
     fun openLink(link: String) {
-        if (link.startsWith("https://") || link.startsWith("http://")) { openBrowser(link); return }
+        if (link.startsWith("https://",true) || link.startsWith("http://",true)) { openBrowser(link,expand=true); return }
         val path = link.removePrefix("file://").replace(Regex(":\\d+$"), "")
         val artifact = snapshot?.optJSONArray("artifacts").objects().find { it.optString("path") == path || it.optString("name") == path }
         if (artifact != null) preview(artifact) else error = "该文件未包含在当前会话可访问的文件中，请先刷新会话"
     }
     fun closePreview() {
         previewJob?.cancel(); previewJob = null; previewFile?.delete(); previewFile = null
-        previewKind = null; previewArtifact = null; previewError = null; previewLoading = false
+        previewKind = null; previewExpanded=false; previewArtifact = null; previewError = null; previewLoading = false
     }
     fun preview(artifact: JSONObject) {
         val threadId = selected?.optString("id") ?: if(artifact.has("workspaceArgs"))"__workspace__"else return

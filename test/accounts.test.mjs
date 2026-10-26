@@ -273,3 +273,25 @@ test('multiple computers preserve ownership, enforce configurable quotas and rev
   assert.equal((await f.call('/api/hosts/status',{hostId:computers[0].hostId},computers[0].desktopToken)).registered,true);
   const db=new DatabaseSync(f.dbPath);assert.equal(db.prepare('SELECT count(*) n FROM account_hosts WHERE user_id=?').get(alice.user.id).n,2);db.close();
 });
+
+test('admins remove only the selected computer including their own without disrupting other routes',async t=>{
+  const f=await setup(t),alice=await f.register('selective');await f.approve(alice.user);await f.call('/api/account/me',{},alice.phone.token);
+  const desktop=await f.desktop('owner'),hosts=[f.host(),f.host()];
+  for(const h of hosts)await f.call('/api/account/hosts/enroll',h,desktop.token);
+  const sockets=[];
+  for(const h of hosts){const ws=new WebSocket(f.defaults.relay.replace('https:','wss:')+'/relay',{ca:f.defaults.caCert,headers:{Authorization:`Bearer ${h.desktopToken}`,'X-Pocket-Host':h.hostId,'X-Pocket-Role':'desktop'}});f.sockets.push(ws);await once(ws,'open');sockets.push(ws)}
+  const body={userId:f.root.user.id,device:'computer',hostId:hosts[0].hostId};
+  assert.equal((await f.post('/api/admin/devices/remove',body,alice.phone.token)).status,403);
+  assert.equal((await f.post('/api/admin/devices/remove',{...body,userId:alice.user.id},f.root.token)).status,404);
+  assert.equal((await f.post('/api/admin/devices/remove',{userId:f.root.user.id,device:'computer'},f.root.token)).status,400);
+  assert.equal((await f.post('/api/admin/devices/remove',{userId:f.root.user.id,device:'phone'},f.root.token)).status,403);
+  const close=once(sockets[0],'close');await f.call('/api/admin/devices/remove',body,f.root.token);assert.equal((await close)[0],4003);
+  await delay(150);assert.equal(sockets[1].readyState,WebSocket.OPEN);
+  const pong=once(sockets[1],'pong');sockets[1].ping();await pong;
+  assert.deepEqual((await f.call('/api/account/me',{},f.root.token)).hosts.map(h=>h.id),[hosts[1].hostId]);
+  assert.equal((await f.post('/api/hosts/status',{hostId:hosts[0].hostId},hosts[0].desktopToken)).status,401);
+  assert.equal((await f.call('/api/hosts/status',{hostId:hosts[1].hostId},hosts[1].desktopToken)).registered,true);
+  assert.equal((await f.post('/api/admin/devices/remove',body,f.root.token)).status,404);
+  const event=(await f.call('/api/admin/events',{},f.root.token)).events.find(e=>e.type==='device.removed');
+  assert.deepEqual(event.details.hostIds,[hosts[0].hostId]);
+});

@@ -304,14 +304,16 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
     val snapshot=model.snapshot;val messages=snapshot?.optJSONArray("messages").objects();val list=rememberLazyListState()
     val chatScope=rememberCoroutineScope()
     val pickImages=rememberImagePicker(model,thread.getString("id"))
-    var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")};var expanded by remember{mutableStateOf(false)}
+    var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
     var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
     var addressFocused by remember { mutableStateOf(false) }
     var previewCollapsed by remember{mutableStateOf(false)}
-    LaunchedEffect(model.previewKind,model.previewArtifact?.optString("id"),model.previewUrl){if(model.previewKind!=null){focus.clearFocus();previewCollapsed=false}}
+    LaunchedEffect(model.previewKind,model.previewArtifact?.optString("id"),model.previewUrl,model.previewRevision){if(model.previewKind!=null){focus.clearFocus();previewCollapsed=false}}
     val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val editingAddress = model.previewKind == "browser" && addressFocused && keyboardOpen
-    val previewExpanded = (expanded || editingAddress) && !previewCollapsed
+    val previewExpanded = (model.previewExpanded || editingAddress) && !previewCollapsed
+    val browserFullscreen = previewExpanded && model.previewKind == "browser"
+    BackHandler(enabled=browserFullscreen){focus.clearFocus();model.expandPreview(false)}
     val requests=snapshot?.optJSONArray("requests").objects();val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=!activeId.isNullOrBlank()&&activeId!="null"
     val settings=snapshot?.optJSONObject("thread")?.optJSONObject("settings")?:JSONObject()
     val lastText=messages.lastOrNull()?.optString("text")?.length?:0
@@ -329,7 +331,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().navigationBarsPadding()) {
         var menu by remember{mutableStateOf(false)}
-        Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
+        if(!browserFullscreen)Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
             PocketAction("返回","返回项目"){model.back()}
             Column(Modifier.weight(1f)){
                 Text(thread.label(),fontSize=16.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
@@ -351,9 +353,9 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
         }
         HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
         ChatConnectionNotice(model)
-        if(requests.isNotEmpty())Column(Modifier.heightIn(max=if(keyboardOpen)104.dp else 250.dp).verticalScroll(rememberScrollState()).padding(horizontal=14.dp)){requests.forEach{ApprovalCard(it,model)}}
+        if(!browserFullscreen&&requests.isNotEmpty())Column(Modifier.heightIn(max=if(keyboardOpen)104.dp else 250.dp).verticalScroll(rememberScrollState()).padding(horizontal=14.dp)){requests.forEach{ApprovalCard(it,model)}}
         if(model.loadingThread)LinearProgressIndicator(Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.secondary)
-        if(model.previewKind!=null)PreviewPane(model,if(previewCollapsed)Modifier.fillMaxWidth() else Modifier.fillMaxWidth().weight(if(previewExpanded)1f else 1.1f),previewExpanded,toggleExpand={focus.clearFocus();previewCollapsed=false;expanded=!expanded},onAddressFocusChange={addressFocused=it},minimized=previewCollapsed,onMinimize={focus.clearFocus();previewCollapsed=!previewCollapsed;expanded=false})
+        if(model.previewKind!=null)PreviewPane(model,if(previewCollapsed)Modifier.fillMaxWidth() else Modifier.fillMaxWidth().weight(if(previewExpanded)1f else 1.1f),previewExpanded,toggleExpand={focus.clearFocus();previewCollapsed=false;model.expandPreview(!model.previewExpanded)},onAddressFocusChange={addressFocused=it},minimized=previewCollapsed,onMinimize={focus.clearFocus();previewCollapsed=!previewCollapsed;model.expandPreview(false)})
         if(!(previewExpanded&&model.previewKind!=null))LazyColumn(state=list,modifier=Modifier.weight(1f).fillMaxWidth().nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             item(key="history-header") {
                 val history=snapshot?.optJSONObject("history")
@@ -372,7 +374,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
             }}
         }
         snackbar?.let{SnackbarHost(it,Modifier.fillMaxWidth().padding(horizontal=14.dp))}
-        if(!editingAddress)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal=12.dp).padding(top=5.dp,bottom=if(keyboardOpen)4.dp else 8.dp)){
+        if(!editingAddress&&!browserFullscreen)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal=12.dp).padding(top=5.dp,bottom=if(keyboardOpen)4.dp else 8.dp)){
             if(messages.isNotEmpty()&&!followBottom&&!(previewExpanded&&model.previewKind!=null))Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center){TextButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}){Text("跳到最新 ↓",fontSize=11.sp)}}
             PendingCard(model,compact=true)
             FileMentionSuggestions(model){tools="files"}
@@ -437,11 +439,11 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
     val colors=MaterialTheme.colorScheme;val context=LocalContext.current
     val linkCallback by rememberUpdatedState(onLink)
     fun argb(c:Color)=android.graphics.Color.argb((c.alpha*255).toInt(),(c.red*255).toInt(),(c.green*255).toInt(),(c.blue*255).toInt())
-    val markwon=remember(context,colors){Markwon.builder(context).usePlugin(object:AbstractMarkwonPlugin(){
+    val markwon=remember(context,colors){Markwon.builder(context).usePlugin(io.noties.markwon.linkify.LinkifyPlugin.create(android.text.util.Linkify.WEB_URLS)).usePlugin(object:AbstractMarkwonPlugin(){
         override fun configureConfiguration(builder:MarkwonConfiguration.Builder){builder.linkResolver{_,link->linkCallback(link)}}
         override fun configureTheme(builder:io.noties.markwon.core.MarkwonTheme.Builder){builder.linkColor(argb(colors.primary)).codeBackgroundColor(argb(colors.surfaceVariant)).codeBlockBackgroundColor(argb(colors.surfaceVariant)).blockQuoteColor(argb(colors.primary))}
     }).build()}
-    AndroidView(modifier=modifier,factory={TextView(it).apply{textSize=15f;setTextIsSelectable(true);setLineSpacing(4f,1.15f)}},update={it.setTextColor(argb(colors.onSurface));it.setLinkTextColor(argb(colors.primary));markwon.setMarkdown(it,text)})
+    AndroidView(modifier=modifier,factory={TextView(it).apply{textSize=15f;setTextIsSelectable(true);movementMethod=android.text.method.LinkMovementMethod.getInstance();setLineSpacing(4f,1.15f)}},update={it.setTextColor(argb(colors.onSurface));it.setLinkTextColor(argb(colors.primary));markwon.setMarkdown(it,text)})
 }
 
 @Composable fun ApprovalCard(request:JSONObject,model:PocketModel) {

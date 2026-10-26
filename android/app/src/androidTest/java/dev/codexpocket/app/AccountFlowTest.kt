@@ -137,6 +137,34 @@ class AccountFlowTest {
         val token=SecureStore(context,"pocket-account${AccountApi.suffix(context,api.defaults)}.enc").load().getString("token")
         val current=api.post("/api/account/me",token=token);Assert.assertEquals(account.hostId,current.getJSONObject("host").getString("id"))
     }
+    @Test fun selectedComputerRemovalWorksForUsersAndTheAdminWithoutRemovingOtherBindings(){
+        val admin=api.post("/api/account/login",JSONObject().put("username","owner").put("password",password).put("client","desktop").put("deviceId",Encoding.secret()))
+        val token=admin.getString("token");val ownerId=admin.getJSONObject("user").getString("id")
+        val username="remove_${System.currentTimeMillis()}"
+        val user=api.post("/api/admin/users/create",JSONObject().put("username",username).put("password",password).put("displayName","指定电脑移除验收").put("days",7),token).getJSONObject("user")
+        val userToken=api.post("/api/account/login",JSONObject().put("username",username).put("password",password).put("client","desktop").put("deviceId",Encoding.secret())).getString("token")
+        fun enroll(session:String,name:String):String{
+            val id=Encoding.secret().take(32)
+            api.post("/api/account/hosts/enroll",JSONObject().put("hostId",id).put("name",name).put("desktopToken",Encoding.secret()).put("pairCode",Encoding.secret()),session)
+            return id
+        }
+        val keep=enroll(userToken,"用户办公电脑");val remove=enroll(userToken,"用户备用电脑")
+        val ownerKeep=enroll(token,"管理员办公电脑");val ownerRemove=enroll(token,"管理员备用电脑")
+        compose.runOnUiThread{account.login("owner",password)};until{account.isAdmin&&!account.busy}
+        compose.onNodeWithContentDescription("打开设置").performClick();compose.onNodeWithText("用户中心").performScrollTo().performClick()
+        fun choose(id:String){compose.onNodeWithTag("remove-computer-$id").performScrollTo().performClick()}
+        choose(remove);compose.onNodeWithText("取消",substring=false).performClick()
+        Assert.assertEquals(2,account.users.first{it.optString("id")==user.getString("id")}.getJSONArray("computers").length())
+        choose(remove);shot("selected-computer-confirm");compose.onNodeWithText("确认移除").performClick()
+        until{!account.busy&&account.users.first{it.optString("id")==user.getString("id")}.getJSONArray("computers").length()==1}
+        Assert.assertEquals(keep,account.users.first{it.optString("id")==user.getString("id")}.getJSONArray("computers").getJSONObject(0).getString("id"))
+        choose(ownerRemove);compose.onNodeWithText("确认移除").performClick()
+        until{!account.busy&&account.hosts.none{it.optString("id")==ownerRemove}}
+        Assert.assertTrue(account.isAdmin);Assert.assertTrue(account.hosts.any{it.getString("id")==ownerKeep})
+        Assert.assertTrue(account.users.first{it.getString("id")==ownerId}.getJSONArray("computers").objects().any{it.getString("id")==ownerKeep})
+        Assert.assertFalse(account.users.flatMap{it.optJSONArray("computers").objects()}.any{it.getString("id") in listOf(remove,ownerRemove)})
+        shot("selected-computer-removed")
+    }
     @Test fun encryptedStoresRemainIndependentAndIntegrityReadsActualInstalledSignature(){
         val a=SecureStore(context,"qa-a.enc");val b=SecureStore(context,"qa-b.enc")
         val first=Thread{repeat(30){a.save(JSONObject().put("a",it))}};val second=Thread{repeat(30){b.save(JSONObject().put("b",it))}}

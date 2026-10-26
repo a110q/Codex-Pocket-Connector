@@ -135,7 +135,7 @@ export class Accounts {
     if (!user || this.state(user)!=='active') throw fail(403, '账号尚未批准、已到期或已停用');
     if (this.db.prepare('SELECT count(*) AS n FROM account_hosts WHERE user_id=?').get(userId).n >= user.max_hosts) throw fail(409, `已达到 ${user.max_hosts} 台电脑上限，请联系管理员调整额度`);
   }
-  changed(userId) { this.disconnect(userId); }
+  changed(userId, hostIds) { this.disconnect(userId, hostIds); }
   async create(body, { role = 'user', status = 'pending', actor = null } = {}) {
     const name = username(body.username), pass = password(body.password), displayName = text(body.displayName ?? name, 60, '名称');
     const reason = text(body.reason ?? '管理员创建账号', 500, '申请说明');
@@ -242,12 +242,15 @@ export class Accounts {
       this.changed(target.id); return { user: this.public(this.row(target.id)) };
     }
     if (path === '/api/admin/devices/remove') {
-      const target = this.row(body.userId); if (!target || target.role === 'admin') throw fail(403, '不能移除该账号的设备');
+      const target = this.row(body.userId);
+      if (!target || (target.role === 'admin' && (target.id !== actor.id || body.device !== 'computer'))) throw fail(403, '不能移除该账号的设备');
       if (!['phone','computer'].includes(body.device)) throw fail(400, '设备类型无效');
+      if (body.device === 'computer' && ((body.hostId !== undefined && (typeof body.hostId !== 'string' || !body.hostId)) || (target.role === 'admin' && !body.hostId))) throw fail(400, '请选择要移除的电脑');
       // Invalidate the existing host's mobile credential before allowing another device.
       const computers = this.db.prepare('SELECT host_id FROM account_hosts WHERE user_id=?').all(target.id).filter(computer=>body.device==='phone'||!body.hostId||body.hostId===computer.host_id);
       if(body.device==='computer'&&body.hostId&&!computers.length)throw fail(404,'电脑不属于该账号');
-      this.changed(target.id);
+      const hostIds = computers.map(computer => computer.host_id);
+      this.changed(target.id, body.device === 'computer' ? hostIds : undefined);
       for(const computer of computers)this.db.prepare('UPDATE hosts SET mobile_hash=NULL,mobile_name=NULL,pending_hash=NULL,pending_name=NULL,pair_hash=NULL WHERE id=?').run(computer.host_id);
       if (body.device === 'phone') {
         this.db.prepare('DELETE FROM account_phones WHERE user_id=?').run(target.id);
@@ -257,7 +260,7 @@ export class Accounts {
         this.db.prepare('UPDATE hosts SET desktop_hash=? WHERE id=?').run(digest(secret()), computer.host_id);
         this.db.prepare('UPDATE account_hosts SET user_id=? WHERE host_id=?').run('revoked:'+target.id+':'+randomUUID(), computer.host_id);
       }
-      this.event(target.id,actor.id,'device.removed','info','管理员移除了已绑定设备',{device:body.device});return {ok:true};
+      this.event(target.id,actor.id,'device.removed','info','管理员移除了已绑定设备',{device:body.device,hostIds});return {ok:true};
     }
     if (path === '/api/admin/password/reset') {
       const target=this.row(body.userId);if(!target||target.role==='admin')throw fail(403,'不能重置该账号');

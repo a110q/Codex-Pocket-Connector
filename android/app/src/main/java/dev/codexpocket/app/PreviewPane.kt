@@ -111,7 +111,10 @@ import org.json.JSONObject
     var problem by remember { mutableStateOf<String?>(null) }
     var proxyPort by remember(model.previewUrl, model.previewRevision) { mutableIntStateOf(0) }
     val proxy = remember(model.previewUrl, model.previewRevision) { PreviewProxy(model::rpc) }
-    fun openAddress() { focus.clearFocus(); if (address == model.previewUrl && web != null) web?.reload() else model.openBrowser(address.trim()) }
+    fun openAddress() { focus.clearFocus(); if (address == model.previewUrl && web != null) web?.reload() else model.openBrowser(address.trim(),expand=model.previewExpanded) }
+    LaunchedEffect(loading,proxyPort,model.previewRevision){
+        if(loading){delay(30000);if(loading){web?.stopLoading();loading=false;problem="网页加载超时，请确认电脑上的项目正在运行后重试。"}}
+    }
     DisposableEffect(Unit) { onDispose { onAddressFocusChange(false) } }
     LaunchedEffect(proxy) {
         if (model.previewUrl.isBlank()) return@LaunchedEffect
@@ -140,7 +143,10 @@ import org.json.JSONObject
             Spacer(Modifier.width(6.dp));FilledIconButton(onClick=::openAddress,shape=RoundedCornerShape(11.dp),modifier=Modifier.size(48.dp).semantics{contentDescription="打开网页"}){PocketIcon("前往")}
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        problem?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+        problem?.let { message->Column(Modifier.padding(12.dp)){
+            Text(message,color=MaterialTheme.colorScheme.error,fontSize=12.sp)
+            TextButton(onClick={model.openBrowser(address.trim(),expand=model.previewExpanded)},enabled=model.connected){Text("重新打开网页")}
+        } }
         if (proxyPort > 0) key(proxyPort) {
             AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = {
                 WebView(it).apply {

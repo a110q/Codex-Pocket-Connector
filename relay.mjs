@@ -44,8 +44,8 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
     return current;
   }
   const getHost = id => db.prepare('SELECT * FROM hosts WHERE id=?').get(id);
-  const accounts = new Accounts(db, { clock, administrator: admin, androidCertificate, disconnect(userId) {
-    for (const [hostId, peers] of routes) if (accounts.owner(hostId) === userId) for (const ws of Object.values(peers)) ws.close(4003, 'Account authorization changed');
+  const accounts = new Accounts(db, { clock, administrator: admin, androidCertificate, disconnect(userId, hostIds) {
+    for (const [hostId, peers] of routes) if (accounts.owner(hostId) === userId && (!hostIds || hostIds.includes(hostId))) for (const ws of Object.values(peers)) ws.close(4003, 'Account authorization changed');
   } });
   function admin(req) {
     if (!equalHash(digest(req.headers.authorization ?? ''), digest(`Bearer ${adminToken}`))) throw error(401, 'Unauthorized');
@@ -94,7 +94,7 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
       if (!allowPeer(req.socket.remoteAddress)) throw error(403, 'Only local network peers are allowed');
       rateLimit(req);
       const path = new URL(req.url, 'http://relay').pathname;
-      if (req.method === 'GET' && path === '/healthz') return res.end(JSON.stringify({ ok: true, protocol: 1, service: 'codex-pocket', enrollment: 'invite-v1', accounts: 'approval-v1', desktopEnrollment: 'mobile-claim-v1', computers:'multi-v1' }));
+      if (req.method === 'GET' && path === '/healthz') return res.end(JSON.stringify({ ok: true, protocol: 1, service: 'codex-pocket', enrollment: 'invite-v1', accounts: 'approval-v1', desktopEnrollment: 'mobile-claim-v1', computers:'multi-v1', deviceRemoval:'selected-v1' }));
       if (req.method !== 'POST') throw error(404, 'Not found');
       const body = await jsonBody(req);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw error(400, 'Invalid JSON object');

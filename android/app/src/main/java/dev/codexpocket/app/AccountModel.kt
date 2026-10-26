@@ -124,7 +124,11 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
     fun apply(reason:String)=operation("/api/account/apply",JSONObject().put("reason",reason))
     fun decision(id:String,action:String,days:Int=30,note:String="")=operation("/api/admin/users/decision",JSONObject().put("userId",id).put("action",action).put("days",days).put("note",note))
     fun create(username:String,password:String,displayName:String,days:Int)=operation("/api/admin/users/create",JSONObject().put("username",username).put("password",password).put("displayName",displayName).put("days",days))
-    fun removeDevice(id:String,device:String)=operation("/api/admin/devices/remove",JSONObject().put("userId",id).put("device",device))
+    fun removePhone(id:String)=operation("/api/admin/devices/remove",JSONObject().put("userId",id).put("device","phone"))
+    fun removeComputer(id:String,hostId:String){
+        if(hostId.isBlank()){error="请选择要移除的电脑";return}
+        operation("/api/admin/devices/remove",JSONObject().put("userId",id).put("device","computer").put("hostId",hostId)){notice="已移除所选电脑"}
+    }
     fun computerLimit(id:String,limit:Int)=operation("/api/admin/users/computers",JSONObject().put("userId",id).put("limit",limit))
     fun resetPassword(id:String,password:String)=operation("/api/admin/password/reset",JSONObject().put("userId",id).put("password",password))
     fun acknowledge(id:String)=operation("/api/admin/events/ack",JSONObject().put("id",id))

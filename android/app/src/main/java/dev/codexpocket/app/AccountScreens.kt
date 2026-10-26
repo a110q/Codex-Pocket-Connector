@@ -12,7 +12,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -119,6 +122,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
     if(!account.isAdmin){Text("需要管理员权限",Modifier.padding(24.dp));return}
     var filter by rememberSaveable(initialFilter){mutableStateOf(initialFilter)};var target by remember{mutableStateOf<JSONObject?>(null)}
     var action by remember{mutableStateOf("")};var create by remember{mutableStateOf(false)}
+    var removing by remember{mutableStateOf<Pair<JSONObject,JSONObject>?>(null)}
     Column(Modifier.fillMaxSize().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text("账号与授权",fontSize=22.sp,fontWeight=FontWeight.Bold);TextButton(onClick=account::refresh,enabled=!account.busy){Text("刷新")}}
         Text("${account.pending} 个待审批 · ${account.alerts} 条安全提醒",color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -126,6 +130,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
             listOf("pending" to "待审批","all" to "全部账号","security" to "安全提醒","events" to "操作记录").forEach{(id,label)->FilterChip(filter==id,{filter=id},label={Text(label)})}
         }
         account.error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
+        account.notice?.let{Text(it,color=MaterialTheme.colorScheme.primary)}
         if(account.busy)LinearProgressIndicator(Modifier.fillMaxWidth())
         if(filter=="pending"||filter=="all"){
             Button(onClick={create=true},enabled=!account.busy,modifier=Modifier.fillMaxWidth()){Text("创建并分配用户账号")}
@@ -139,7 +144,13 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
                         if(!user.isNull("expiresAt"))Text("有效期至 ${accountDate(user.optLong("expiresAt"))}",fontSize=12.sp)
                         val computers=user.optJSONArray("computers").objects().ifEmpty{listOfNotNull(user.optJSONObject("computer"))}
                         Text("手机：${user.optString("phone").takeIf{it!="null"}?:"未绑定"} · 电脑：${computers.size} / ${user.optInt("maxComputers",5)} 台",fontSize=12.sp)
-                        if(computers.isNotEmpty())Text(computers.joinToString("、"){it.optString("name")},fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        computers.forEach{computer->
+                            Row(Modifier.fillMaxWidth().padding(vertical=2.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                                PocketIcon("电脑",Modifier.size(18.dp))
+                                Text(computer.optString("name").ifBlank{"未命名电脑"},Modifier.weight(1f),fontSize=13.sp,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                if(user.optString("role")!="admin"||user.optString("id")==account.user?.optString("id"))TextButton(onClick={removing=user to computer},enabled=!account.busy,modifier=Modifier.testTag("remove-computer-${computer.getString("id")}").semantics{contentDescription="移除 ${user.optString("username")} 的电脑：${computer.optString("name")}"}){Text("移除",fontSize=12.sp)}
+                            }
+                        }
                         TextButton(onClick={target=user;action="quota"},enabled=!account.busy){Text("调整电脑额度")}
                         if(user.optString("role")!="admin")FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                             if(user.optString("accessState")=="pending"){
@@ -149,7 +160,6 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
                                 TextButton(onClick={target=user;action=if(user.optString("accessState")=="active")"disable"else"enable"},enabled=!account.busy){Text(if(user.optString("accessState")=="active")"停用账号"else"启用 / 续期")}
                             }
                             TextButton(onClick={target=user;action="phone"},enabled=!account.busy){Text("移除手机")}
-                            TextButton(onClick={target=user;action="computer"},enabled=!account.busy){Text("移除电脑")}
                             TextButton(onClick={target=user;action="password"},enabled=!account.busy){Text("重置密码")}
                         }
                     }
@@ -181,7 +191,14 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
     target?.let{user->
         if(action=="quota")ComputerQuotaDialog(user,{target=null}){account.computerLimit(user.getString("id"),it);target=null}
         else if(action=="password")AccountPasswordDialog("重置 ${user.optString("username")} 的密码",false,{target=null}){_,next->account.resetPassword(user.getString("id"),next);target=null}
-        else AdminDecisionDialog(user,action,{target=null}){days,note->if(action in listOf("phone","computer"))account.removeDevice(user.getString("id"),action)else account.decision(user.getString("id"),action,days,note);target=null}
+        else AdminDecisionDialog(user,action,{target=null}){days,note->if(action=="phone")account.removePhone(user.getString("id"))else account.decision(user.getString("id"),action,days,note);target=null}
+    }
+    removing?.let{(user,computer)->
+        AlertDialog(onDismissRequest={removing=null},title={Text("移除这台电脑？")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
+            Text(computer.optString("name").ifBlank{"未命名电脑"},fontWeight=FontWeight.SemiBold)
+            Text("账号：${user.optString("username")}",fontSize=13.sp)
+            Text("这台电脑的远程连接将断开，并解除账号绑定。再次使用需重新扫码配对。其他电脑不受影响，电脑上的任务不会停止。",fontSize=13.sp)
+        }},confirmButton={TextButton(onClick={account.removeComputer(user.getString("id"),computer.getString("id"));removing=null},enabled=!account.busy){Text("确认移除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={removing=null}){Text("取消")}})
     }
     if(create)CreateAccountDialog({create=false}){name,pass,display,days->account.create(name,pass,display,days);create=false}
 }
