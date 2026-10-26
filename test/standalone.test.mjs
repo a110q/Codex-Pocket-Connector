@@ -392,3 +392,30 @@ test('standalone extended approvals clear on resolution and respond on the ownin
  a.onServerRequest({id:9,method:'item/permissions/requestApproval',params:{threadId:'qa',permissions:{network:{enabled:true}}}});await a.call('approval.respond',{threadId:'qa',requestId:9,decision:'accept'});assert.deepEqual(server.replies[0],{id:9,result:{permissions:{network:{enabled:true}},scope:'turn'}});assert.equal(a.approvals.size,0);
  a.onServerRequest({id:10,method:'mcpServer/elicitation/request',params:{threadId:'qa',mode:'url'}});a.onServerEvent({method:'serverRequest/resolved',params:{threadId:'qa',requestId:10}});assert.equal(a.approvals.size,0);assert.equal(server.replies.length,1);
 });
+
+test('a writable but stale desktop connection is rebuilt after writer refusal and sends exactly once', async t => {
+  const { a, server, calls } = desktopSendFixture(t);
+  let connections = 0, closes = 0;
+  a.ipcAvailable = false;
+  a.options.ownerRetryDelayMs = 0;
+  a.ipc = { pending: new Map(), write() {}, close() { closes++; } };
+  a.ensureDesktopIpc = async () => { if (!a.ipcAvailable) connections++; a.ipcAvailable = true; };
+  const request = a.request;
+  a.request = async (method, ...args) => {
+    if (method === 'thread-owner-discovery' && connections < 2) throw Error('no-client-found');
+    return request(method, ...args);
+  };
+  assert.deepEqual(await a.sendMessage({ threadId: 'qa', text: 'once', clientUserMessageId: 'stable-id' }), { sent: true });
+  assert.equal(connections, 2); assert.equal(closes, 1);
+  assert.equal(calls.filter(c => c === 'thread-follower-start-turn').length, 1);
+  assert(!server.calls.some(c => c.method.startsWith('turn/')));
+});
+
+test('recovering another owner never closes a socket while a delivery is still awaiting its receipt', async t => {
+  const { a } = desktopSendFixture(t, { missedDiscovery: Infinity });
+  a.options.ownerRetryDelayMs = 0;
+  let closes = 0;
+  a.ipc = { pending: new Map([['in-flight-send', {}]]), close() { closes++; }, write() {} };
+  await assert.rejects(a.sendMessage({ threadId: 'qa', text: 'draft' }), e => e.notSubmitted && e.code === 'DESKTOP_OWNER_UNAVAILABLE');
+  assert.equal(closes, 0);
+});

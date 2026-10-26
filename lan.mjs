@@ -38,17 +38,23 @@ export function generateLanCertificate(addresses,now=Date.now()) {
 function save(path,value){mkdirSync(dirname(path),{recursive:true,mode:0o700});const tmp=path+'.pending';writeFileSync(tmp,JSON.stringify(value,null,2),{mode:0o600});renameSync(tmp,path)}
 export function prepareLan(state,{address,port=24444,addresses=lanAddresses(),renew=false}={}) {
   if(!addresses.length)throw new Error('未找到局域网 IPv4 地址，请先连接 Wi-Fi 或网线');
-  if(!addresses.includes(address))address=addresses[0];
-  if(!privateIPv4(address)||!Number.isInteger(port)||port<1024||port>65535)throw new Error('局域网地址或端口无效');
   const file=resolve(state,'lan','companion.json');let config=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):null;
-  const canReuse=!renew&&config?.mode==='lan'&&config.lanPort===port&&new X509Certificate(config.caCert).checkIP(address)&&new Date(new X509Certificate(config.caCert).validTo).getTime()>Date.now()+86400000;
+  if(address && !addresses.includes(address))throw new Error('所选局域网地址已失效，请重新选择当前 Wi-Fi 或网线地址');
+  let savedAddress;try{savedAddress=new URL(config?.relay).hostname}catch{}
+  if(!address)address=addresses.includes(savedAddress)?savedAddress:addresses[0];
+  if(!privateIPv4(address)||!Number.isInteger(port)||port<1024||port>65535)throw new Error('局域网地址或端口无效');
+  let canReuse=false;
+  try { const cert=new X509Certificate(config?.caCert);canReuse=!renew&&config?.mode==='lan'&&config.lanPort===port&&cert.checkIP(address)&&new Date(cert.validTo).getTime()>Date.now()+86400000; } catch {}
+  const pairingChanged=!!config && (!canReuse || config.relay!==`https://${address}:${port}`);
   if(!canReuse){
-    if(config&&!renew)throw new Error('局域网 IP 或证书已变化。请点击“更新局域网配对”，然后重新扫码。');
     if(config)save(resolve(state,'lan',`companion-before-${Date.now()}.json`),config);
     const tls=generateLanCertificate(addresses);
-    config={mode:'lan',relay:`https://${address}:${port}`,caCert:tls.cert,pin:tls.pin,lanKey:tls.key,lanAdmin:secret(),lanPort:port,name:'局域网电脑',hostId:secret().slice(0,32),desktopToken:secret(),pairCode:secret(),key:secret(),managerToken:secret(),pairExpires:Date.now()+600000};
+    // Refresh TLS for the new network without inventing a second computer or
+    // silently revoking the phone. Pairing still requires local confirmation.
+    const identity=config?.mode==='lan'&&!renew ? Object.fromEntries(['lanAdmin','name','hostId','desktopToken','pairCode','key','managerToken'].filter(k=>config[k]).map(k=>[k,config[k]])) : {};
+    config={mode:'lan',relay:`https://${address}:${port}`,caCert:tls.cert,pin:tls.pin,lanKey:tls.key,lanAdmin:secret(),lanPort:port,name:'局域网电脑',hostId:secret().slice(0,32),desktopToken:secret(),pairCode:secret(),key:secret(),managerToken:secret(),...identity,pairExpires:Date.now()+600000};
   }
-  config.relay=`https://${address}:${port}`;save(file,config);return{file,config,addresses};
+  config.relay=`https://${address}:${port}`;if(pairingChanged)config.pairExpires=Date.now()+600000;save(file,config);return{file,config,addresses,pairingChanged};
 }
 export async function startLanRelay(config,{dbPath,bind='0.0.0.0'}={}) {
   if(config.mode!=='lan'||!privateIPv4(new URL(config.relay).hostname))throw new Error('局域网模式只连接私有 IPv4 地址');

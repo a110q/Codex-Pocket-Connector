@@ -37,13 +37,13 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.6。** 更新两端界面：三种连接入口、项目分组、聊天与工具卡片采用统一样式，改善小屏和键盘布局。保留 0.9.5 的网页加载修复；中继无需为本次更新升级。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.7。** 修复桌面对话发送时的本地连接恢复、业务请求超时和局域网换网后的配对流程。三种连接方式均需更新电脑连接器；中继无需升级。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-0.9.6.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-Connector-0.9.6-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-Connector-0.9.6-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.6/Codex-Pocket-Connector-0.9.6-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.7/Codex-Pocket-0.9.7.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.7/Codex-Pocket-Connector-0.9.7-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.7/Codex-Pocket-Connector-0.9.7-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.7/Codex-Pocket-Connector-0.9.7-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -84,6 +84,8 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.7** 修复桌面对话控制连接失效后发送失败、业务请求超时过短、局域网换网提示无法操作的问题。详见 [更新说明](docs/patch-0.9.7.md) 与 [验收记录](docs/verification-0.9.7.md)。
 
 **0.9.6** 统一电脑连接器与 Android 界面，完善浅色/深色主题、连接卡片、电脑切换、项目列表和聊天输入反馈。已验证原生界面及 360dp 小屏键盘布局。详见 [更新说明](docs/patch-0.9.6.md)、[验收记录](docs/verification-0.9.6.md) 与 [实际截图](design/review/0.9.6/)。
 

@@ -19,7 +19,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   constructor(options = {}) {
     super(options); this.server = options.server ?? new AppServerClient(options);
     this.models = []; this.ownedThreads = new Set(); this.createdThreads = new Set(); this.catalogRefreshTimers = new Map(); this.states = new Map(); this.approvals = new Map(); this.refreshTimers = new Map(); this.ipcAvailable = false;
-    this.ipcConnecting = null; this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
+    this.ipcConnecting = null; this.ownerErrors = new Map(); this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
     this.ownerBridge = new DesktopOwnerBridge(this);
     this.workspace = new WorkspaceTools(this);
     this.extensions = new ExtensionTools(this);
@@ -116,11 +116,31 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   async owner(threadId, hostId = 'local') {
     await this.ensureDesktopIpc();
-    const response = await this.request('thread-owner-discovery', { conversationId: threadId, hostId }, { timeoutMs: 3000 });
+    const response = await this.request('thread-owner-discovery', { conversationId: threadId, hostId }, { timeoutMs: this.options.ownerTimeoutMs ?? 6000 });
+    if (!response.handledByClientId) throw new Error('no-client-found');
+    this.ownerErrors.delete(`${hostId}:${threadId}`);
     this.owners.set(`${hostId}:${threadId}`, response.handledByClientId); return response.handledByClientId;
   }
-  async desktopOwner(threadId, hostId = 'local') {
-    try { return await this.owner(threadId, hostId); } catch { return null; }
+  async desktopOwner(threadId, hostId = 'local', { recover = false } = {}) {
+    // Only discovery is retried. A timed-out send may already have reached the
+    // owner and must go through the operation receipt path, never a resend.
+    for (let attempt = 0; attempt < (recover ? 3 : 1); attempt++) {
+      if (attempt) {
+        await new Promise(resolve => setTimeout(resolve, this.options.ownerRetryDelayMs ?? 300 * attempt));
+        // A writable socket can still belong to an unresponsive desktop
+        // router. Reinitialize it instead of trusting ipcAvailable forever.
+        if (!this.ipcConnecting && !this.ipc?.pending?.size) { this.ipcAvailable = false; this.ipc?.close(); }
+      }
+      try { return await this.owner(threadId, hostId); }
+      catch (error) { this.ownerErrors.set(`${hostId}:${threadId}`, error); }
+    }
+    return null;
+  }
+  ownerUnavailable(threadId) {
+    const cause = this.ownerErrors.get(`local:${threadId}`);
+    const reason = /timed? ?out|timeout/i.test(cause?.message ?? '') ? '桌面 Codex 响应超时' :
+      /ENOENT|ECONNREFUSED|closed|disconnected/i.test(cause?.message ?? '') ? '桌面 Codex 本地连接已断开' : '桌面 Codex 暂未提供这条对话的控制连接';
+    return notSubmitted(Object.assign(new Error(`${reason}，自动重连后仍未恢复。消息尚未发送，草稿已保留。请在电脑连接器点击“重新连接”后重试。`), { code: 'DESKTOP_OWNER_UNAVAILABLE' }));
   }
   async withThread(threadId, operation) {
     const previous = this.threadQueues.get(threadId) ?? Promise.resolve();
@@ -230,8 +250,11 @@ export class StandaloneAdapter extends DesktopAdapter {
       catch (error) {
         // A refused resume has not submitted a turn. The desktop may have
         // opened the chat after discovery, or its IPC may just have reconnected.
-        if (writerConflict(error) || error.desktopOwned) owner = await this.desktopOwner(threadId);
-        if (!owner) throw notSubmitted(writerConflict(error) ? new Error('这条对话由电脑 Codex 持有，正在恢复桌面连接。消息尚未发送，请保持 Codex 打开后重试。') : error);
+        if (writerConflict(error) || error.desktopOwned) {
+          owner = await this.desktopOwner(threadId, 'local', { recover: true });
+          if (!owner) throw this.ownerUnavailable(threadId);
+        }
+        if (!owner) throw notSubmitted(error);
       }
     }
     if (owner) {

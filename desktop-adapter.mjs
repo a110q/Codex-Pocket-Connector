@@ -447,7 +447,7 @@ export class DesktopAdapter extends EventEmitter {
     if (method === 'thread-follower-interrupt-turn' && hostId === 'local' && params.expectedTurnId == null) version = 3;
     const response = await this.ipc.exchange({ type: 'request', requestId: randomUUID(), sourceClientId: this.clientId, version, method, params,
       ...(options.targetClientId ? { targetClientId: options.targetClientId } : {}),
-      ...(hostId === 'local' ? {} : { hostId }), timeoutMs: options.timeoutMs ?? this.timeoutMs }, options.timeoutMs);
+      ...(hostId === 'local' ? {} : { hostId }), timeoutMs: options.timeoutMs ?? this.timeoutMs }, options.timeoutMs ?? this.timeoutMs);
     if (response.resultType !== 'success') throw Object.assign(new Error(response.error ?? 'Desktop request failed'), { rejected: true });
     return response;
   }

@@ -37,3 +37,17 @@ test('LAN pairing works without an account, requires computer confirmation and s
  const response=await fetch(`http://127.0.0.1:${backend.port}/api/pairing`,{headers:{Authorization:`Bearer ${config.managerToken}`}});const pairing=await response.json();const payload=JSON.parse(Buffer.from(new URL(pairing.link).searchParams.get('data'),'base64url'));
  assert.equal(payload.mode,'lan');assert.equal(payload.relay,config.relay);assert(!JSON.stringify(payload).includes(config.lanKey));assert(!JSON.stringify(payload).includes(config.lanAdmin));
 });
+
+test('changing Wi-Fi refreshes the LAN certificate automatically and preserves the computer and phone identity', async t => {
+ const f=await fixture();t.after(()=>f.close());
+ const before=prepareLan(f.directory,{address:'192.168.1.12',addresses:['192.168.1.12']});
+ const next=prepareLan(f.directory,{address:'192.168.75.9',addresses:['192.168.75.9']});
+ assert.equal(next.pairingChanged,true);
+ assert.notEqual(next.config.pin,before.config.pin);
+ assert.equal(new X509Certificate(next.config.caCert).checkIP('192.168.75.9'),'192.168.75.9');
+ for(const key of ['hostId','desktopToken','managerToken','pairCode','key','lanAdmin'])assert.equal(next.config[key],before.config[key]);
+ const again=prepareLan(f.directory,{address:'192.168.75.9',addresses:['192.168.75.9']});
+ assert.equal(again.pairingChanged,false);assert.equal(again.config.pin,next.config.pin);
+ assert.throws(()=>prepareLan(f.directory,{address:'192.168.1.12',addresses:['192.168.75.9']}),/地址已失效/);
+ assert.equal(readJson(next.file).pin,next.config.pin);
+});

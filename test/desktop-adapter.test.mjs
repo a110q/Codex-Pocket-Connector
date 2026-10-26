@@ -364,3 +364,19 @@ test('accepted steering placeholders merge only by canonical message identity ac
   assert.equal(result.filter(m=>m.text==='same prompt').length,2);assert.equal(result.filter(m=>m.text==='still pending').length,1);
   assert(!result.some(m=>m.id==='placeholder'));
 });
+
+test('business RPC uses its full response budget rather than the short socket handshake budget', async t => {
+  class Socket extends EventEmitter {
+    destroyed = false; writable = true;
+    write(bytes) {
+      const [request] = new FrameDecoder().push(bytes);
+      setTimeout(() => this.emit('data', encodeFrame({ type: 'response', requestId: request.requestId, resultType: 'success', result: { accepted: true } })), 40);
+    }
+    destroy() { this.destroyed = true; this.writable = false; this.emit('close'); }
+  }
+  const adapter = new DesktopAdapter({ timeoutMs: 200 });
+  adapter.ipc = new FramedSocket('test', 10, () => { const s = new Socket(); queueMicrotask(() => s.emit('connect')); return s; });
+  t.after(() => adapter.close()); await adapter.ipc.connect();
+  assert.deepEqual((await adapter.request('thread-follower-start-turn', { conversationId: 'qa' })).result, { accepted: true });
+  assert.equal(adapter.ipc.pending.size, 0);
+});

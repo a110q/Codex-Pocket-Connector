@@ -19,7 +19,7 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
   const enrollments=new Map(), accounts=new Map();
   const enrollment = () => { const key=profiles.paths().state; if(!enrollments.has(key))enrollments.set(key,new Enrollment({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return enrollments.get(key); };
   const account = () => { const key=profiles.paths().state;if(!accounts.has(key))accounts.set(key,new ConnectorAccount({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return accounts.get(key); };
-  let rebindHostId='';
+  let rebindHostId='', lanPairingChanged=false;
   const prepareCloud = async options => {
     const result=await enrollment().prepare(options);
     if(result.rebindRequired) rebindHostId=readJson(profiles.paths().config).hostId;
@@ -56,7 +56,7 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         if(current?.mobileOnline && config?.hostId===rebindHostId) rebindHostId='';
         const missing = missingCapabilities(current);
         return res.end(JSON.stringify({ version: JSON.parse(readFileSync(resolve(root,'package.json'),'utf8')).version, mode:mode(),relayService:profiles.info(),lanAddresses:lanAddresses(),platform: process.platform, installation: installation.state(), registered: !!config, name: config?.name ?? hostname(),  connected: !!(current?.desktopReady && current?.relayOnline && !missing.length), serviceRunning: !!current,
-          connecting: runtime.busy, rebindRequired: !!config && config.hostId===rebindHostId, mobileOnline: !!current?.mobileOnline, pairRequest: current?.pairRequest ?? null, error: current?.desktopReady && missing.length ? `当前 Codex 版本缺少所需接口：${missing.join('、')}，请更新连接器。` : current?.error || runtime.error || '',  pending: existsSync(active.enrollment) && !readJson(active.enrollment).completed && !readJson(active.enrollment).rejected }));
+          connecting: runtime.busy, lanPairingChanged: mode()==='lan'&&lanPairingChanged, rebindRequired: !!config && config.hostId===rebindHostId, mobileOnline: !!current?.mobileOnline, pairRequest: current?.pairRequest ?? null, error: current?.desktopReady && missing.length ? `当前 Codex 版本缺少所需接口：${missing.join('、')}，请更新连接器。` : current?.error || runtime.error || '',  pending: existsSync(active.enrollment) && !readJson(active.enrollment).completed && !readJson(active.enrollment).rejected }));
       }
       if (req.method === 'GET' && url.pathname === '/api/pairing') {
         const active=activePaths();
@@ -80,13 +80,14 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         if(!['cloud','lan'].includes(body.mode))throw new Error('连接模式无效');
         if(runtime.busy)throw new Error('正在连接，请稍后切换。');
         await runtime.stop();
-        if(body.mode==='lan')prepareLan(paths.state,{address:body.address,renew:body.renew===true});
+        if(body.mode==='lan')lanPairingChanged=prepareLan(paths.state,{address:body.address,renew:body.renew===true}).pairingChanged||lanPairingChanged;
         else await prepareCloud({name:body.name});
         writePrivate(paths.setup,{...(existsSync(paths.setup)?readJson(paths.setup):{}),mode:body.mode});
         return res.end(JSON.stringify({mode:body.mode}));
       }
       if (url.pathname === '/api/connect') {
         if (mode() === 'cloud') await prepareCloud();
+        else { const prepared=prepareLan(paths.state); if(prepared.pairingChanged){lanPairingChanged=true;await runtime.stop();} }
         return res.end(JSON.stringify(await runtime.connect(activePaths(), {binary:installation.binary()})));
       }
       if(url.pathname === '/api/codex/pick') return res.end(JSON.stringify(await installation.pick()));
