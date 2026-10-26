@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 
 const LIMIT = 512 * 1024;
 function privateAddress(address) {
@@ -82,7 +83,11 @@ export class PreviewTunnel {
     if (state.size < LIMIT) state.socket.resume();
     const done = state.ended && !state.size;
     if (done) this.sockets.delete(args.socketId);
-    return { data: out.toString('base64'), done, error: state.error };
+    // Compress inside the encrypted channel, preserving the website's exact TCP
+    // bytes (including TLS/WebSockets). Older phones keep receiving raw chunks.
+    const zipped = args.encoding === 'gzip' && out.length >= 1024 ? gzipSync(out, { level: 1 }) : null;
+    const compressed = zipped && zipped.length < out.length * 0.9;
+    return { data: (compressed ? zipped : out).toString('base64'), ...(compressed ? { encoding: 'gzip' } : {}), done, error: state.error };
   }
   closeSocket(args) { const state = this.state(args); state.socket.destroy(); state.waiting?.(); this.sockets.delete(args.socketId); return { closed: true }; }
   close() { for (const state of this.sockets.values()) { state.socket.destroy(); state.waiting?.(); } this.sockets.clear(); this.session = null; return { closed: true }; }

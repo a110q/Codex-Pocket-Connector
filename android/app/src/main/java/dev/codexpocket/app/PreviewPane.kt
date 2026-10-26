@@ -6,6 +6,7 @@ import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -109,11 +110,24 @@ import org.json.JSONObject
     var web by remember { mutableStateOf<WebView?>(null) }
     var loading by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
+    var receivedBytes by remember(model.previewUrl,model.previewRevision) { mutableLongStateOf(0) }
+    var loadGeneration by remember { mutableIntStateOf(0) }
     var proxyPort by remember(model.previewUrl, model.previewRevision) { mutableIntStateOf(0) }
     val proxy = remember(model.previewUrl, model.previewRevision) { PreviewProxy(model::rpc) }
-    fun openAddress() { focus.clearFocus(); if (address == model.previewUrl && web != null) web?.reload() else model.openBrowser(address.trim(),expand=model.previewExpanded) }
-    LaunchedEffect(loading,proxyPort,model.previewRevision){
-        if(loading){delay(30000);if(loading){web?.stopLoading();loading=false;problem="网页加载超时，请确认电脑上的项目正在运行后重试。"}}
+    fun openAddress() { focus.clearFocus(); model.openBrowser(address.trim(),expand=model.previewExpanded) }
+    LaunchedEffect(loading,loadGeneration,proxy){
+        if(loading){
+            val started=SystemClock.elapsedRealtime();var lastProgress=started;var previous=proxy.receivedBytes.get()
+            while(loading){
+                delay(1000)
+                val now=SystemClock.elapsedRealtime();val current=proxy.receivedBytes.get();receivedBytes=current
+                if(current>previous){lastProgress=now;previous=current}
+                if(now-lastProgress>=45000||now-started>=180000){
+                    loading=false;web?.stopLoading()
+                    problem=if(current==0L)"未能从电脑收到网页，请确认项目已启动、电脑仍在线后重试。" else "网页加载未完成，请检查网络后重新打开。"
+                }
+            }
+        }
     }
     DisposableEffect(Unit) { onDispose { onAddressFocusChange(false) } }
     LaunchedEffect(proxy) {
@@ -121,14 +135,15 @@ import org.json.JSONObject
         loading = true; problem = null
         try {
             if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) error("请更新 Android System WebView 后再使用网页预览")
-            val port = withContext(Dispatchers.IO) { proxy.start(model.previewUrl) }
-            suspendCancellableCoroutine<Unit> { continuation ->
+            val port = withTimeout(20000) { withContext(Dispatchers.IO) { proxy.start(model.previewUrl) } }
+            withTimeout(15000) { suspendCancellableCoroutine<Unit> { continuation ->
                 ProxyController.getInstance().setProxyOverride(ProxyConfig.Builder().addProxyRule("127.0.0.1:$port").removeImplicitRules().build(), context.mainExecutor) {
                     if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
                 }
-            }
+            } }
             proxyPort = port
-        } catch (e: CancellationException) { throw e }
+        } catch (e: TimeoutCancellationException) { loading=false;problem="网页连接建立超时，请重新打开。" }
+        catch (e: CancellationException) { throw e }
         catch (e: Exception) { loading = false; problem = e.message }
     }
     DisposableEffect(proxy) {
@@ -139,10 +154,13 @@ import org.json.JSONObject
     Column(modifier) {
         Row(Modifier.fillMaxWidth().heightIn(min=68.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
             if(web?.canGoBack()==true)PocketAction("返回","网页后退"){web?.goBack()}
-            TextField(address,{address=it},modifier=Modifier.weight(1f).padding(vertical=6.dp).heightIn(min=56.dp).onFocusChanged{onAddressFocusChange(it.isFocused)}.semantics{contentDescription="网页地址"},shape=RoundedCornerShape(11.dp),singleLine=true,textStyle=LocalTextStyle.current.copy(fontSize=14.sp),placeholder={Text("输入网页地址",fontSize=14.sp)},leadingIcon={PocketIcon("网页",Modifier.size(18.dp))},trailingIcon={if(web!=null)PocketAction("刷新","刷新网页"){web?.reload()}},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Uri,imeAction=ImeAction.Go),keyboardActions=KeyboardActions(onGo={openAddress()}),colors=TextFieldDefaults.colors(focusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,unfocusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,focusedIndicatorColor=androidx.compose.ui.graphics.Color.Transparent,unfocusedIndicatorColor=androidx.compose.ui.graphics.Color.Transparent))
+            TextField(address,{address=it},modifier=Modifier.weight(1f).padding(vertical=6.dp).heightIn(min=56.dp).onFocusChanged{onAddressFocusChange(it.isFocused)}.semantics{contentDescription="网页地址"},shape=RoundedCornerShape(11.dp),singleLine=true,textStyle=LocalTextStyle.current.copy(fontSize=14.sp),placeholder={Text("输入网页地址",fontSize=14.sp)},leadingIcon={PocketIcon("网页",Modifier.size(18.dp))},trailingIcon={if(web!=null)PocketAction("刷新","刷新网页",onClick=::openAddress)},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Uri,imeAction=ImeAction.Go),keyboardActions=KeyboardActions(onGo={openAddress()}),colors=TextFieldDefaults.colors(focusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,unfocusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,focusedIndicatorColor=androidx.compose.ui.graphics.Color.Transparent,unfocusedIndicatorColor=androidx.compose.ui.graphics.Color.Transparent))
             Spacer(Modifier.width(6.dp));FilledIconButton(onClick=::openAddress,shape=RoundedCornerShape(11.dp),modifier=Modifier.size(48.dp).semantics{contentDescription="打开网页"}){PocketIcon("前往")}
         }
-        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (loading) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(if(receivedBytes==0L)"正在连接电脑上的网页…" else "正在加载网页 · 已接收 ${if(receivedBytes<1024*1024) "${receivedBytes/1024} KB" else String.format(java.util.Locale.ROOT,"%.1f MB",receivedBytes/1048576.0)}",Modifier.padding(horizontal=14.dp,vertical=6.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         problem?.let { message->Column(Modifier.padding(12.dp)){
             Text(message,color=MaterialTheme.colorScheme.error,fontSize=12.sp)
             TextButton(onClick={model.openBrowser(address.trim(),expand=model.previewExpanded)},enabled=model.connected){Text("重新打开网页")}
@@ -155,11 +173,11 @@ import org.json.JSONObject
                     settings.setSupportZoom(true); settings.builtInZoomControls = true; settings.displayZoomControls = false
                     settings.loadWithOverviewMode = true; settings.useWideViewPort = true
                     webViewClient = object : WebViewClient() {
-                        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { loading = true; problem = null; address = url }
+                        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { loadGeneration++;loading = true; problem = null; address = url }
                         override fun onPageFinished(view: WebView, url: String) { loading = false; address = url }
                         override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean = request.url.scheme !in listOf("http", "https")
-                        override fun onReceivedHttpError(view: WebView, request: android.webkit.WebResourceRequest, response: android.webkit.WebResourceResponse) { if (request.isForMainFrame) { loading = false; problem = "网页返回 HTTP ${response.statusCode}" } }
-                        override fun onReceivedError(view: WebView, request: android.webkit.WebResourceRequest, error: android.webkit.WebResourceError) { if (request.isForMainFrame) { loading = false; problem = "网页加载失败：${error.description}" } }
+                        override fun onReceivedHttpError(view: WebView, request: android.webkit.WebResourceRequest, response: android.webkit.WebResourceResponse) { if (request.isForMainFrame) { loading = false; problem = if(response.statusCode==502)proxy.failure.get()?.let{"电脑网页连接失败：$it"}?:"网页返回 HTTP 502" else "网页返回 HTTP ${response.statusCode}" } }
+                        override fun onReceivedError(view: WebView, request: android.webkit.WebResourceRequest, error: android.webkit.WebResourceError) { if (request.isForMainFrame) { loading = false; problem = "网页加载失败：${proxy.failure.get()?:error.description}" } }
                     }
                     web = this; loadUrl(model.previewUrl)
                 }

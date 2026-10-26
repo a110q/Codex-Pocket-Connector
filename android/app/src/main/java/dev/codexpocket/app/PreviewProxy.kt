@@ -9,10 +9,26 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.GZIPInputStream
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+internal fun decodePreviewChunk(result: JSONObject): ByteArray {
+    val data = Base64.decode(result.getString("data"), Base64.DEFAULT)
+    if (result.optString("encoding").isBlank()) return data
+    check(result.optString("encoding") == "gzip") { "不支持的网页传输编码" }
+    return GZIPInputStream(data.inputStream()).use { input ->
+        val out=ByteArrayOutputStream();val buffer=ByteArray(8192)
+        while(true){val n=input.read(buffer);if(n<0)break;check(out.size()+n<=192*1024){"网页数据解压后过大"};out.write(buffer,0,n)}
+        out.toByteArray()
+    }
+}
 
 /** Loopback HTTP proxy used only by the preview WebView. Website TCP streams
  * pass through the existing authenticated, encrypted phone/desktop channel. */
 class PreviewProxy(private val rpc: suspend (String, JSONObject) -> JSONObject) {
+    val receivedBytes = AtomicLong(0)
+    val failure = AtomicReference<String?>(null)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private var server: ServerSocket? = null
@@ -35,6 +51,7 @@ class PreviewProxy(private val rpc: suspend (String, JSONObject) -> JSONObject) 
     private suspend fun handle(client: Socket) = coroutineScope {
         var socketId: String? = null
         var established = false
+        var forwarding = false
         try {
             client.soTimeout = 120_000
             val input = client.getInputStream(); val output = client.getOutputStream()
@@ -50,6 +67,7 @@ class PreviewProxy(private val rpc: suspend (String, JSONObject) -> JSONObject) 
             val connect = first[0] == "CONNECT"
             val uri = URI(if (connect) "https://${first[1]}" else first[1])
             check(uri.scheme in listOf("http", "https") && uri.host != null && uri.userInfo == null)
+            forwarding = true
             val target = rpc("preview.connect", args().put("host", uri.host.removePrefix("[").removeSuffix("]")).put("port", if (uri.port > 0) uri.port else if (uri.scheme == "https") 443 else 80))
             socketId = target.getString("socketId")
             val id = socketId
@@ -71,13 +89,14 @@ class PreviewProxy(private val rpc: suspend (String, JSONObject) -> JSONObject) 
             }
             try {
                 while (isActive) {
-                    val result = rpc("preview.read", args().put("socketId", id))
-                    val data = Base64.decode(result.getString("data"), Base64.DEFAULT)
-                    if (data.isNotEmpty()) { output.write(data); output.flush() }
+                    val result = rpc("preview.read", args().put("socketId", id).put("encoding", "gzip"))
+                    val data = decodePreviewChunk(result)
+                    if (data.isNotEmpty()) { output.write(data); output.flush(); receivedBytes.addAndGet(data.size.toLong()) }
                     if (result.optBoolean("done")) break
                 }
             } finally { client.close(); writer.cancel() }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if(forwarding && e !is CancellationException) failure.set(e.message ?: "网页转发失败")
             if (!established) runCatching { client.getOutputStream().write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray()) }
         } finally {
             socketId?.let { runCatching { rpc("preview.disconnect", args().put("socketId", it)) } }

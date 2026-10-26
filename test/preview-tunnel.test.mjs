@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
+import { gunzipSync } from 'node:zlib';
 import { PreviewTunnel } from '../preview-tunnel.mjs';
 
 async function collect(tunnel, args) {
@@ -74,4 +75,25 @@ test('websites cannot reach unspecified, mapped, private, or shared network targ
     }
     assert.equal(tunnel.sockets.size, 0);
   } finally { tunnel.close(); }
+});
+
+test('opt-in compression preserves a large module byte-for-byte and old phones still get raw bytes', async () => {
+  const source=Buffer.from('export const data='+JSON.stringify(Array.from({length:12000},(_,i)=>({id:i,label:'Module fixture'})))+';');
+  const server=net.createServer(socket=>socket.end(source));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const tunnel=new PreviewTunnel();
+  try {
+    for(const encoding of [undefined,'gzip']) {
+      const {previewId}=tunnel.open({url:`http://127.0.0.1:${server.address().port}/`});
+      const {socketId}=await tunnel.connect({previewId,host:'127.0.0.1',port:server.address().port});
+      const parts=[];let transferred=0,compressed=0;
+      while(true){
+        const part=await tunnel.read({previewId,socketId,encoding});const bytes=Buffer.from(part.data,'base64');transferred+=bytes.length;
+        if(part.encoding){assert.equal(part.encoding,'gzip');assert.equal(encoding,'gzip');compressed++;parts.push(gunzipSync(bytes));}else parts.push(bytes);
+        if(part.done)break;
+      }
+      assert.deepEqual(Buffer.concat(parts),source);
+      if(encoding){assert(compressed>0);assert(transferred<source.length/5);}else assert.equal(transferred,source.length);
+    }
+  }finally{tunnel.close();await new Promise(resolve=>server.close(resolve));}
 });

@@ -37,13 +37,13 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.4。** 支持聊天链接直接在 App 内打开、选择指定电脑移除及管理员移除自己的电脑；自建中继需同步更新。 从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.5。** 修复公网首次打开大型开发页面时白屏：增加网页传输压缩与加载进度。请同时更新手机 App 和电脑连接器；中继无需为本次修复升级。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.4/Codex-Pocket-0.9.4.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.4/Codex-Pocket-Connector-0.9.4-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.4/Codex-Pocket-Connector-0.9.4-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.4/Codex-Pocket-Connector-0.9.4-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-0.9.5.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-Connector-0.9.5-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-Connector-0.9.5-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.5/Codex-Pocket-Connector-0.9.5-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -85,7 +85,7 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
 
-**0.9.4** 修复聊天链接点击被文本选择拦截，支持网页展开、小窗与返回；用户中心支持移除指定电脑，包括管理员自己的电脑，其他电脑保持在线。详见 [更新说明](docs/patch-0.9.4.md) 与 [验收记录](docs/verification-0.9.4.md)。
+**0.9.5** 为网页转发增加可协商压缩，减少大型脚本经过公网时的流量；显示下载进度，持续下载不会再被固定 30 秒超时中断，刷新会重建连接。详见 [更新说明](docs/patch-0.9.5.md) 与 [验收记录](docs/verification-0.9.5.md)。
 
 **0.9.3** 修复重复连接实例相互抢占导致的反复重连，并区分授权失效和临时断网；缩小聊天中的断线与待确认提示，键盘弹出时仍可编辑草稿。详见 [更新说明](docs/patch-0.9.3.md) 与 [验收记录](docs/verification-0.9.3.md)。
 
