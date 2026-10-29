@@ -165,6 +165,38 @@ class AccountFlowTest {
         Assert.assertFalse(account.users.flatMap{it.optJSONArray("computers").objects()}.any{it.getString("id") in listOf(remove,ownerRemove)})
         shot("selected-computer-removed")
     }
+    @Test fun accountDeletionRequiresExactConfirmationAndRefreshesTheUserList(){
+        val admin=api.post("/api/account/login",JSONObject().put("username","owner").put("password",password).put("client","desktop").put("deviceId",Encoding.secret()))
+        val token=admin.getString("token");val ownerId=admin.getJSONObject("user").getString("id")
+        val username="delete_${System.currentTimeMillis()}"
+        val user=api.post("/api/admin/users/create",JSONObject().put("username",username).put("password",password).put("displayName","账号删除验收").put("days",7),token).getJSONObject("user")
+        val id=user.getString("id")
+        val deletedSession=api.post("/api/account/login",JSONObject().put("username",username).put("password",password).put("client","desktop").put("deviceId",Encoding.secret())).getString("token")
+        compose.runOnUiThread{account.login("owner",password)};until{account.isAdmin&&!account.busy}
+        compose.onNodeWithContentDescription("打开设置").performClick();compose.onNodeWithText("用户中心").performScrollTo().performClick()
+        compose.onNodeWithTag("delete-account-$ownerId").assertDoesNotExist()
+        compose.onNodeWithTag("delete-account-$id").performScrollTo().performClick()
+        compose.onNodeWithTag("confirm-delete-account").assertIsNotEnabled()
+        compose.onNodeWithTag("delete-account-confirmation").performTextInput("incorrect")
+        compose.onNodeWithTag("confirm-delete-account").assertIsNotEnabled()
+        compose.onNodeWithText("取消",substring=false).performClick()
+        Assert.assertEquals(id,api.post("/api/account/me",token=deletedSession).getJSONObject("user").getString("id"))
+        compose.onNodeWithTag("delete-account-$id").performScrollTo().performClick()
+        compose.onNodeWithTag("delete-account-confirmation").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText,androidx.compose.ui.text.AnnotatedString("")))
+        compose.onNodeWithTag("delete-account-confirmation").performTextInput(username)
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("confirm-delete-account").assertIsEnabled()
+        shot("delete-account-confirm")
+        compose.onNodeWithTag("confirm-delete-account").performClick()
+        until{!account.busy&&account.users.none{it.optString("id")==id}}
+        compose.onNodeWithTag("delete-account-$id").assertDoesNotExist()
+        compose.onNodeWithText("账号 $username 已删除").performScrollTo().assertIsDisplayed()
+        Assert.assertTrue(account.isAdmin)
+        Assert.assertTrue(account.users.any{it.optString("id")==ownerId})
+        try{api.post("/api/account/me",token=deletedSession);Assert.fail("Deleted account sessions must be invalid")}catch(e:AccountException){Assert.assertEquals(401,e.status)}
+        instrument.waitForIdleSync();Thread.sleep(400)
+        shot("delete-account-success")
+    }
     @Test fun encryptedStoresRemainIndependentAndIntegrityReadsActualInstalledSignature(){
         val a=SecureStore(context,"qa-a.enc");val b=SecureStore(context,"qa-b.enc")
         val first=Thread{repeat(30){a.save(JSONObject().put("a",it))}};val second=Thread{repeat(30){b.save(JSONObject().put("b",it))}}

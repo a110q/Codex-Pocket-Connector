@@ -161,6 +161,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
                             }
                             TextButton(onClick={target=user;action="phone"},enabled=!account.busy){Text("移除手机")}
                             TextButton(onClick={target=user;action="password"},enabled=!account.busy){Text("重置密码")}
+                            TextButton(onClick={target=user;action="delete"},enabled=!account.busy,modifier=Modifier.testTag("delete-account-${user.getString("id")}")){Text("删除账号",color=MaterialTheme.colorScheme.error)}
                         }
                     }
                 }
@@ -173,7 +174,8 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
                 Surface(shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
                     Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
                         Text(event.optString("summary"),fontWeight=FontWeight.SemiBold)
-                        Text("${event.optString("username")} · ${accountDate(event.optLong("createdAt"))}",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        val eventUsername=event.optString("username").takeIf{it.isNotBlank()&&it!="null"}?:event.optJSONObject("details")?.optString("username")?.takeIf{it.isNotBlank()}?:"已删除账号"
+                        Text("$eventUsername · ${accountDate(event.optLong("createdAt"))}",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         if(event.optString("severity")=="warning"){
                             Text("版本：${event.optJSONObject("details")?.optString("version").orEmpty()}",fontSize=12.sp)
                             Row{
@@ -190,6 +192,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
     }
     target?.let{user->
         if(action=="quota")ComputerQuotaDialog(user,{target=null}){account.computerLimit(user.getString("id"),it);target=null}
+        else if(action=="delete")DeleteAccountDialog(user,account.busy,{target=null}){account.deleteAccount(user.getString("id"),user.getString("username"));target=null}
         else if(action=="password")AccountPasswordDialog("重置 ${user.optString("username")} 的密码",false,{target=null}){_,next->account.resetPassword(user.getString("id"),next);target=null}
         else AdminDecisionDialog(user,action,{target=null}){days,note->if(action=="phone")account.removePhone(user.getString("id"))else account.decision(user.getString("id"),action,days,note);target=null}
     }
@@ -201,6 +204,17 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
         }},confirmButton={TextButton(onClick={account.removeComputer(user.getString("id"),computer.getString("id"));removing=null},enabled=!account.busy){Text("确认移除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={removing=null}){Text("取消")}})
     }
     if(create)CreateAccountDialog({create=false}){name,pass,display,days->account.create(name,pass,display,days);create=false}
+}
+
+@Composable fun DeleteAccountDialog(user:JSONObject,busy:Boolean,onDismiss:()->Unit,submit:()->Unit){
+    var confirmation by remember(user.getString("id")){mutableStateOf("")}
+    val username=user.getString("username")
+    AlertDialog(onDismissRequest=onDismiss,title={Text("删除账号？")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        Text(user.optString("displayName").ifBlank{username},fontWeight=FontWeight.SemiBold)
+        Text("将永久删除账号 $username，退出该账号的所有登录，并解除手机和电脑绑定。此操作无法撤销。",fontSize=13.sp)
+        Text("电脑上的 Codex 对话和项目文件会保留，已开始的任务不会停止。",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedTextField(confirmation,{confirmation=it.take(32)},label={Text("输入登录账号确认")},placeholder={Text(username)},singleLine=true,modifier=Modifier.fillMaxWidth().testTag("delete-account-confirmation"))
+    }},confirmButton={TextButton(onClick=submit,enabled=!busy&&confirmation==username,modifier=Modifier.testTag("confirm-delete-account")){Text("永久删除",color=if(!busy&&confirmation==username)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha=.38f))}},dismissButton={TextButton(onClick=onDismiss){Text("取消")}})
 }
 
 @Composable fun ComputerQuotaDialog(user:JSONObject,onDismiss:()->Unit,submit:(Int)->Unit){

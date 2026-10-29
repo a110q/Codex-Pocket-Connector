@@ -3,8 +3,10 @@ Set-StrictMode -Version Latest
 try {
     $pocketSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'app'
     if (-not (Test-Path -LiteralPath (Join-Path $pocketSource 'connector.mjs') -PathType Leaf)) { throw 'Extract the whole ZIP before starting the installer.' }
-    $pocketVersion = (Get-Content -LiteralPath (Join-Path $pocketSource 'package.json') -Raw | ConvertFrom-Json).version
-    if ($pocketVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid connector package version.' }
+    $pocketManifest = Get-Content -LiteralPath (Join-Path $pocketSource 'package.json') -Raw | ConvertFrom-Json
+    $pocketVersion = $pocketManifest.pocketVersion
+    if (-not $pocketVersion) { $pocketVersion = $pocketManifest.version }
+    if ($pocketVersion -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(\.(0|[1-9]\d*))?$') { throw 'Invalid connector package version.' }
     $pocketBase = Join-Path $env:LOCALAPPDATA 'Programs\Codex Pocket Connector'
     $pocketInstall = Join-Path $pocketBase $pocketVersion
     if (Test-Path -LiteralPath $pocketInstall) { throw 'This version is already installed. Open Codex Pocket Connector from the Start menu, or use the extracted portable folder.' }

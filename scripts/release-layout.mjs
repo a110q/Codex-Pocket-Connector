@@ -1,9 +1,9 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { VERSION_PATTERN, versionParts } from '../version.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const versionPattern = '(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)';
 const formats = {
   mac: { prefix: 'Codex-Pocket-Connector-', suffix: '.app', directory: true },
   windows: { prefix: 'Codex-Pocket-Connector-', suffix: '-Windows.zip' },
@@ -18,24 +18,24 @@ function format(platform) {
 export function releaseDirectory(platform) { format(platform); return resolve(root, 'releases', platform); }
 export function releaseName(platform, version, variant) {
   const entry = format(platform);
-  if (!new RegExp(`^${versionPattern}$`).test(version)) throw new Error('Invalid release version');
+  versionParts(version);
   return `${entry.prefix}${version}${platform==='windows'&&variant==='exe'?'-Windows.exe':entry.suffix}`;
 }
 export function listPlatformReleases(platform, directory = releaseDirectory(platform)) {
   const entry = format(platform);
   if (!existsSync(directory)) return [];
-  const pattern = new RegExp(`^${escape(entry.prefix)}${versionPattern}${platform==='windows'?'-Windows\\.(zip|exe)':escape(entry.suffix)}$`);
+  const pattern = new RegExp(`^${escape(entry.prefix)}(${VERSION_PATTERN})${platform==='windows'?'-Windows\\.(zip|exe)':escape(entry.suffix)}$`);
   const releases = [];
   for (const candidate of readdirSync(directory, { withFileTypes: true })) {
     const match = candidate.name.match(pattern);
     if (!match) continue;
     if (candidate.isSymbolicLink() || (entry.directory ? !candidate.isDirectory() : !candidate.isFile())) throw new Error(`Unexpected release entry: ${candidate.name}`);
-    releases.push({ name: candidate.name, path: resolve(directory, candidate.name), version: match.slice(1,4).join('.') });
+    releases.push({ name: candidate.name, path: resolve(directory, candidate.name), version: match[1] });
   }
   return releases.sort((a, b) => {
-    const av = a.version.split('.').map(BigInt), bv = b.version.split('.').map(BigInt);
-    for (let i = 0; i < 3; i++) if (av[i] !== bv[i]) return av[i] > bv[i] ? -1 : 1;
-    return 0;
+    const av = versionParts(a.version), bv = versionParts(b.version);
+    for (let i = 0; i < 4; i++) if ((av[i] ?? 0n) !== (bv[i] ?? 0n)) return (av[i] ?? 0n) > (bv[i] ?? 0n) ? -1 : 1;
+    return bv.length - av.length;
   });
 }
 export function prunePlatformReleases(platform, directory = releaseDirectory(platform)) {

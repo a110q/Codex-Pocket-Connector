@@ -97,6 +97,8 @@ class UiRedesignTest {
     }
     @Test fun transcriptToolDetailsSettingsAndSendRemainFunctional(){
         chat()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("展开执行过程"))
+        compose.onNodeWithContentDescription("展开执行过程").performClick()
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("命令执行 · npm test"))
         compose.onNodeWithText("命令执行 · npm test").performClick()
         compose.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
@@ -125,6 +127,97 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("发送").performClick()
         until{peer.calls.any{it.optString("action")=="message.send"}&&!model.busy}
         Assert.assertEquals("本地 UI 验收消息",peer.calls.first{it.optString("action")=="message.send"}.getJSONObject("args").getString("text"))
+    }
+    private fun execution(id:String,title:String,status:String="completed",turn:String="ui-turn")=JSONObject()
+        .put("id",id).put("turnId",turn).put("key","$turn:$id").put("role","tool")
+        .put("type","commandExecution").put("title","命令执行").put("command",title)
+        .put("text","$title\n隔离测试中的完整执行输出").put("status",status).put("hasDetail",true)
+    private fun executionTranscript(records:List<JSONObject>,reply:Boolean=true){
+        while(peer.messages.length()>0)peer.messages.remove(0)
+        peer.messages.put(JSONObject().put("id","qa-user").put("turnId","ui-turn").put("role","user").put("text","检查项目连接，完成后告诉我结果。"))
+        records.forEach{peer.messages.put(it)}
+        if(reply)peer.messages.put(JSONObject().put("id","qa-reply").put("turnId","ui-turn").put("role","assistant").put("text","连接已恢复，可以继续工作。"))
+    }
+    @Test fun executionGroupsCollapseWithoutHidingRepliesAndOpenFullDetails(){
+        executionTranscript(listOf(execution("check","检查连接"),execution("retry","首次连接检查","failed"),execution("recover","恢复连接").put("role","summary").put("type","reasoning").put("command",JSONObject.NULL).put("title","思考摘要")))
+        chat()
+        compose.onNodeWithText("执行过程 · 3 条").assertIsDisplayed()
+        compose.onNodeWithText("1 项失败或拒绝").assertIsDisplayed()
+        compose.onNodeWithText("命令执行 · 检查连接").assertDoesNotExist()
+        onView(withText("连接已恢复，可以继续工作。")).check(androidx.test.espresso.assertion.ViewAssertions.matches(isDisplayed()))
+        shot("tool-process-collapsed")
+        compose.onNodeWithContentDescription("展开执行过程").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("命令执行 · 检查连接"))
+        compose.onNodeWithText("命令执行 · 检查连接").assertIsDisplayed()
+        shot("tool-process-expanded")
+        compose.onNodeWithText("命令执行 · 检查连接").performClick()
+        compose.onNodeWithText("查看完整详情").performScrollTo().performClick()
+        until{model.detailDone}
+        Assert.assertEquals("ui-turn:check",peer.calls.last{it.optString("action")=="message.read"}.getJSONObject("args").getString("messageKey"))
+        Assert.assertTrue(model.detailChunks.joinToString("").contains("LOCAL UI TEST"))
+        compose.onNodeWithContentDescription("关闭记录详情").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("收起执行过程"))
+        compose.onNodeWithContentDescription("收起执行过程").performClick()
+        compose.onNodeWithText("命令执行 · 检查连接").assertDoesNotExist()
+        onView(withText("连接已恢复，可以继续工作。")).check(androidx.test.espresso.assertion.ViewAssertions.matches(isDisplayed()))
+        Assert.assertEquals(5,model.snapshot!!.getJSONArray("messages").length())
+        compose.runOnUiThread{model.updateAppearance("dark")}
+        compose.onNodeWithContentDescription("展开执行过程").assertIsDisplayed()
+        shot("tool-process-dark")
+    }
+    @Test fun streamingExecutionGroupsKeepFoldChoiceAndUpdateTheirStatus(){
+        val running=execution("check","检查连接","inProgress")
+        executionTranscript(listOf(running,execution("read","读取状态")),reply=false)
+        chat()
+        compose.onNodeWithText("执行过程 · 2 条").assertIsDisplayed()
+        compose.onNodeWithText("1 项进行中").assertIsDisplayed()
+        val tail=execution("next","重新检查","inProgress")
+        peer.messages.put(tail);peer.publish()
+        until{model.snapshot!!.getJSONArray("messages").length()==4}
+        compose.onNodeWithText("执行过程 · 3 条").assertIsDisplayed()
+        compose.onNodeWithText("命令执行 · 检查连接").assertDoesNotExist()
+        compose.onNodeWithContentDescription("展开执行过程").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("命令执行 · 重新检查"))
+        compose.onNodeWithText("命令执行 · 重新检查").assertIsDisplayed()
+        running.put("status","completed");tail.put("status","completed");peer.publish()
+        until{model.snapshot!!.getJSONArray("messages").getJSONObject(3).getString("status")=="completed"}
+        compose.onNodeWithText("命令执行 · 重新检查").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("收起执行过程"))
+        compose.onNodeWithContentDescription("收起执行过程").performClick()
+        compose.onNodeWithText("已完成").assertIsDisplayed()
+        peer.messages.put(execution("last","检查文件"));peer.publish()
+        until{model.snapshot!!.getJSONArray("messages").length()==5}
+        compose.onNodeWithText("执行过程 · 4 条").assertIsDisplayed()
+        compose.onNodeWithText("命令执行 · 检查文件").assertDoesNotExist()
+    }
+    @Test fun executionGroupsStayIndependentBetweenTurnsAndConversations(){
+        executionTranscript(listOf(execution("first","第一步"),execution("second","第二步"),execution("other","另一轮",turn="other-turn")))
+        chat()
+        compose.onNodeWithText("执行过程 · 2 条").performClick()
+        compose.onNodeWithContentDescription("收起执行过程").assertExists()
+        compose.onNodeWithContentDescription("展开执行过程").assertExists()
+        compose.onNodeWithText("命令执行 · 另一轮").assertDoesNotExist()
+        compose.runOnUiThread{model.openThread(peer.threads.getJSONObject(1))}
+        until{!model.loadingThread&&model.snapshot!!.getJSONObject("thread").getString("id")=="ui-1"}
+        compose.onAllNodesWithContentDescription("展开执行过程").assertCountEquals(2)
+        compose.onNodeWithContentDescription("收起执行过程").assertDoesNotExist()
+        compose.onNodeWithText("命令执行 · 第一步").assertDoesNotExist()
+    }
+    @Test fun longExecutionGroupsCanCollapseAfterScrollingAndApprovalsStayAvailable(){
+        executionTranscript((1..80).map{execution("tool-$it","执行步骤 $it")})
+        peer.approval=true;chat()
+        compose.onNodeWithText("允许本次").assertIsDisplayed().assertIsEnabled()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("展开执行过程"))
+        compose.onNodeWithContentDescription("展开执行过程").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("命令执行 · 执行步骤 80"))
+        compose.onNodeWithText("命令执行 · 执行步骤 80").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("收起执行过程"))
+        compose.onNodeWithContentDescription("收起执行过程").performClick()
+        compose.onNodeWithText("执行过程 · 80 条").assertIsDisplayed()
+        compose.onNodeWithText("允许本次").performClick()
+        until{peer.calls.any{it.optString("action")=="approval.respond"}&&!model.busy}
+        Assert.assertEquals(82,model.snapshot!!.getJSONArray("messages").length())
+        compose.onNodeWithText("命令执行 · 执行步骤 80").assertDoesNotExist()
     }
     @Test fun longModelAndMultilineInputKeepSendReachableWithKeyboard(){
         peer.settings.put("model","gpt-6.1-sol-a-very-long-model-name-for-layout")
@@ -232,6 +325,7 @@ class UiRedesignTest {
         val server=MockWebServer();val website=MockWebServer()
         val calls=CopyOnWriteArrayList<JSONObject>()
         private val sockets=CopyOnWriteArrayList<WebSocket>()
+        private val channels=ConcurrentHashMap<WebSocket,String>()
         var ignoreMessages=false;var active=false
         fun offline(){sockets.last().send(JSONObject().put("type","status").put("peerOnline",false).toString())}
         private val tcp=ConcurrentHashMap<String,Socket>()
@@ -267,6 +361,7 @@ class UiRedesignTest {
                 override fun onOpen(webSocket:WebSocket,response:Response){sockets.add(webSocket);webSocket.send(JSONObject().put("type","status").put("peerOnline",true).toString())}
                 override fun onMessage(webSocket:WebSocket,text:String){
                     val payload=codec.decode(text);val channel=payload.getString("channel")
+                    channels[webSocket]=channel
                     if(payload.optString("type")=="hello"){send(webSocket,JSONObject().put("type","hello").put("channel",channel).put("desktopReady",true));return}
                     calls.add(payload)
                     if(ignoreMessages&&payload.optString("action")=="message.send")return
@@ -281,6 +376,12 @@ class UiRedesignTest {
         }
         // Serialize encryption and enqueueing together so test workers cannot reorder sequence numbers.
         private fun send(socket:WebSocket,payload:JSONObject)=synchronized(codec){socket.send(codec.encode(payload))}
+        fun publish(){
+            sockets.forEach{socket->channels[socket]?.let{channel->
+                val event=JSONObject().put("type","thread.updated").put("data",snapshot("ui-0"))
+                send(socket,JSONObject().put("type","event").put("channel",channel).put("event",event))
+            }}
+        }
         private fun snapshot(id:String):JSONObject{
             val thread=JSONObject(threads.optJSONObject(0).toString()).put("id",id).put("settings",JSONObject(settings.toString())).put("cwd","/workspace/codex_android")
             if(active)thread.put("activeTurnId","qa-active-turn")

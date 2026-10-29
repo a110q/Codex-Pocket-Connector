@@ -218,12 +218,25 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         cacheWrite = Runnable { persist() }.also { handler.postDelayed(it, 1000) }
     }
     private var taskPolling:Job?=null
+    private var catalogPolling:Job?=null
+    private var threadListRequest:Any?=null
+    private var threadListQueued=false
+    private var summaryVersion=0L
+    private data class SummaryUpdate(val metadata:JSONObject,val version:Long,val source:String,val stream:String,val revision:Long?)
+    private val summaryUpdates=mutableMapOf<String,SummaryUpdate>()
+    private val summaryRuntime=mutableMapOf<String,JSONObject>()
+    private val runtimeFields=listOf("status","threadRuntimeStatus","activeFlags","activeTurnId","lastTurnId","lastTurnStatus")
     fun start() {
         foreground = true
         if(requireLan&&profile!=null&&!PocketConnection.isLanPairing(profile!!)){error="局域网模式只允许连接私有 IPv4 地址，请重新扫码";return}
         if (profile != null) {
             if (profile?.optBoolean("approved") == true) {
                 TaskMonitorService.claimUi(context,this,profile!!)
+                if(catalogPolling?.isActive!=true)catalogPolling=scope.launch{
+                    // Only fetch summaries. Opening every chat would download its
+                    // history and make the list increasingly expensive to refresh.
+                    while(isActive&&foreground){delay(5000);if(connected)refreshThreads()}
+                }
                 if(taskPolling?.isActive!=true)taskPolling=scope.launch{
                     val peer=JSONObject(profile!!.toString());val poller=TaskComputerPoller(context,peer)
                     while(isActive&&foreground){
@@ -241,12 +254,13 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         cacheWrite?.let(handler::removeCallbacks);cacheWrite=null
         receiptPolling?.cancel();receiptPolling=null
         if(pendingOperation!=null)busy=false
-        pairingJob?.cancel(); pairingJob = null;taskPolling?.cancel();taskPolling=null; connection?.close(); connection = null; connected = false; persist()
+        pairingJob?.cancel(); pairingJob = null;taskPolling?.cancel();taskPolling=null;catalogPolling?.cancel();catalogPolling=null;threadListRequest=null;threadListQueued=false; connection?.close(); connection = null; connected = false; persist()
         TaskMonitorService.releaseUi(context,this)
     }
     private fun connect() {
         val p = profile ?: return
         reconnect?.let(handler::removeCallbacks);reconnect=null
+        resetSummaryConnection()
         connection?.close()
         lateinit var candidate: PocketConnection
         candidate = PocketConnection(p, { state -> handler.post {
@@ -260,13 +274,16 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }, { event -> handler.post {
             if (connection !== candidate || !foreground) return@post
             when (event.optString("type")) {
-                "hello" -> { if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; refresh(); selected?.let { openThread(it) };watchPendingReceipt(0) }
+                "hello" -> { resetSummaryConnection();if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; if(connected){refresh(); selected?.let { openThread(it) };watchPendingReceipt(0)} }
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
                     if(change.optString("type") in listOf("mcp.updated","automation.updated","catalog.updated")){toolRevision++;if(change.optString("type")=="catalog.updated")refresh()}
-                    if(change.optString("type")=="thread.updated"&&change.optString("threadId")!=selected?.optString("id"))change.optJSONObject("data")?.let{data->profile?.let{TaskNotifications.observe(context,it,data,true)}}
-                    if (change.optString("type") == "thread.updated" && change.optString("threadId") == selected?.optString("id")) {
-                        change.optJSONObject("data")?.let { acceptSnapshot(it) }; loadingThread = false; persistSoon()
+                    if(change.optString("type")=="thread.updated")change.optJSONObject("data")?.let{data->
+                        if(data.optJSONObject("thread")?.let(::threadIdentity)==selected?.let(::threadIdentity)){
+                            acceptSnapshot(data);loadingThread=false;persistSoon()
+                        }else if(updateThreadSummary(data)){
+                            profile?.let{TaskNotifications.observe(context,it,data,true)};persistSoon()
+                        }
                     }
                     if (change.optString("type") == "desktop.disconnected" || change.optString("type") == "desktop.incompatible") error = change.optString("error", "电脑上的 Codex 连接已变化")
                 }
@@ -408,9 +425,77 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     fun refresh() {
         if (!connected) return
-        request("threads.list",JSONObject().put("includeArchived",showArchived)) { r, e -> if (e != null) error = e else { threads = (r?.optJSONArray("pinnedThreads").objects() + r?.optJSONArray("threads").objects()).filter { it.optString("kind", "codex") == "codex" }.distinctBy { it.optString("hostId") + ":" + it.optString("id") }; persistSoon() } }
+        refreshThreads(reportErrors=true)
         request("projects.list") { r, e -> if (e != null) error = e else { projects = r?.optJSONArray("projects").objects().filter { it.optString("hostId", "local") == "local" }; persistSoon() } }
         request("models.list") { r, _ -> models = r?.optJSONArray("models").objects() }
+    }
+    private fun refreshThreads(reportErrors:Boolean=false) {
+        if(!connected)return
+        if(threadListRequest!=null){if(reportErrors)threadListQueued=true;return}
+        val token=Any();threadListRequest=token
+        val archived=showArchived;val version=summaryVersion
+        request("threads.list",JSONObject().put("includeArchived",archived)){r,e->
+            if(threadListRequest!==token)return@request
+            threadListRequest=null
+            if(archived!=showArchived){threadListQueued=false;refreshThreads(reportErrors);return@request}
+            if(e!=null){if(reportErrors)error=e}else{
+                val refreshed=(r?.optJSONArray("pinnedThreads").objects()+r?.optJSONArray("threads").objects())
+                    .filter{it.optString("kind","codex")=="codex"}.distinctBy(::threadIdentity).map{thread->
+                        // A list reply that was already in flight must not erase
+                        // a newer running/completed event received on the socket.
+                        val update=summaryUpdates[threadIdentity(thread)]?.takeIf{it.version>version}
+                        reconcileSummaryRuntime(if(update==null)thread else mergeSummary(thread,update.metadata))
+                    }
+                if(refreshed.size!=threads.size||refreshed.zip(threads).any{(next,old)->next.toString()!=old.toString()}){
+                    threads=refreshed
+                    selected?.let{current->threads.find{threadIdentity(it)==threadIdentity(current)}?.let{selected=mergeSummary(current,it)}}
+                    persistSoon()
+                }
+            }
+            if(threadListQueued){threadListQueued=false;refreshThreads(reportErrors=true)}
+        }
+    }
+    private fun resetSummaryConnection(){
+        threadListRequest=null;threadListQueued=false;summaryUpdates.clear();summaryRuntime.clear()
+    }
+    private fun mergeSummary(previous:JSONObject,metadata:JSONObject)=JSONObject(previous.toString()).also{merged->
+        // Runtime fields form one observation. In particular an idle catalog
+        // row must clear an old activeTurnId instead of reviving it next poll.
+        if(runtimeFields.any(metadata::has))runtimeFields.forEach(merged::remove)
+        metadata.keys().forEach{key->merged.put(key,metadata.opt(key))}
+    }.let{if(it.toString()==previous.toString())previous else it}
+    private fun reconcileSummaryRuntime(thread:JSONObject,requests:JSONArray?=null):JSONObject {
+        val key=threadIdentity(thread);val activity=threadActivity(thread,requests)
+        val runtime=if(activity!=ThreadActivity.UNKNOWN){
+            JSONObject().put("status",activity.wireStatus).also{value->
+                listOf("activeTurnId","lastTurnId","lastTurnStatus").forEach{field->if(thread.has(field))value.put(field,thread.opt(field))}
+                if(!activity.inFlight)value.remove("activeTurnId")
+                summaryRuntime[key]=value
+            }
+        }else{
+            // Local metadata and notLoaded rows say nothing about execution.
+            // Keep confirmed runtime through any number of quiet refreshes;
+            // explicit completion/error/waiting observations still replace it.
+            // Only evidence from this desktop connection is eligible.
+            summaryRuntime[key]?:JSONObject().put("status","unknown")
+        }
+        return mergeSummary(thread,runtime)
+    }
+    private fun updateThreadSummary(data:JSONObject):Boolean {
+        val thread=data.optJSONObject("thread")?:return false
+        if(thread.optString("id").isBlank())return false
+        val key=threadIdentity(thread);val previous=summaryUpdates[key]
+        val revision=if(data.isNull("revision"))null else data.optLong("revision")
+        val source=data.optString("source");val stream=data.optString("streamId")
+        if(previous!=null&&previous.source==source&&previous.stream==stream&&revision!=null&&previous.revision!=null&&revision<previous.revision)return false
+        val metadata=JSONObject().put("id",thread.getString("id")).put("hostId",thread.optString("hostId","local"))
+        val normalized=reconcileSummaryRuntime(thread,data.optJSONArray("requests"))
+        (runtimeFields+listOf("updatedAt","recencyAt")).forEach{field->if(normalized.has(field))metadata.put(field,normalized.opt(field))}
+        thread.optString("title").takeIf{it.isNotBlank()&&it!="null"&&it!="Untitled"}?.let{metadata.put("title",it)}
+        summaryUpdates[key]=SummaryUpdate(metadata,++summaryVersion,source,stream,revision)
+        threads=threads.map{if(threadIdentity(it)==key)mergeSummary(it,metadata)else it}
+        selected?.takeIf{threadIdentity(it)==key}?.let{selected=mergeSummary(it,metadata)}
+        return true
     }
     fun openThread(thread: JSONObject) {
         if(selected?.optString("id")!=thread.optString("id"))closeMessage()
@@ -440,6 +525,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         accepted.put("messages", JSONArray(merged.map { it.value }))
         accepted.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }
         snapshot = accepted
+        if(!olderPage)updateThreadSummary(accepted)
         if(!olderPage)profile?.let{TaskNotifications.observe(context,it,accepted,false)}
     }
     fun loadEarlier() {
@@ -578,13 +664,14 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }
     }
     fun expandPreview(value:Boolean){previewExpanded=value}
-    fun openBrowser(url: String, expand:Boolean=false) {
-        try {
+    fun openBrowser(url: String, expand:Boolean=false):Boolean {
+        return try {
             val normalized=url.trim()
             val uri = java.net.URI(normalized)
             require(uri.scheme?.lowercase() in listOf("http", "https") && uri.host != null && uri.userInfo == null) { "请输入完整的 HTTP 或 HTTPS 地址" }
             closePreview(); previewUrl = normalized; previewKind = "browser";previewExpanded=expand;previewRevision++
-        } catch (e: Exception) { error = e.message ?: "网页地址无效" }
+            true
+        } catch (e: Exception) { error = e.message ?: "网页地址无效";false }
     }
     fun showPreviewTab(kind: String) { previewKind = kind }
     fun showArtifactList(kind: String) { closePreview(); previewKind = kind }

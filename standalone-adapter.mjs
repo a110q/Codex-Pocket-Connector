@@ -31,14 +31,32 @@ export class StandaloneAdapter extends DesktopAdapter {
     });
   }
   async connectDesktop() {
-    await this.server.connect();
-    try {
+    const attempt = Symbol('Codex initialization'); this.initializationAttempt = attempt;
+    const current = () => { if (this.initializationAttempt !== attempt) throw new Error('Codex 初始化已取消'); };
+    let deadline;
+    const initialize = async () => {
+      await this.server.connect(); current();
       const [models] = await Promise.all([this.server.pages('model/list'), this.server.request('thread/list', { limit: 1, useStateDbOnly: true, modelProviders: [] }), this.server.request('project/list', { limit: 1 })]);
+      current();
       this.models = models.filter(model => !model.hidden).map(model => ({ id: model.model, reasoningEfforts: model.supportedReasoningEfforts.map(value => value.reasoningEffort) }));
       if (!this.models.length) throw new Error('Codex 尚未提供可用模型，请先登录并配置模型。');
       try { await this.ensureDesktopIpc(); } catch { /* Stored history remains available while the desktop is closed. */ }
-      this.ready = true; return this.diagnostics();
-    } catch (error) { this.close(); throw error; }
+      current();
+      this.ready = true;
+      this.emit('event', { type: 'desktop.ready', capabilities: this.diagnostics().capabilities });
+      return this.diagnostics();
+    };
+    try {
+      return await Promise.race([initialize(), new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('Codex 初始化超时，正在自动重连')), this.options.connectTimeoutMs ?? 25000);
+      })]);
+    } catch (error) {
+      if (this.initializationAttempt === attempt) {
+        this.initializationAttempt = null; this.ready = false; this.server.close();
+        // A catalog failure must not stop independent running conversations.
+      }
+      throw error;
+    } finally { clearTimeout(deadline); }
   }
   diagnostics() {
     return { connected: this.ready, backend: 'codex-app-server', desktopWindowConnected: this.ipcAvailable,
@@ -73,6 +91,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       try {
         await transport.connect();
         const response = await transport.exchange({ type: 'request', requestId: randomUUID(), sourceClientId: 'initializing-client', version: 0, method: 'initialize', params: { clientType: 'desktop' } });
+        if (this.ipc !== transport) throw new Error('Desktop IPC initialization cancelled');
         if (response.resultType !== 'success') throw new Error('Desktop IPC unavailable');
         this.clientId = response.result.clientId; this.ipcAvailable = true;
         for (const conversationId of this.ownedThreads) this.broadcast('thread-stream-following-status-requested', { hostId: 'local', conversationId });
@@ -474,6 +493,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     }
   }
   close() {
+    this.initializationAttempt = null;
     for (const timer of this.refreshTimers?.values() ?? []) clearTimeout(timer);
     this.refreshTimers?.clear(); this.server?.close(); this.ipcAvailable = false;
     for (const server of new Set(this.threadServers.values())) if (server !== this.server) server.close();

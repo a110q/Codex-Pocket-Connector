@@ -163,7 +163,7 @@ export class Accounts {
       const name = username(body.username); this.loginLimit(req, name);
       const pass = password(body.password), user = this.db.prepare('SELECT * FROM accounts WHERE username=?').get(name);
       const dummy = 'scrypt1$00000000000000000000000000000000$' + '0'.repeat(64);
-      if (!await this.hash(pass, user?.password_hash ?? dummy) || !user) throw fail(401, '账号或密码不正确');
+      if (!await this.hash(pass, user?.password_hash ?? dummy) || !user || !this.row(user.id)) throw fail(401, '账号或密码不正确');
       if (!['android', 'desktop'].includes(body.client) || !checkSecret(body.deviceId)) throw fail(400, '设备信息无效');
       const deviceHash = digest(body.deviceId);
       if (body.client === 'android' && this.state(user) === 'active') {
@@ -230,6 +230,35 @@ export class Accounts {
       this.event(target.id,actor.id,'account.computers','info','管理员调整了电脑额度',{limit});return{user:this.public(this.row(target.id))};
     }
     if (path === '/api/admin/users/create') return { user: await this.create(body, { status: 'active', actor: actor.id }) };
+    if (path === '/api/admin/users/delete') {
+      if (typeof body.userId !== 'string' || !body.userId) throw fail(400, '请选择要删除的账号');
+      const target = this.row(body.userId);
+      if (!target) throw fail(404, '账号不存在或已删除，请刷新列表');
+      if (target.role === 'admin' || target.id === actor.id) throw fail(403, '不能删除超级管理员或当前登录账号');
+      if (body.confirmUsername !== target.username) throw fail(400, '请输入完整登录账号以确认删除');
+      const hostIds = this.computers(target.id).map(host => host.id);
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const hostId of hostIds) {
+          this.db.prepare('UPDATE hosts SET desktop_hash=?,mobile_hash=NULL,mobile_name=NULL,pending_hash=NULL,pending_name=NULL,pair_hash=NULL,pair_expires=NULL WHERE id=?').run(digest(secret()), hostId);
+          // Retain a revoked owner so deleted accounts never leave an unmanaged
+          // host that could accept old credentials through the legacy path.
+          this.db.prepare('UPDATE account_hosts SET user_id=? WHERE host_id=?').run('revoked:' + target.id + ':' + randomUUID(), hostId);
+          this.db.prepare('DELETE FROM account_legacy_mobile WHERE host_id=?').run(hostId);
+        }
+        this.db.prepare('UPDATE hosts SET pending_hash=NULL,pending_name=NULL WHERE id IN (SELECT host_id FROM mobile_claim_hosts WHERE pending_user_id=?)').run(target.id);
+        this.db.prepare('UPDATE mobile_claim_hosts SET pending_user_id=NULL,pending_session_hash=NULL WHERE pending_user_id=?').run(target.id);
+        this.db.prepare('DELETE FROM account_sessions WHERE user_id=?').run(target.id);
+        this.db.prepare('DELETE FROM account_phones WHERE user_id=?').run(target.id);
+        this.db.prepare('DELETE FROM account_security_dedup WHERE user_id=?').run(target.id);
+        this.db.prepare("UPDATE account_events SET acknowledged_at=? WHERE user_id=? AND severity='warning' AND acknowledged_at IS NULL").run(this.clock(), target.id);
+        this.db.prepare('DELETE FROM accounts WHERE id=?').run(target.id);
+        this.event(target.id, actor.id, 'account.deleted', 'info', '管理员删除了账号', { username: target.username, displayName: target.display_name, computers: hostIds.length });
+        this.db.exec('COMMIT');
+      } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+      this.changed(target.id, hostIds);
+      return { ok: true };
+    }
     if (path === '/api/admin/users/decision') {
       const target = this.row(body.userId); if (!target) throw fail(404, '账号不存在');
       if (target.role === 'admin') throw fail(403, '不能在用户审批中修改超级管理员');

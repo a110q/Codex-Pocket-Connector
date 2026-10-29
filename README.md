@@ -20,16 +20,18 @@
 | 在手机上 | 支持的操作 |
 | --- | --- |
 | 项目与对话 | 查看本地项目及其对话，搜索、新建、继续聊天，长按重命名、归档、恢复或删除 |
-| 完整过程 | 问答、可见思考摘要、命令、文件修改及工具调用；历史分页、长内容详情 |
+| 完整过程 | 问答、可见思考摘要、命令、文件修改及工具调用；执行过程默认折叠，可展开查看全部记录；历史分页、长内容详情 |
 | 模型与权限 | 切换可用模型、推理强度、权限模式，处理命令、文件修改、目录/网络权限审批及常见 MCP 表单，停止任务 |
 | 图片与文件发送 | 图片、文档、代码等附件配合文字发送；普通文件每条最多 4 个、每个最多 50 MB，支持断点恢复 |
 | 多电脑任务提醒 | 前台切换电脑与后台运行时接收任务结果和审批提醒，点击打开对应电脑和对话 |
+| [连接恢复](docs/patch-0.9.8.1.md) | 区分中继在线与 Codex 就绪，端到端加密心跳、自动恢复及发送回执检查 |
+| [任务状态](docs/task-status.md) | 对话左侧显示运行、等待审批或输入；项目折叠后保留活动数量，前台自动刷新，无需开启通知 |
 | 自建中继 | 电脑配置地址与公开证书，手机扫码切换服务，无需重新构建客户端 |
 | 文件与网页 | 图片缩放、文本和代码预览、PDF 分页、文件下载，以及电脑本地网页预览 |
 | 工作空间工具 | 文件树、搜索、@引用、Git 状态与红绿差异、审查、提交/推送；0.9.1 暂时移除手机草稿 PR 入口 |
 | 技能、插件与任务 | 技能与插件管理、Pocket 定时任务、额度及 Token/上下文统计 |
 | 多台电脑 | 保存多个配对并切换，按电脑隔离聊天缓存与草稿 |
-| 账号管理 | 一个 APK 按角色展示菜单；管理员审批、停用、续期、管理设备和查看安全提醒 |
+| 账号管理 | 一个 APK 按角色展示菜单；管理员审批、停用、续期、[删除账号](docs/account-deletion.md)、管理设备和查看安全提醒 |
 
 ![手机连接入口、项目列表与聊天工具记录](design/review/0.9.6/mobile-overview.png)
 
@@ -37,13 +39,13 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.8。** 修复长会话读取缓慢、发送卡在桌面连接、文字增量触发重复历史同步的问题。三种连接方式均需更新电脑连接器；中继无需升级。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.8.1。** 修复 Codex 就绪通知、初始化等待及失效连接检测，保留任务运行状态；手机执行过程默认折叠。请同时更新手机与电脑连接器，退出旧电脑连接器后打开新版；连接恢复无需升级中继。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8/Codex-Pocket-0.9.8.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8/Codex-Pocket-Connector-0.9.8-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8/Codex-Pocket-Connector-0.9.8-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8/Codex-Pocket-Connector-0.9.8-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8.1/Codex-Pocket-0.9.8.1.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8.1/Codex-Pocket-Connector-0.9.8.1-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8.1/Codex-Pocket-Connector-0.9.8.1-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.8.1/Codex-Pocket-Connector-0.9.8.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -84,6 +86,10 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.8.1** 改进手机与电脑连接恢复、持续显示运行状态，新增执行过程折叠，并补充管理员删除账号。连接与状态 43 项、界面 25 项模拟器回归通过，另有 170 项 Node、21 项 Android JVM 测试通过；Windows 11 仍待实机验收。详见 [更新说明](docs/patch-0.9.8.1.md) 与 [验证记录](docs/verification-0.9.8.1.md)。
+
+![执行过程默认折叠，展开查看完整工具记录](design/review/0.9.8.1/tool-process-comparison.png)
 
 **0.9.8** 修复大历史快照处理、增量同步和重复读取，减少发送前等待；Android 支持桌面同步重启后接收新的版本序列。详见 [更新说明](docs/patch-0.9.8.md) 与 [验收记录](docs/verification-0.9.8.md)。
 

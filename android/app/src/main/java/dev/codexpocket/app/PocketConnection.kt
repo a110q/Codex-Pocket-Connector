@@ -11,23 +11,29 @@ import java.security.cert.X509Certificate
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
 class PairingHttpException(val status:Int,message:String):Exception(message)
 
-class PocketConnection(private val profile: JSONObject, private val onStatus: (ConnectionState) -> Unit, private val onEvent: (JSONObject) -> Unit, private val handshakeTimeoutMillis: Long = 20000) {
-    private val pending = ConcurrentHashMap<String, (JSONObject?, String?) -> Unit>()
+class PocketConnection(private val profile: JSONObject, private val onStatus: (ConnectionState) -> Unit, private val onEvent: (JSONObject) -> Unit, private val handshakeTimeoutMillis: Long = 20000, private val probeIntervalMillis:Long = 10000, private val probeTimeoutMillis:Long = 10000) {
+    private class Pending(val callback:(JSONObject?,String?)->Unit) { var timeout:ScheduledFuture<*>?=null }
+    private val pending = ConcurrentHashMap<String, Pending>()
     private var socket: WebSocket? = null
     private val crypto = CryptoChannel(profile.getString("key"), profile.getString("hostId"))
     private val channel = UUID.randomUUID().toString()
     private val client = httpClient(profile.getString("pin"))
-    private val timeouts = Executors.newSingleThreadScheduledExecutor()
+    private val timeouts = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy=true }
     private val ended = AtomicBoolean(false)
     private var handshake: ScheduledFuture<*>? = null
+    private var probe:ScheduledFuture<*>?=null
+    private var probeDeadline:ScheduledFuture<*>?=null
+    private var probeId:String?=null
+    private var welcome:JSONObject?=null
+    private var supportsProbe=false
     @Volatile var ready = false; private set
 
     fun connect() {
@@ -37,33 +43,40 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
             .header("X-Pocket-Host", profile.getString("hostId")).header("X-Pocket-Role", "mobile")
             .apply { profile.optString("accountToken").takeIf { it.isNotBlank() }?.let { header("X-Pocket-Session",it) } }.build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) { if(ended.get()){webSocket.cancel();return};onStatus(ConnectionState.RELAY_CONNECTED);armHandshake() }
+            override fun onOpen(webSocket: WebSocket, response: Response) { synchronized(this@PocketConnection){if(ended.get()){webSocket.cancel();return};onStatus(ConnectionState.RELAY_CONNECTED);armHandshake()} }
             override fun onMessage(webSocket: WebSocket, text: String) {
+                synchronized(this@PocketConnection){
                 if (ended.get()) return
                 try {
                     val frame = JSONObject(text)
                     if (frame.optString("type") == "status") {
                         if (frame.optBoolean("peerOnline")) {
+                            cancelProbe();welcome=null;supportsProbe=false
                             ready = false
                             onStatus(ConnectionState.CONNECTING_DESKTOP);armHandshake()
-                            if(!webSocket.send(crypto.encrypt(JSONObject().put("type", "hello").put("channel", channel).put("sentAt", System.currentTimeMillis()))))finish(ConnectionState.RECONNECTING)
-                        } else { cancelHandshake();ready = false; onStatus(ConnectionState.COMPUTER_OFFLINE);failPending("电脑已离线；操作结果待确认，请恢复连接后检查") }
+                            sendHello(webSocket)
+                        } else { cancelHandshake();cancelProbe();ready = false; onStatus(ConnectionState.COMPUTER_OFFLINE);failPending("电脑已离线；操作结果待确认，请恢复连接后检查") }
                         return
                     }
                     val payload = crypto.decrypt(frame)
                     if (payload.optString("channel") != channel) return
                     when (payload.optString("type")) {
-                        "hello" -> { cancelHandshake();ready = payload.optBoolean("desktopReady"); onStatus(if (ready) ConnectionState.READY else ConnectionState.DESKTOP_UNAVAILABLE); onEvent(payload) }
-                        "response" -> pending.remove(payload.optString("id"))?.invoke((payload.optJSONObject("result") ?: JSONObject()).put("_confirmed", true).put("_uncertain", payload.optBoolean("uncertain")), payload.optString("error").takeIf { it.isNotBlank() })
+                        "hello" -> {
+                            cancelHandshake();welcome=payload;supportsProbe=payload.optJSONObject("capabilities")?.optBoolean("connection.ping")==true
+                            ready = payload.optBoolean("desktopReady"); onStatus(if (ready) ConnectionState.READY else ConnectionState.DESKTOP_UNAVAILABLE); onEvent(payload);scheduleProbe()
+                        }
+                        "pong" -> acceptProbe(payload)
+                        "response" -> complete(payload.optString("id"),(payload.optJSONObject("result") ?: JSONObject()).put("_confirmed", true).put("_uncertain", payload.optBoolean("uncertain")), payload.optString("error").takeIf { it.isNotBlank() })
                         "event" -> {
                             val eventType = payload.optJSONObject("event")?.optString("type")
-                            if (eventType == "desktop.ready") { cancelHandshake();ready = true; onStatus(ConnectionState.READY); onEvent(JSONObject().put("type", "hello")) }
-                            if (eventType == "desktop.disconnected") { ready = false; onStatus(ConnectionState.DESKTOP_DISCONNECTED);failPending("电脑上的 Codex 已断开；操作结果待确认") }
+                            if (eventType == "desktop.ready") { cancelHandshake();markReady();scheduleProbe() }
+                            if (eventType == "desktop.disconnected") { ready = false; onStatus(ConnectionState.DESKTOP_DISCONNECTED);failPending("电脑上的 Codex 已断开；操作结果待确认");scheduleProbe() }
                             if (eventType == "desktop.incompatible") finish(ConnectionState.INCOMPATIBLE)
                             onEvent(payload)
                         }
                     }
                 } catch (_: Exception) { finish(ConnectionState.INVALID_DATA) }
+                }
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { finish(when(response?.code){401->ConnectionState.AUTH_FAILED;403->ConnectionState.ACCESS_DENIED;else->ConnectionState.RECONNECTING}) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { finish(when(code){4000->ConnectionState.REPLACED;4001->ConnectionState.REVOKED;4003->ConnectionState.ACCESS_DENIED;else->ConnectionState.CLOSED}) }
@@ -76,28 +89,64 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
         handshake=timeouts.schedule({finish(ConnectionState.HANDSHAKE_TIMEOUT)},handshakeTimeoutMillis,TimeUnit.MILLISECONDS)
     }
     @Synchronized private fun cancelHandshake(){handshake?.cancel(false);handshake=null}
+    @Synchronized private fun sendPayload(payload:JSONObject,target:WebSocket?=socket):Boolean = !ended.get()&&target?.send(crypto.encrypt(payload.put("channel",channel)))==true
+    private fun sendHello(target:WebSocket?=socket){if(!sendPayload(JSONObject().put("type","hello").put("sentAt",System.currentTimeMillis()),target))finish(ConnectionState.RECONNECTING)}
+    @Synchronized private fun cancelProbe(){probe?.cancel(false);probe=null;probeDeadline?.cancel(false);probeDeadline=null;probeId=null}
+    @Synchronized private fun scheduleProbe(){
+        if(ended.get())return
+        // An outstanding end-to-end deadline must survive unrelated events.
+        if(probeId!=null)return
+        probe?.cancel(false);probe=null
+        if(!supportsProbe&&ready)return
+        probe=timeouts.schedule({
+            synchronized(this){
+                if(ended.get())return@synchronized
+                if(supportsProbe){
+                    val id=UUID.randomUUID().toString();probeId=id
+                    probeDeadline=timeouts.schedule({finish(ConnectionState.HANDSHAKE_TIMEOUT)},probeTimeoutMillis,TimeUnit.MILLISECONDS)
+                    if(!sendPayload(JSONObject().put("type","ping").put("id",id)))finish(ConnectionState.RECONNECTING)
+                }else{
+                    // Older connectors do not announce recovery reliably.
+                    armHandshake();sendHello()
+                }
+            }
+        },if(supportsProbe)probeIntervalMillis else 5000,TimeUnit.MILLISECONDS)
+    }
+    @Synchronized private fun acceptProbe(payload:JSONObject){
+        if(probeId==null||payload.optString("id")!=probeId)return
+        probeDeadline?.cancel(false);probeDeadline=null;probeId=null
+        if(payload.optBoolean("desktopReady")){if(!ready)markReady()}
+        else if(ready){ready=false;onStatus(ConnectionState.DESKTOP_UNAVAILABLE);failPending("电脑上的 Codex 已断开；操作结果待确认")}
+        scheduleProbe()
+    }
+    private fun markReady(){
+        val changed=!ready;ready=true;onStatus(ConnectionState.READY)
+        if(changed)onEvent(JSONObject(welcome?.toString()?:"{}").put("type","hello").put("desktopReady",true).put("error",""))
+    }
+    @Synchronized private fun complete(id:String,result:JSONObject?,error:String?){val request=pending.remove(id)?:return;request.timeout?.cancel(false);request.callback(result,error)}
     private fun failPending(message:String) {
-        pending.keys.toList().forEach { id -> pending.remove(id)?.invoke(null,message) }
+        pending.keys.toList().forEach { id -> complete(id,null,message) }
     }
     @Synchronized private fun finish(state:ConnectionState) {
         if(!ended.compareAndSet(false,true))return
-        ready=false;cancelHandshake();socket?.cancel();timeouts.shutdownNow()
+        ready=false;cancelHandshake();cancelProbe();socket?.cancel();timeouts.shutdownNow()
         client.dispatcher.cancelAll();client.connectionPool.evictAll()
         onStatus(state)
         failPending("连接中断；操作结果待确认，请刷新会话后检查")
     }
     @Synchronized fun request(action: String, args: JSONObject = JSONObject(), id: String = UUID.randomUUID().toString(), callback: (JSONObject?, String?) -> Unit) {
         if (!ready || ended.get()) { callback(null, "电脑尚未连接"); return }
-        pending[id] = callback
+        if(pending.containsKey(id)){callback(null,"相同操作正在等待结果");return}
+        val request=Pending(callback);pending[id] = request
         val body = JSONObject().put("type", "request").put("channel", channel).put("id", id).put("action", action).put("args", args).put("sentAt", System.currentTimeMillis())
-        if (socket?.send(crypto.encrypt(body)) != true) pending.remove(id)?.invoke(null, "发送失败")
-        timeouts.schedule({
-            pending.remove(id)?.invoke(null, "请求超时；请刷新查看操作结果，避免重复发送")
+        request.timeout=timeouts.schedule({
+            complete(id,null, "请求超时；请刷新查看操作结果，避免重复发送")
         }, 45, TimeUnit.SECONDS)
+        if (!sendPayload(body)) complete(id,null, "发送失败")
     }
     @Synchronized fun close() {
         if(!ended.compareAndSet(false,true))return
-        cancelHandshake();socket?.cancel(); socket = null; ready = false
+        cancelHandshake();cancelProbe();socket?.cancel(); socket = null; ready = false
         failPending("连接已暂停；操作结果待确认，返回 App 后请刷新检查")
         client.dispatcher.cancelAll();client.connectionPool.evictAll();timeouts.shutdownNow()
     }

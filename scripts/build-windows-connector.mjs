@@ -1,3 +1,4 @@
+import { PRODUCT_VERSION, BUILD_NUMBER, versionParts } from '../version.mjs';
 import { cpSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,14 +37,14 @@ function run(command, args, cwd) {
   if (result.error || result.status !== 0) throw new Error(`Build failed: ${result.error?.message || result.stderr || result.stdout}`);
 }
 
-export function buildWindowsConnector({ out = releaseDirectory('windows'), config = resolve(root, '.private/companion.json'), version = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version } = {}) {
-  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid package version');
+export function buildWindowsConnector({ out = releaseDirectory('windows'), config = resolve(root, '.private/companion.json'), version = PRODUCT_VERSION } = {}) {
+  versionParts(version);
   const defaults = validateDefaults(JSON.parse(readFileSync(config, 'utf8')));
   const stage = resolve(root, '.private', `windows-connector-build-${Date.now()}`), name = `Codex-Pocket-Connector-${version}-Windows`, directory = resolve(stage, name), bundle = resolve(directory, 'app');
   mkdirSync(resolve(bundle, 'scripts'), { recursive: true }); mkdirSync(resolve(directory, 'scripts'), { recursive: true }); mkdirSync(out, { recursive: true });
-  const files = ['pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
+  const files = ['version.mjs', 'pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
   for (const file of files) cpSync(resolve(root, file), resolve(bundle, file));
-  const manifest = JSON.parse(readFileSync(resolve(bundle, 'package.json'), 'utf8')); manifest.version = version; writeFileSync(resolve(bundle, 'package.json'), JSON.stringify(manifest, null, 2));
+  const manifest = JSON.parse(readFileSync(resolve(bundle, 'package.json'), 'utf8')); manifest.pocketVersion = version; writeFileSync(resolve(bundle, 'package.json'), JSON.stringify(manifest, null, 2));
   for (const file of ['desktop-service.mjs', 'find-codex-node.ps1', 'connect-installed.ps1', 'start-connector.ps1', 'native-window.ps1']) {
     const target = resolve(bundle, 'scripts', file);
     file.endsWith('.ps1') ? copyText(resolve(root, 'scripts', file), target) : cpSync(resolve(root, 'scripts', file), target);
@@ -103,6 +104,6 @@ export function buildWindowsConnector({ out = releaseDirectory('windows'), confi
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { console.log(JSON.stringify(buildWindowsConnector({ out: resolve(arg('--out', releaseDirectory('windows'))), config: resolve(arg('--config', resolve(root, '.private/companion.json'))), version: arg('--version', JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version) }))); }
+  try { console.log(JSON.stringify(buildWindowsConnector({ out: resolve(arg('--out', releaseDirectory('windows'))), config: resolve(arg('--config', resolve(root, '.private/companion.json'))), version: arg('--version', PRODUCT_VERSION) }))); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

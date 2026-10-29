@@ -1,3 +1,4 @@
+import { PRODUCT_VERSION } from './version.mjs';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
@@ -38,6 +39,7 @@ export class AppServerClient extends EventEmitter {
     child.stderr.on('data', () => {});
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
+      if (this.child !== child) return;
       for (let offset = 0; offset < chunk.length;) {
         const end = chunk.indexOf('\n', offset);
         const part = chunk.slice(offset, end < 0 ? chunk.length : end);
@@ -62,7 +64,7 @@ export class AppServerClient extends EventEmitter {
       }
     });
     try {
-      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: '0.9.0' }, capabilities: { experimentalApi: true } });
+      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: PRODUCT_VERSION }, capabilities: { experimentalApi: true } });
       this.send({ method: 'initialized', params: {} });
     } catch (error) { this.close(); throw error; }
   }

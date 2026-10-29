@@ -38,6 +38,50 @@ class ConnectionRecoveryTest {
         instrumentation.runOnMainSync{model=PocketModel(context);model!!.start()}
     }
     private fun until(timeout:Long=5000,condition:()->Boolean){val end=System.currentTimeMillis()+timeout;while(true){var done=false;instrumentation.runOnMainSync{done=condition()};if(done)return;Assert.assertTrue("Timed out waiting for connection recovery",System.currentTimeMillis()<end);Thread.sleep(25)}}
+    @Test fun slowCodexInitializationShowsProgressAndEncryptedProbeRecoversWithoutAnotherSocket(){
+        peer.desktopReady=false;peer.capabilities.put("connection.ping",true)
+        start();until{model!!.status==ConnectionState.DESKTOP_UNAVAILABLE.label}
+        Assert.assertFalse(model!!.connected);Assert.assertTrue(peer.actions.isEmpty())
+        Assert.assertNull(model!!.error)
+        peer.desktopReady=true
+        until(15000){model!!.connected&&model!!.projects.isNotEmpty()}
+        Assert.assertEquals(1,peer.opens.get());Assert.assertEquals(1,peer.hellos.get())
+        Assert.assertTrue(peer.probes.get()>0)
+    }
+    @Test fun disconnectedCodexRecoversOnTheSameRelayWithoutResendingAnUncertainMessage(){
+        peer.capabilities.put("connection.ping",true)
+        start();until{model!!.connected}
+        instrumentation.runOnMainSync{model!!.openThread(JSONObject().put("id","local-network-test").put("hostId","local"))}
+        until{!model!!.loadingThread};peer.ignoreMessages=true
+        instrumentation.runOnMainSync{model!!.send("ONE UNCERTAIN MESSAGE")}
+        until{peer.messages.size==1}
+        peer.desktopReady=false;peer.desktopEvent("desktop.disconnected")
+        until{!model!!.connected&&model!!.pendingOperation!=null&&!model!!.busy}
+        peer.desktopReady=true
+        until(15000){model!!.connected&&!model!!.loadingThread}
+        Assert.assertEquals(1,peer.opens.get());Assert.assertEquals(1,peer.messages.size)
+        Assert.assertNotNull(model!!.pendingOperation)
+    }
+    @Test fun healthyRelayWithSilentDesktopExpiresEndToEndDeadlineExactlyOnce(){
+        peer.capabilities.put("connection.ping",true);peer.ignoreProbes=true
+        val states=CopyOnWriteArrayList<ConnectionState>();val callbacks=AtomicInteger()
+        val connection=PocketConnection(peer.profile,{states.add(it)},{},2000,200,300)
+        try{
+            connection.connect();until{connection.ready};peer.ignoreMessages=true
+            connection.request("message.send",JSONObject().put("threadId","local-network-test").put("text","one message")){_,_->callbacks.incrementAndGet()}
+            until{states.contains(ConnectionState.HANDSHAKE_TIMEOUT)}
+            Assert.assertFalse(connection.ready);Assert.assertEquals(1,callbacks.get())
+            Thread.sleep(600)
+            Assert.assertEquals(1,callbacks.get());Assert.assertEquals(1,peer.messages.size)
+            Assert.assertEquals(1,states.count{it==ConnectionState.HANDSHAKE_TIMEOUT})
+        }finally{connection.close()}
+    }
+    @Test fun olderConnectorIsProbedAgainWhileCodexIsUnavailable(){
+        peer.desktopReady=false;start();until{model!!.status==ConnectionState.DESKTOP_UNAVAILABLE.label}
+        peer.desktopReady=true
+        until(9000){model!!.connected&&model!!.projects.isNotEmpty()}
+        Assert.assertEquals(1,peer.opens.get());Assert.assertEquals(2,peer.hellos.get())
+    }
     @Test fun lostHelloAutomaticallyReconnectsAndReloadsProjects(){
         peer.dropFirstHello=true;start()
         until(32000){model!!.connected&&model!!.projects.isNotEmpty()}
@@ -194,6 +238,9 @@ class ConnectionRecoveryTest {
         val commands=CopyOnWriteArrayList<JSONObject>()
         var extra:((String,JSONObject)->JSONObject?)?=null
         var capabilities=JSONObject()
+        @Volatile var desktopReady=true
+        @Volatile var ignoreProbes=false
+        val probes=AtomicInteger()
         var accountResponse:JSONObject?=null
         val accountReads=AtomicInteger()
         private val channels=java.util.concurrent.ConcurrentHashMap<WebSocket,String>()
@@ -234,7 +281,12 @@ class ConnectionRecoveryTest {
                         val payload=codec.decode(text);val channel=payload.getString("channel")
                         if(payload.optString("type")=="hello"){
                             channels[webSocket]=channel;val n=hellos.incrementAndGet();if(dropFirstHello&&n==1)return
-                            webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",true).put("capabilities",capabilities)));return
+                            webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",desktopReady).put("capabilities",capabilities)));return
+                        }
+                        if(payload.optString("type")=="ping"){
+                            probes.incrementAndGet()
+                            if(!ignoreProbes)webSocket.send(codec.encode(JSONObject().put("type","pong").put("channel",channel).put("id",payload.getString("id")).put("desktopReady",desktopReady)))
+                            return
                         }
                         val action=payload.getString("action");actions.add(action)
                         if(action=="message.send"){messages.add(payload.getJSONObject("args"));if(ignoreMessages)return}
@@ -261,6 +313,7 @@ class ConnectionRecoveryTest {
         }
         fun snapshot(value:JSONObject){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type","thread.updated").put("threadId",value.getJSONObject("thread").getString("id")).put("data",value))))}}
         fun status(online:Boolean){sockets.last().send(JSONObject().put("type","status").put("peerOnline",online).toString())}
+        fun desktopEvent(type:String){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type",type))))}}
         fun closeLatest(code:Int,reason:String){sockets.last().close(code,reason)}
         fun close(){releasePairStatus.countDown();try{sockets.forEach{it.close(1000,"Local test finished")}}finally{server.shutdown()}}
     }

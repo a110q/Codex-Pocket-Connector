@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -49,12 +50,51 @@ import org.json.JSONObject
     }
 }
 
+private enum class ExecutionState { RUNNING, FAILED, COMPLETED, UNKNOWN }
+
+private fun executionState(message:JSONObject):ExecutionState {
+    val status=message.optString("status")
+    return when {
+        status in listOf("failed","error","declined","cancelled","canceled")||(!message.isNull("exitCode")&&message.optInt("exitCode")!=0)->ExecutionState.FAILED
+        status in listOf("inProgress","running","active")->ExecutionState.RUNNING
+        status=="completed"||(!message.isNull("exitCode")&&message.optInt("exitCode")==0)->ExecutionState.COMPLETED
+        else->ExecutionState.UNKNOWN
+    }
+}
+
+@Composable fun ExecutionGroupHeader(records:List<JSONObject>,expanded:Boolean,onToggle:()->Unit){
+    val states=records.map(::executionState)
+    val running=states.count{it==ExecutionState.RUNNING}
+    val failed=states.count{it==ExecutionState.FAILED}
+    val summary=listOfNotNull(
+        if(running>0)"$running 项进行中" else null,
+        if(failed>0)"$failed 项失败或拒绝" else null
+    ).joinToString(" · ").ifBlank{if(states.all{it==ExecutionState.COMPLETED})"已完成" else "查看工具与思考记录"}
+    Surface(onClick=onToggle,color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().semantics{
+        contentDescription=if(expanded)"收起执行过程" else "展开执行过程"
+        stateDescription=if(expanded)"已展开" else "已折叠"
+    }){
+        Row(Modifier.heightIn(min=56.dp).padding(horizontal=12.dp,vertical=9.dp),verticalAlignment=Alignment.CenterVertically){
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("终端",Modifier.size(19.dp))}
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)){
+                Text("执行过程 · ${records.size} 条",fontSize=13.sp,fontWeight=FontWeight.Medium)
+                Text(summary,fontSize=11.sp,lineHeight=17.sp,color=if(failed>0)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+            }
+            if(running>0){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(10.dp))}
+            Text(if(expanded)"收起" else "展开",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(5.dp));PocketIcon(if(expanded)"上拉" else "下拉",Modifier.size(13.dp))
+        }
+    }
+}
+
 @Composable private fun ToolRecord(message:JSONObject,onDetail:(String)->Unit,onRelated:(JSONObject)->Unit){
     var expanded by remember(message.optString("id")){mutableStateOf(false)}
     val type=message.optString("type");val state=message.optString("status")
-    val failed=state in listOf("failed","error","declined")||(!message.isNull("exitCode")&&message.optInt("exitCode")!=0)
-    val running=state in listOf("inProgress","running","active")
-    val completed=state=="completed"||(!message.isNull("exitCode")&&message.optInt("exitCode")==0)
+    val recordState=executionState(message)
+    val failed=recordState==ExecutionState.FAILED
+    val running=recordState==ExecutionState.RUNNING
+    val completed=recordState==ExecutionState.COMPLETED
     val command=message.optString("command").takeIf{it.isNotBlank()&&it!="null"}
     val title=message.optString("title").ifBlank{if(message.optString("role")=="summary")"思考摘要" else "工具调用"}
     val icon=when{command!=null||type=="commandExecution"->"终端";type in listOf("fileChange","turnDiff")->"编辑";type.contains("search",true)->"搜索";message.optString("role")=="summary"->"推理";else->"文件"}

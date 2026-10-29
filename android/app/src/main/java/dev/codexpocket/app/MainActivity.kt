@@ -288,7 +288,7 @@ class MainActivity : ComponentActivity() {
 
 
 
-fun statusLabel(status:String)=when(status){"running","inProgress","active","working"->"进行中";"needs_attention","waitingForInput","waiting"->"等待操作";"error","failed","systemError"->"出错";else->"可继续"}
+fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RUNNING->"进行中";ThreadActivity.APPROVAL,ThreadActivity.INPUT,ThreadActivity.WAITING->"等待操作";ThreadActivity.ERROR->"出错";else->"可继续"}
 
 @Composable fun EmptyState(title:String,subtitle:String) { Column(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=32.dp),horizontalAlignment=Alignment.CenterHorizontally){Surface(color=MaterialTheme.colorScheme.surfaceVariant,shape=RoundedCornerShape(18.dp),modifier=Modifier.size(56.dp)){Box(contentAlignment=Alignment.Center){PocketIcon("会话")}};Spacer(Modifier.height(18.dp));Text(title,fontWeight=FontWeight.SemiBold,fontSize=16.sp,textAlign=TextAlign.Center);Spacer(Modifier.height(8.dp));Text(subtitle,fontSize=13.sp,lineHeight=21.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,textAlign=TextAlign.Center)} }
 
@@ -304,6 +304,9 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
 @Composable fun ChatScreen(model:PocketModel,snackbar:SnackbarHostState?=null) {
     val thread=model.selected?:return;val focus=LocalFocusManager.current
     val snapshot=model.snapshot;val messages=snapshot?.optJSONArray("messages").objects();val list=rememberLazyListState()
+    val blocks=transcriptBlocks(messages,key={it.optString("turnId")+":"+it.optString("id")},turn={it.optString("turnId")},execution={it.optString("role") in listOf("tool","summary")})
+    var expandedGroups by rememberSaveable(model.profile?.optString("relay"),model.profile?.optString("hostId"),thread.optString("id")){mutableStateOf(emptyList<String>())}
+    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}
     val chatScope=rememberCoroutineScope()
     val pickImages=rememberImagePicker(model,thread.getString("id"))
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
@@ -330,7 +333,7 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
     LaunchedEffect(list){snapshotFlow{list.canScrollForward}.collect{if(!it)followLatest=true}}
     LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,model.scrollRequest,previewExpanded,model.previewKind){
         if(lastScrollRequest!=model.scrollRequest){lastScrollRequest=model.scrollRequest;followLatest=true}
-        if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){list.scrollToItem(messages.size+if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())1 else 0);initialScroll=true}
+        if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){list.scrollToItem(transcriptRowCount+if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())1 else 0);initialScroll=true}
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().navigationBarsPadding()) {
         var menu by remember{mutableStateOf(false)}
@@ -370,7 +373,14 @@ fun statusLabel(status:String)=when(status){"running","inProgress","active","wor
                 }
             }
             if(messages.isEmpty())item{EmptyState(if(model.loadingThread)"正在读取对话" else "工作从这里继续",if(model.connected)"发送指令，交给电脑上的 Codex。" else "连接后会读取最新内容。")}
-            items(messages,key={it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+            blocks.forEach{block->
+                if(block.execution)item(key=block.key){ExecutionGroupHeader(block.records,block.key in expandedGroups){
+                    followLatest=false
+                    expandedGroups=if(block.key in expandedGroups)expandedGroups-block.key else expandedGroups+block.key
+                }}
+                // Expanded records remain independent lazy rows, including very long tool runs.
+                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+            }
             val artifacts=snapshot?.optJSONArray("artifacts").objects()
             if(artifacts.isNotEmpty())item{Surface(onClick={showResults=true},color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){
                 Row(Modifier.padding(horizontal=14.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){PocketIcon("文件",Modifier.size(17.dp));Spacer(Modifier.width(9.dp));Text("查看 ${artifacts.size} 个交付文件",Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);PocketIcon("展开",Modifier.size(14.dp))}

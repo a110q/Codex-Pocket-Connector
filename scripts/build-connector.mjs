@@ -1,3 +1,4 @@
+import { PRODUCT_VERSION, BUILD_NUMBER, versionParts } from '../version.mjs';
 import { cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, lstatSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,13 +12,13 @@ const arg = (key, fallback) => args.includes(key) ? args[args.indexOf(key) + 1] 
 const out = resolve(arg('--out', releaseDirectory('mac')));
 const stage = resolve(root, '.private', `connector-build-${Date.now()}`);
 const appName = 'Codex Pocket Connector.app', app = resolve(stage, 'payload/Applications', appName), resources = resolve(app, 'Contents/Resources'), bundle = resolve(resources, 'connector');
-const version = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version;
+const version = PRODUCT_VERSION;
 function run(cmd, argv) { const result = spawnSync(cmd, argv, { encoding: 'utf8' }); if (result.status !== 0) throw new Error(`${cmd}: ${result.stderr || result.error || result.stdout}`); }
 try {
   if (process.platform !== 'darwin') throw new Error('电脑安装包需要在 macOS 构建');
   const defaults = validateDefaults(JSON.parse(readFileSync(arg('--config', resolve(root, '.private/companion.json')), 'utf8')));
   mkdirSync(bundle, { recursive: true }); mkdirSync(resolve(app, 'Contents/MacOS'), { recursive: true }); mkdirSync(out, { recursive: true });
-  const files = ['pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
+  const files = ['version.mjs', 'pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
   for (const file of files) cpSync(resolve(root, file), resolve(bundle, file));
   for (const file of ['desktop-service.mjs', 'find-codex-node.sh', 'connect-installed.command']) {
     mkdirSync(resolve(bundle, 'scripts'), { recursive: true }); cpSync(resolve(root, 'scripts', file), resolve(bundle, 'scripts', file)); chmodSync(resolve(bundle, 'scripts', file), 0o755);
@@ -38,7 +39,7 @@ try {
   run('/usr/bin/xcrun', ['swiftc', nativeSource, '-O', '-target', 'arm64-apple-macos13.0', '-framework', 'Cocoa', '-framework', 'WebKit', '-o', arm]);
   run('/usr/bin/xcrun', ['swiftc', nativeSource, '-O', '-target', 'x86_64-apple-macos13.0', '-framework', 'Cocoa', '-framework', 'WebKit', '-o', intel]);
   run('/usr/bin/lipo', ['-create', arm, intel, '-output', resolve(app, 'Contents/MacOS/Connector')]);
-  const plist = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.codexpocket.connector</string><key>CFBundleName</key><string>Codex Pocket Connector</string><key>CFBundleDisplayName</key><string>Codex Pocket Connector</string><key>CFBundleExecutable</key><string>Connector</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${version}</string><key>CFBundleVersion</key><string>1</string><key>CFBundleIconFile</key><string>Pocket.icns</string><key>LSUIElement</key><true/><key>LSMinimumSystemVersion</key><string>13.0</string></dict></plist>`;
+  const plist = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.codexpocket.connector</string><key>CFBundleName</key><string>Codex Pocket Connector</string><key>CFBundleDisplayName</key><string>Codex Pocket Connector</string><key>CFBundleExecutable</key><string>Connector</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${version.split('.').slice(0,3).join('.')}</string><key>CFBundleVersion</key><string>${BUILD_NUMBER}</string><key>PocketReleaseVersion</key><string>${version}</string><key>CFBundleIconFile</key><string>Pocket.icns</string><key>LSUIElement</key><true/><key>LSMinimumSystemVersion</key><string>13.0</string></dict></plist>`;
   writeFileSync(resolve(app, 'Contents/Info.plist'), plist.replace('<key>LSUIElement</key><true/>','<key>NSHighResolutionCapable</key><true/><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'));
   const iconset = resolve(stage, 'Pocket.iconset'); mkdirSync(iconset);
   for (const size of [16,32,128,256,512]) for (const scale of [1,2]) run('/usr/bin/sips', ['-z', String(size*scale), String(size*scale), resolve(bundle, 'design/brand/codex-pocket-logo.png'), '--out', resolve(iconset, `icon_${size}x${size}${scale===2?'@2x':''}.png`)]);

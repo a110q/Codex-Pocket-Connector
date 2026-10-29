@@ -114,7 +114,10 @@ import org.json.JSONObject
     var loadGeneration by remember { mutableIntStateOf(0) }
     var proxyPort by remember(model.previewUrl, model.previewRevision) { mutableIntStateOf(0) }
     val proxy = remember(model.previewUrl, model.previewRevision) { PreviewProxy(model::rpc) }
-    fun openAddress() { focus.clearFocus(); model.openBrowser(address.trim(),expand=model.previewExpanded) }
+    fun openAddress() {
+        if(model.openBrowser(address.trim(),expand=model.previewExpanded))focus.clearFocus()
+        else problem=model.error
+    }
     LaunchedEffect(loading,loadGeneration,proxy){
         if(loading){
             val started=SystemClock.elapsedRealtime();var lastProgress=started;var previous=proxy.receivedBytes.get()

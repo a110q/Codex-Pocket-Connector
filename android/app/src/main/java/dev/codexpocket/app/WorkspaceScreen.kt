@@ -56,14 +56,22 @@ internal fun threadTime(thread:JSONObject):String{
     fun updateSearch(v:String){if(activeOnly)model.taskSearch=v else model.projectSearch=v}
     var searching by rememberSaveable(activeOnly){mutableStateOf(search.isNotBlank())}
     var menu by remember{mutableStateOf(false)}
-    val threads=model.threads.filter{it.optBoolean("archived")==model.showArchived}.filter{!activeOnly||statusLabel(it.optString("status")) in listOf("进行中","等待操作","出错")}
+    val threads=model.threads.filter{it.optBoolean("archived")==model.showArchived}.filter{!activeOnly||threadActivity(it).actionable}
+    val runningCount=threads.count{threadActivity(it)==ThreadActivity.RUNNING}
+    val waitingCount=threads.count{threadActivity(it).waiting}
     fun matches(t:JSONObject)=t.label().contains(search,true)
     val projectIds=model.projects.map{it.optString("projectId")}.toSet()
     val visible=model.projects.filter{p->search.isBlank()||p.label().contains(search,true)||threads.any{it.optString("projectId")==p.optString("projectId")&&matches(it)}}
     val standalone=threads.filter{it.optString("projectId") !in projectIds}.filter(::matches)
     Column(Modifier.fillMaxSize()){
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
-            Text(if(activeOnly)"运行中与待处理"else if(model.showArchived)"已归档 · 长按恢复或删除"else "${model.projects.size} 个项目 · ${model.threads.size} 个对话",Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.weight(1f)){
+                Text(if(activeOnly)"运行中与待处理"else if(model.showArchived)"已归档 · 长按恢复或删除"else "${model.projects.size} 个项目 · ${threads.size} 个对话",maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(runningCount+waitingCount>0)Text(
+                    (if(model.connected)""else"上次状态 · ")+listOfNotNull(if(runningCount>0)"$runningCount 个运行中"else null,if(waitingCount>0)"$waitingCount 个待处理"else null).joinToString(" · "),
+                    Modifier.clickable(onClick=onNew).padding(vertical=2.dp).semantics{contentDescription="查看运行中与待处理任务"},
+                    fontSize=11.sp,fontWeight=FontWeight.Medium,color=if(model.connected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+            }
             PocketAction("搜索",if(searching)"收起搜索"else"展开搜索"){searching=!searching;if(!searching)updateSearch("")}
             FilledTonalIconButton(onClick=onCreate,enabled=model.connected&&!model.busy&&model.pendingOperation==null,shape=RoundedCornerShape(13.dp),modifier=Modifier.size(48.dp).semantics{contentDescription="新建对话"}){PocketIcon("新增")}
             Box{
@@ -86,7 +94,7 @@ internal fun threadTime(thread:JSONObject):String{
                     val id=project.optString("projectId");val children=threads.filter{it.optString("projectId")==id}
                     val open=id !in model.collapsedProjects||search.isNotBlank()
                     item(key="project:$id"){
-                        ProjectHeading(project,children.size,open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})
+                        ProjectHeading(project,children.size,children.count{threadActivity(it)==ThreadActivity.RUNNING},children.count{threadActivity(it).waiting},open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})
                     }
                     if(open){
                         val shown=children.filter{project.label().contains(search,true)||matches(it)}
@@ -105,7 +113,7 @@ internal fun threadTime(thread:JSONObject):String{
     }
 }
 
-@Composable private fun ProjectHeading(project:JSONObject,count:Int,open:Boolean,connected:Boolean,onToggle:()->Unit,onNew:()->Unit){
+@Composable private fun ProjectHeading(project:JSONObject,count:Int,running:Int,waiting:Int,open:Boolean,connected:Boolean,onToggle:()->Unit,onNew:()->Unit){
     var menu by remember{mutableStateOf(false)};var path by remember{mutableStateOf(false)}
     Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface,RoundedCornerShape(14.dp)).padding(start=10.dp),verticalAlignment=Alignment.CenterVertically){
         Row(Modifier.weight(1f).clickable(onClick=onToggle).heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
@@ -113,6 +121,8 @@ internal fun threadTime(thread:JSONObject):String{
             CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("项目",Modifier.size(20.dp))}
             Spacer(Modifier.width(8.dp));Text(project.label(),Modifier.weight(1f,false),fontSize=14.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
             Spacer(Modifier.width(7.dp));Surface(shape=RoundedCornerShape(6.dp),color=MaterialTheme.colorScheme.surfaceVariant){Text("$count",Modifier.padding(horizontal=6.dp,vertical=1.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+            if(running>0){Spacer(Modifier.width(5.dp));ProjectActivityCount("$running 运行",if(connected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,"${project.label()}：$running 个运行中${if(connected)""else"，上次状态"}")}
+            if(waiting>0){Spacer(Modifier.width(5.dp));ProjectActivityCount("$waiting 等待",if(connected)MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,"${project.label()}：$waiting 个等待处理${if(connected)""else"，上次状态"}")}
         }
         PocketAction("新增","在 ${project.label()} 中新开对话",connected,onNew)
         Box{
@@ -126,26 +136,48 @@ internal fun threadTime(thread:JSONObject):String{
     if(path)AlertDialog(onDismissRequest={path=false},title={Text(project.label())},text={androidx.compose.foundation.text.selection.SelectionContainer{Text(project.optString("path").ifBlank{"桌面未提供项目路径"},fontSize=14.sp)}},confirmButton={TextButton(onClick={path=false}){Text("完成")}})
 }
 
+@Composable private fun ProjectActivityCount(text:String,color:Color,description:String){
+    Surface(shape=RoundedCornerShape(6.dp),color=color.copy(alpha=.10f),modifier=Modifier.semantics{contentDescription=description}){
+        Text(text,Modifier.padding(horizontal=5.dp,vertical=2.dp),fontSize=10.sp,fontWeight=FontWeight.Medium,color=color,maxLines=1)
+    }
+}
+
+@Composable private fun ThreadActivityMarker(activity:ThreadActivity,connected:Boolean){
+    val color=when{
+        !connected->MaterialTheme.colorScheme.onSurfaceVariant
+        activity==ThreadActivity.RUNNING->MaterialTheme.colorScheme.primary
+        activity.waiting->MaterialTheme.colorScheme.tertiary
+        activity==ThreadActivity.ERROR->MaterialTheme.colorScheme.error
+        else->MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(Modifier.size(22.dp),contentAlignment=Alignment.Center){
+        if(activity==ThreadActivity.RUNNING&&connected)CircularProgressIndicator(Modifier.size(18.dp),color=color,trackColor=color.copy(alpha=.22f),strokeWidth=2.dp)
+        else CompositionLocalProvider(LocalContentColor provides color){
+            PocketIcon(when{activity.inFlight->"时钟";activity==ThreadActivity.ERROR->"任务";else->"会话"},Modifier.size(18.dp))
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable private fun WorkspaceThread(thread:JSONObject,model:PocketModel,nested:Boolean){
     var menu by remember{mutableStateOf(false)};var deleting by remember{mutableStateOf(false)};var rename by remember{mutableStateOf(false)}
-    val state=statusLabel(thread.optString("status"));val running=state=="进行中";val needs=state in listOf("等待操作","出错")
+    val activity=threadActivity(thread);val running=activity==ThreadActivity.RUNNING
+    val accent=when{!model.connected->MaterialTheme.colorScheme.onSurfaceVariant;running->MaterialTheme.colorScheme.primary;activity.waiting->MaterialTheme.colorScheme.tertiary;else->MaterialTheme.colorScheme.error}
     Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
         if(nested){Spacer(Modifier.width(12.dp));Box(Modifier.width(1.dp).height(48.dp).background(MaterialTheme.colorScheme.outlineVariant));Spacer(Modifier.width(8.dp))}
         Box(Modifier.weight(1f)){
-        Surface(shape=RoundedCornerShape(12.dp),color=if(running)MaterialTheme.colorScheme.primaryContainer else Color.Transparent,modifier=Modifier.fillMaxWidth().combinedClickable(onClick={model.openThread(thread)},onLongClick={menu=true},onLongClickLabel="管理对话")){
+        Surface(shape=RoundedCornerShape(12.dp),color=when{running&&model.connected->MaterialTheme.colorScheme.primaryContainer;activity.waiting&&model.connected->MaterialTheme.colorScheme.tertiaryContainer;else->Color.Transparent},modifier=Modifier.fillMaxWidth().combinedClickable(onClick={model.openThread(thread)},onLongClick={menu=true},onLongClickLabel="管理对话").semantics{contentDescription="${thread.label()}，${if(!model.connected&&activity.actionable)"上次状态："else""}${activity.label}"}){
             Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(horizontal=8.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
-                CompositionLocalProvider(LocalContentColor provides if(running)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("会话",Modifier.size(17.dp))}
-                Spacer(Modifier.width(10.dp));Text(thread.label(),Modifier.weight(1f),fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(running){Spacer(Modifier.width(8.dp));CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(5.dp))}
-                if(needs){Spacer(Modifier.width(6.dp));Text(state,fontSize=11.sp,color=if(state=="出错")MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary)}
-                val time=threadTime(thread);if(time.isNotBlank()){Spacer(Modifier.width(10.dp));Text(time,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                ThreadActivityMarker(activity,model.connected)
+                Spacer(Modifier.width(8.dp));Text(thread.label(),Modifier.weight(1f),fontSize=14.sp,fontWeight=if(activity.inFlight)FontWeight.Medium else FontWeight.Normal,maxLines=1,overflow=TextOverflow.Ellipsis)
+                if(activity.actionable){Spacer(Modifier.width(8.dp));Text((if(model.connected)""else"上次")+activity.label,fontSize=11.sp,fontWeight=FontWeight.Medium,color=accent)}
+                else{val time=threadTime(thread);if(time.isNotBlank()){Spacer(Modifier.width(10.dp));Text(time,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
             }
         }
         DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
             DropdownMenuItem(text={Text("重命名对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null,onClick={menu=false;rename=true})
-            DropdownMenuItem(text={Text(if(thread.optBoolean("archived"))"恢复对话"else"归档对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!running,onClick={menu=false;model.manageThread(thread,if(thread.optBoolean("archived"))"unarchive"else"archive")})
-            DropdownMenuItem(text={Text("删除对话",color=MaterialTheme.colorScheme.error)},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!running,onClick={menu=false;deleting=true})
+            DropdownMenuItem(text={Text(if(thread.optBoolean("archived"))"恢复对话"else"归档对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!activity.inFlight,onClick={menu=false;model.manageThread(thread,if(thread.optBoolean("archived"))"unarchive"else"archive")})
+            DropdownMenuItem(text={Text("删除对话",color=MaterialTheme.colorScheme.error)},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!activity.inFlight,onClick={menu=false;deleting=true})
         }
         }
     }

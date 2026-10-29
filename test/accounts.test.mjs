@@ -295,3 +295,86 @@ test('admins remove only the selected computer including their own without disru
   const event=(await f.call('/api/admin/events',{},f.root.token)).events.find(e=>e.type==='device.removed');
   assert.deepEqual(event.details.hostIds,[hosts[0].hostId]);
 });
+
+test('account deletion requires an administrator and exact account confirmation, and protects the administrator',async t=>{
+  const f=await setup(t),alice=await f.register('deleteguard');
+  const body={userId:alice.user.id,confirmUsername:'deleteguard'};
+  assert.equal((await f.post('/api/admin/users/delete',body)).status,401);
+  assert.equal((await f.post('/api/admin/users/delete',body,alice.phone.token)).status,403);
+  assert.equal((await f.post('/api/admin/users/delete',{},f.root.token)).status,400);
+  assert.equal((await f.post('/api/admin/users/delete',{...body,userId:'missing'},f.root.token)).status,404);
+  assert.equal((await f.post('/api/admin/users/delete',{...body,confirmUsername:'other'},f.root.token)).status,400);
+  assert.equal((await f.post('/api/admin/users/delete',{userId:f.root.user.id,confirmUsername:'owner'},f.root.token)).status,403);
+  assert((await f.call('/api/admin/users',{},f.root.token)).users.some(user=>user.id===alice.user.id));
+  await f.call('/api/admin/users/delete',body,f.root.token);
+  assert(!(await f.call('/api/admin/users',{},f.root.token)).users.some(user=>user.id===alice.user.id));
+  assert.equal((await f.post('/api/admin/users/delete',body,f.root.token)).status,404);
+  assert.equal((await f.call('/api/account/me',{},f.root.token)).user.role,'admin');
+});
+
+test('deleting an account atomically removes credentials, closes its routes, clears pending claims and never restores legacy access',async t=>{
+  const f=await setup(t),alice=await f.register('deleteduser'),bob=await f.register('keptuser');
+  await f.approve(alice.user);await f.approve(bob.user);
+  await f.call('/api/admin/users/computers',{userId:alice.user.id,limit:3},f.root.token);
+  await f.call('/api/account/me',{},alice.phone.token);await f.call('/api/account/me',{},bob.phone.token);
+  const desktop=await f.desktop('deleteduser'),computers=[f.host(),f.host()],other=f.host();
+  for(const computer of computers)await f.call('/api/account/hosts/enroll',computer,desktop.token);
+  await f.call('/api/account/hosts/enroll',other,(await f.desktop('keptuser')).token);
+  const mobile=secret();await f.call('/api/pair',{hostId:computers[0].hostId,pairCode:computers[0].pairCode,mobileToken:mobile},alice.phone.token);
+  await f.call('/api/pair/decision',{hostId:computers[0].hostId,fingerprint:digest(mobile).slice(0,12),accept:true},computers[0].desktopToken);
+  const anonymous=f.host(),pending=secret();await f.call('/api/desktop/prepare',anonymous);
+  await f.call('/api/pair',{hostId:anonymous.hostId,pairCode:anonymous.pairCode,mobileToken:pending},alice.phone.token);
+  await f.call('/api/account/security/report',{signals:['signature_mismatch'],certificate:'a'.repeat(64),version:'deletion-test'},alice.phone.token);
+  const connect=async(host,role,token,session)=>{
+    const ws=new WebSocket(f.defaults.relay.replace('https:','wss:')+'/relay',{ca:f.defaults.caCert,headers:{Authorization:`Bearer ${token}`,'X-Pocket-Host':host.hostId,'X-Pocket-Role':role,...(session?{'X-Pocket-Session':session}:{})}});
+    f.sockets.push(ws);await once(ws,'open');return ws;
+  };
+  const sockets=[await connect(computers[0],'desktop',computers[0].desktopToken),await connect(computers[0],'mobile',mobile,alice.phone.token),await connect(computers[1],'desktop',computers[1].desktopToken)];
+  const kept=await connect(other,'desktop',other.desktopToken);
+  const db=new DatabaseSync(f.dbPath);t.after(()=>db.close());
+  db.prepare('INSERT INTO account_legacy_mobile VALUES(?,?)').run(computers[0].hostId,digest(mobile));
+  const closed=sockets.map(ws=>once(ws,'close'));
+  await f.call('/api/admin/users/delete',{userId:alice.user.id,confirmUsername:'deleteduser'},f.root.token);
+  for(const close of closed)assert.equal((await close)[0],4003);
+  assert.equal(kept.readyState,WebSocket.OPEN);const pong=once(kept,'pong');kept.ping();await pong;
+  for(const token of [alice.phone.token,desktop.token])assert.equal((await f.post('/api/account/me',{},token)).status,401);
+  assert.equal((await f.post('/api/account/login',{username:'deleteduser',password:pass,client:'desktop',deviceId:secret()})).status,401);
+  assert.equal(db.prepare('SELECT * FROM accounts WHERE id=?').get(alice.user.id),undefined);
+  for(const table of ['account_sessions','account_phones','account_security_dedup'])assert.equal(db.prepare(`SELECT count(*) n FROM ${table} WHERE user_id=?`).get(alice.user.id).n,0);
+  for(const computer of computers){
+    const host=db.prepare('SELECT * FROM hosts WHERE id=?').get(computer.hostId);
+    assert.notEqual(host.desktop_hash,digest(computer.desktopToken));
+    for(const key of ['mobile_hash','mobile_name','pending_hash','pending_name','pair_hash','pair_expires'])assert.equal(host[key],null);
+    assert(db.prepare('SELECT user_id FROM account_hosts WHERE host_id=?').get(computer.hostId).user_id.startsWith('revoked:'));
+    assert.equal((await f.post('/api/hosts/status',{hostId:computer.hostId},computer.desktopToken)).status,401);
+  }
+  assert.equal(db.prepare('SELECT count(*) n FROM account_legacy_mobile').get().n,0);
+  const claim=db.prepare('SELECT * FROM mobile_claim_hosts WHERE host_id=?').get(anonymous.hostId);
+  assert.equal(claim.pending_user_id,null);assert.equal(claim.pending_session_hash,null);
+  assert.equal(db.prepare('SELECT pending_hash FROM hosts WHERE id=?').get(anonymous.hostId).pending_hash,null);
+  assert.equal((await f.post('/api/pair/decision',{hostId:anonymous.hostId,fingerprint:digest(pending).slice(0,12),accept:true},anonymous.desktopToken)).status,409);
+  const events=await f.call('/api/admin/events',{},f.root.token),event=events.events.find(e=>e.type==='account.deleted');
+  assert.equal(event.userId,alice.user.id);assert.equal(event.details.username,'deleteduser');assert.equal(event.details.computers,2);assert.equal(events.alerts,0);
+  await f.restartRelay();
+  assert.equal((await f.post('/api/account/me',{},alice.phone.token)).status,401);
+  const recreated=await f.register('deleteduser');assert.notEqual(recreated.user.id,alice.user.id);assert.equal(recreated.user.accessState,'pending');
+  assert.deepEqual((await f.call('/api/account/me',{},recreated.phone.token)).hosts,[]);
+  assert.equal((await f.call('/api/account/me',{},bob.phone.token)).hosts[0].id,other.hostId);
+});
+
+test('a failed account deletion rolls back every credential change and keeps connections alive',async t=>{
+  const f=await setup(t),alice=await f.register('rollbackdelete');await f.approve(alice.user);
+  const desktop=await f.desktop('rollbackdelete'),computer=f.host();await f.call('/api/account/hosts/enroll',computer,desktop.token);
+  const ws=new WebSocket(f.defaults.relay.replace('https:','wss:')+'/relay',{ca:f.defaults.caCert,headers:{Authorization:`Bearer ${computer.desktopToken}`,'X-Pocket-Host':computer.hostId,'X-Pocket-Role':'desktop'}});
+  f.sockets.push(ws);await once(ws,'open');
+  const db=new DatabaseSync(f.dbPath);t.after(()=>db.close());
+  db.exec("CREATE TRIGGER reject_deletion BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT,'simulated write failure'); END");
+  const body={userId:alice.user.id,confirmUsername:'rollbackdelete'};
+  assert.equal((await f.post('/api/admin/users/delete',body,f.root.token)).status,500);
+  assert.equal((await f.call('/api/account/me',{},alice.phone.token)).user.id,alice.user.id);
+  assert.equal((await f.call('/api/hosts/status',{hostId:computer.hostId},computer.desktopToken)).registered,true);
+  assert.equal(db.prepare('SELECT user_id FROM account_hosts WHERE host_id=?').get(computer.hostId).user_id,alice.user.id);
+  assert.equal(ws.readyState,WebSocket.OPEN);
+  assert(!(await f.call('/api/admin/events',{},f.root.token)).events.some(e=>e.type==='account.deleted'));
+  db.exec('DROP TRIGGER reject_deletion');await f.call('/api/admin/users/delete',body,f.root.token);
+});

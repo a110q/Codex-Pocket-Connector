@@ -130,6 +130,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
         operation("/api/admin/devices/remove",JSONObject().put("userId",id).put("device","computer").put("hostId",hostId)){notice="已移除所选电脑"}
     }
     fun computerLimit(id:String,limit:Int)=operation("/api/admin/users/computers",JSONObject().put("userId",id).put("limit",limit))
+    fun deleteAccount(id:String,username:String)=operation("/api/admin/users/delete",JSONObject().put("userId",id).put("confirmUsername",username)){users=users.filterNot{it.optString("id")==id};notice="账号 $username 已删除"}
     fun resetPassword(id:String,password:String)=operation("/api/admin/password/reset",JSONObject().put("userId",id).put("password",password))
     fun acknowledge(id:String)=operation("/api/admin/events/ack",JSONObject().put("id",id))
     fun changePassword(old:String,next:String)=operation("/api/account/password",JSONObject().put("currentPassword",old).put("password",next)){notice="登录密码已修改，其他设备需要重新登录"}

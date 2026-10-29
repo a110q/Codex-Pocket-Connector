@@ -1,3 +1,4 @@
+import { PRODUCT_VERSION } from './version.mjs';
 import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -55,8 +56,8 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         if (config) try { current = await currentStatus(config); } catch {}
         if(current?.mobileOnline && config?.hostId===rebindHostId) rebindHostId='';
         const missing = missingCapabilities(current);
-        return res.end(JSON.stringify({ version: JSON.parse(readFileSync(resolve(root,'package.json'),'utf8')).version, mode:mode(),relayService:profiles.info(),lanAddresses:lanAddresses(),platform: process.platform, installation: installation.state(), registered: !!config, name: config?.name ?? hostname(),  connected: !!(current?.desktopReady && current?.relayOnline && !missing.length), serviceRunning: !!current,
-          connecting: runtime.busy, lanPairingChanged: mode()==='lan'&&lanPairingChanged, rebindRequired: !!config && config.hostId===rebindHostId, mobileOnline: !!current?.mobileOnline, pairRequest: current?.pairRequest ?? null, error: current?.desktopReady && missing.length ? `当前 Codex 版本缺少所需接口：${missing.join('、')}，请更新连接器。` : current?.error || runtime.error || '',  pending: existsSync(active.enrollment) && !readJson(active.enrollment).completed && !readJson(active.enrollment).rejected }));
+        return res.end(JSON.stringify({ version: PRODUCT_VERSION, mode:mode(),relayService:profiles.info(),lanAddresses:lanAddresses(),platform: process.platform, installation: installation.state(), registered: !!config, name: config?.name ?? hostname(),  connected: !!(current?.desktopReady && current?.relayOnline && !missing.length), serviceRunning: !!current,
+          connecting: runtime.busy || !!(current && !current.desktopReady && (current.desktopConnecting || !current.error)), lanPairingChanged: mode()==='lan'&&lanPairingChanged, rebindRequired: !!config && config.hostId===rebindHostId, mobileOnline: !!current?.mobileOnline, pairRequest: current?.pairRequest ?? null, error: current?.desktopReady && missing.length ? `当前 Codex 版本缺少所需接口：${missing.join('、')}，请更新连接器。` : current?.error || runtime.error || '',  pending: existsSync(active.enrollment) && !readJson(active.enrollment).completed && !readJson(active.enrollment).rejected }));
       }
       if (req.method === 'GET' && url.pathname === '/api/pairing') {
         const active=activePaths();
