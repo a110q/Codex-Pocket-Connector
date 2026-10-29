@@ -41,11 +41,17 @@ class UiRedesignTest {
     private lateinit var backup:JSONObject
     private lateinit var peer:UiPeer
     private lateinit var model:PocketModel
+    private var testFontScale by mutableFloatStateOf(1f)
     @Before fun setup(){
         backup=SecureStore(context).load();peer=UiPeer()
         SecureStore(context).save(JSONObject().put("profile",peer.profile).put("appearance","light"))
         compose.runOnUiThread{compose.activity.enableEdgeToEdge();model=PocketModel(context);model.start()}
-        compose.setContent{PocketTheme(model.appearance){PocketApp(model,{},null,{})}}
+        compose.setContent{
+            val density=androidx.compose.ui.platform.LocalDensity.current
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density,testFontScale)){
+                PocketTheme(model.appearance){PocketApp(model,{},null,{})}
+            }
+        }
         until{model.connected&&model.projects.size==3}
     }
     @After fun cleanup(){try{compose.runOnUiThread{model.stop()}}finally{try{peer.close()}finally{SecureStore(context).save(backup)}}}
@@ -57,6 +63,18 @@ class UiRedesignTest {
         val uri=context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,values)!!
         context.contentResolver.openOutputStream(uri)!!.use{instrumentation.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it)}
         context.contentResolver.update(uri,ContentValues().apply{put(MediaStore.Images.Media.IS_PENDING,0)},null,null)
+    }
+    @Test fun connectionDiagnosticsRemainAvailableAfterRecoveryAndContainNoPairingSecrets(){
+        chat()
+        compose.onNodeWithContentDescription("对话更多操作").performClick()
+        compose.onNodeWithText("连接诊断").performScrollTo().performClick()
+        compose.onNodeWithText("连接与操作状态").assertIsDisplayed()
+        compose.onNodeWithText("hello.received",substring=true).assertExists()
+        Assert.assertFalse(model.connectionDetails.contains(peer.profile.getString("key")))
+        Assert.assertFalse(model.connectionDetails.contains(peer.profile.getString("mobileToken")))
+        compose.onNodeWithText("复制诊断").assertIsEnabled().performClick()
+        compose.onNodeWithText("知道了").performClick()
+        Assert.assertFalse(peer.calls.any{it.optString("action")=="message.send"})
     }
     @Test fun projectsSearchCollapseAndCreateReachTheAuthenticatedPeer(){
         shot("01-workspace")
@@ -72,7 +90,8 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("新对话指令").performTextInput("本地 UI 验收新对话")
         shot("06-new-chat")
         compose.onNodeWithText("开始对话").performClick()
-        until{peer.calls.any{it.optString("action")=="thread.create"}&&model.selected?.optString("id")=="ui-created"&&!model.loadingThread}
+        try{until{peer.calls.any{it.optString("action")=="thread.create"}&&model.selected?.optString("id")=="ui-created"&&!model.loadingThread}}
+        catch(e:Throwable){throw AssertionError("Create did not finish: selected=${model.selected}, loading=${model.loadingThread}, busy=${model.busy}, pending=${model.pendingOperation}, error=${model.error}, calls=${peer.calls.map{it.optString("action")}}",e)}
         Assert.assertEquals("p1",peer.calls.first{it.optString("action")=="thread.create"}.getJSONObject("args").getString("projectId"))
     }
     @Test fun compactWorkspaceKeepsSearchAndNavigationAccessible(){
@@ -107,7 +126,7 @@ class UiRedesignTest {
         until{model.detailDone}
         Assert.assertTrue(model.detailChunks.joinToString("").contains("LOCAL UI TEST"))
         compose.onNodeWithContentDescription("关闭记录详情").performClick()
-        compose.onNodeWithContentDescription("选择模型").performClick()
+        compose.onNodeWithContentDescription("打开模型与权限设置面板").performClick()
         compose.onNodeWithText("低",useUnmergedTree=true).performClick()
         shot("04-conversation-settings")
         compose.onNodeWithText("gpt-6-luna").performScrollTo().performClick()
@@ -115,10 +134,10 @@ class UiRedesignTest {
         compose.onNodeWithText("保存设置").performClick()
         until{!model.busy&&!model.loadingThread&&model.pendingOperation==null&&model.snapshot?.optJSONObject("thread")?.optJSONObject("settings")?.optString("model")=="gpt-6-luna"}
         Assert.assertEquals("read-only",peer.settings.getString("permissionMode"))
-        compose.onNodeWithContentDescription("选择访问权限").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("打开模型与权限设置面板").assertIsEnabled().performClick()
         shot("09-settings-reopen")
-        compose.waitUntil(5000){compose.onAllNodesWithText("对话设置").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithText("对话设置").assertIsDisplayed()
+        compose.waitUntil(5000){compose.onAllNodesWithText("运行配置").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("运行配置").assertIsDisplayed()
         compose.onNodeWithText("完全访问").performScrollTo().performClick()
         compose.onNodeWithText("保存设置").performClick()
         until{!model.busy&&model.snapshot?.optJSONObject("thread")?.optJSONObject("settings")?.optString("permissionMode")=="full-access"}
@@ -127,6 +146,53 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("发送").performClick()
         until{peer.calls.any{it.optString("action")=="message.send"}&&!model.busy}
         Assert.assertEquals("本地 UI 验收消息",peer.calls.first{it.optString("action")=="message.send"}.getJSONObject("args").getString("text"))
+    }
+    @Test fun referenceStyleRunsRealChatActionsFromBottomSheets(){
+        executionTranscript(listOf(execution("check","检查连接"),execution("retry","adb reverse tcp:8765 tcp:8765 → error: closed (exit 1)","failed").put("title","本机调试隧道未就绪").put("exitCode",1),execution("recover","恢复连接","inProgress")),reply=false)
+        peer.messages.put(JSONObject().put("id","qa-reply").put("turnId","ui-turn").put("role","assistant").put("text","连接恢复逻辑已调整，正在检查断网重连和消息回执。\n\n> • 心跳超时阈值由 `30s` 收敛为指数退避 `2s → 16s`  \n> • 断线期间离线队列缓存序列号，重连后校验 ACK 回执"))
+        peer.reference=true;peer.approval=true;peer.active=true
+        peer.settings.put("model","gpt-6.1-sol")
+        compose.runOnUiThread{model.renameComputer(peer.profile.getString("hostId"),"工作电脑");model.notice=null}
+        chat()
+        compose.onNode(hasScrollToIndexAction()).performTouchInput{swipeDown()}
+        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
+        shot("reference-chat")
+        compose.onNodeWithContentDescription("快速切换电脑").assertIsDisplayed().performClick()
+        compose.onNodeWithText("切换连接的电脑").assertIsDisplayed();shot("reference-hosts")
+        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        compose.onNodeWithContentDescription("打开模型与权限设置面板").performClick()
+        compose.onNodeWithText("运行配置").assertIsDisplayed();shot("reference-settings")
+        compose.onNodeWithText("完成设置").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("添加附件").performClick()
+        compose.onNodeWithText("引用电脑文件").assertIsDisplayed();shot("reference-attachments")
+        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        compose.onNodeWithContentDescription("对话更多操作").performClick()
+        compose.onNodeWithText("打开项目文件").assertIsDisplayed()
+        compose.onNodeWithText("打开网页预览").assertIsDisplayed();shot("reference-more")
+        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        compose.onNodeWithContentDescription("停止").assertIsDisplayed().assertIsEnabled().performClick()
+        until{peer.calls.any{it.optString("action")=="turn.stop"}&&!model.busy}
+        compose.onNodeWithContentDescription("聊天输入框").performTextInput("补充测试要求")
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        until{peer.calls.any{it.optString("action")=="message.send"}&&!model.busy}
+        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("允许本次"))
+        compose.onNodeWithText("允许本次").performClick()
+        until{peer.calls.any{it.optString("action")=="approval.respond"}&&!model.busy}
+        compose.runOnUiThread{model.updateAppearance("dark")}
+        shot("reference-dark")
+    }
+    @Test fun largeTextKeepsConfigurationAndSendAccessible(){
+        executionTranscript(listOf(execution("running","检查连接","inProgress")),reply=false)
+        peer.active=true;peer.reference=true;chat()
+        compose.runOnUiThread{testFontScale=1.5f}
+        compose.onNodeWithContentDescription("打开模型与权限设置面板").assertIsDisplayed().performClick()
+        compose.onNodeWithText("完全访问").performScrollTo().assertIsDisplayed()
+        shot("large-text-settings")
+        compose.onNodeWithContentDescription("关闭对话设置").performClick()
+        compose.onNodeWithContentDescription("聊天输入框").performClick().performTextInput("大字号消息")
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed().assertIsEnabled()
+        shot("large-text-keyboard")
     }
     private fun execution(id:String,title:String,status:String="completed",turn:String="ui-turn")=JSONObject()
         .put("id",id).put("turnId",turn).put("key","$turn:$id").put("role","tool")
@@ -141,8 +207,8 @@ class UiRedesignTest {
     @Test fun executionGroupsCollapseWithoutHidingRepliesAndOpenFullDetails(){
         executionTranscript(listOf(execution("check","检查连接"),execution("retry","首次连接检查","failed"),execution("recover","恢复连接").put("role","summary").put("type","reasoning").put("command",JSONObject.NULL).put("title","思考摘要")))
         chat()
-        compose.onNodeWithText("执行过程 · 3 条").assertIsDisplayed()
-        compose.onNodeWithText("1 项失败或拒绝").assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 3 项").assertIsDisplayed()
+        compose.onNodeWithText("1 异常").assertIsDisplayed()
         compose.onNodeWithText("命令执行 · 检查连接").assertDoesNotExist()
         onView(withText("连接已恢复，可以继续工作。")).check(androidx.test.espresso.assertion.ViewAssertions.matches(isDisplayed()))
         shot("tool-process-collapsed")
@@ -169,12 +235,12 @@ class UiRedesignTest {
         val running=execution("check","检查连接","inProgress")
         executionTranscript(listOf(running,execution("read","读取状态")),reply=false)
         chat()
-        compose.onNodeWithText("执行过程 · 2 条").assertIsDisplayed()
-        compose.onNodeWithText("1 项进行中").assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 2 项").assertIsDisplayed()
+        compose.onNodeWithText("1 运行中").assertIsDisplayed()
         val tail=execution("next","重新检查","inProgress")
         peer.messages.put(tail);peer.publish()
         until{model.snapshot!!.getJSONArray("messages").length()==4}
-        compose.onNodeWithText("执行过程 · 3 条").assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 3 项").assertIsDisplayed()
         compose.onNodeWithText("命令执行 · 检查连接").assertDoesNotExist()
         compose.onNodeWithContentDescription("展开执行过程").performClick()
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("命令执行 · 重新检查"))
@@ -187,13 +253,13 @@ class UiRedesignTest {
         compose.onNodeWithText("已完成").assertIsDisplayed()
         peer.messages.put(execution("last","检查文件"));peer.publish()
         until{model.snapshot!!.getJSONArray("messages").length()==5}
-        compose.onNodeWithText("执行过程 · 4 条").assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 4 项").assertIsDisplayed()
         compose.onNodeWithText("命令执行 · 检查文件").assertDoesNotExist()
     }
     @Test fun executionGroupsStayIndependentBetweenTurnsAndConversations(){
         executionTranscript(listOf(execution("first","第一步"),execution("second","第二步"),execution("other","另一轮",turn="other-turn")))
         chat()
-        compose.onNodeWithText("执行过程 · 2 条").performClick()
+        compose.onNodeWithText("执行过程 · 2 项").performClick()
         compose.onNodeWithContentDescription("收起执行过程").assertExists()
         compose.onNodeWithContentDescription("展开执行过程").assertExists()
         compose.onNodeWithText("命令执行 · 另一轮").assertDoesNotExist()
@@ -213,7 +279,8 @@ class UiRedesignTest {
         compose.onNodeWithText("命令执行 · 执行步骤 80").assertIsDisplayed()
         compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("收起执行过程"))
         compose.onNodeWithContentDescription("收起执行过程").performClick()
-        compose.onNodeWithText("执行过程 · 80 条").assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 80 项").assertIsDisplayed()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("允许本次"))
         compose.onNodeWithText("允许本次").performClick()
         until{peer.calls.any{it.optString("action")=="approval.respond"}&&!model.busy}
         Assert.assertEquals(82,model.snapshot!!.getJSONArray("messages").length())
@@ -221,12 +288,12 @@ class UiRedesignTest {
     }
     @Test fun longModelAndMultilineInputKeepSendReachableWithKeyboard(){
         peer.settings.put("model","gpt-6.1-sol-a-very-long-model-name-for-layout")
-        chat();compose.onNodeWithContentDescription("选择模型").assertIsDisplayed()
+        chat();compose.onNodeWithContentDescription("打开模型与权限设置面板").assertIsDisplayed()
         compose.onNodeWithContentDescription("聊天输入框").performClick().performTextInput("第一行指令\n第二行补充\n第三行条件\n第四行说明\n第五行结果\n第六行仍可编辑")
         compose.onNodeWithContentDescription("发送").assertIsDisplayed().assertIsEnabled()
         shot("10-multiline-keyboard")
         instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
-        compose.waitUntil(5000){compose.onAllNodesWithContentDescription("选择模型").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(5000){compose.onAllNodesWithContentDescription("打开模型与权限设置面板").fetchSemanticsNodes().isNotEmpty()}
         shot("11-long-model-composer")
     }
     @Test fun offlinePendingOperationDoesNotCollapseTheComposerBehindTheKeyboard(){
@@ -334,6 +401,7 @@ class UiRedesignTest {
         private val key=Encoding.secret();private val codec=UiDesktopCodec(key,host)
         val profile:JSONObject
         var approval=false
+        var reference=false
         val settings=JSONObject().put("model","gpt-6.1-sol").put("reasoningEffort","high").put("permissionMode","auto")
         val projects=JSONArray().put(JSONObject().put("projectId","p1").put("title","codex_android").put("path","/workspace/codex_android")).put(JSONObject().put("projectId","p2").put("title","个人网站").put("path","/workspace/website")).put(JSONObject().put("projectId","p3").put("title","数据分析").put("path","/workspace/analysis"))
         val threads=JSONArray()
@@ -385,7 +453,7 @@ class UiRedesignTest {
         private fun snapshot(id:String):JSONObject{
             val thread=JSONObject(threads.optJSONObject(0).toString()).put("id",id).put("settings",JSONObject(settings.toString())).put("cwd","/workspace/codex_android")
             if(active)thread.put("activeTurnId","qa-active-turn")
-            return JSONObject().put("thread",thread).put("messages",JSONArray(messages.toString())).put("artifacts",artifacts).put("historyComplete",true).put("history",JSONObject().put("total",messages.length()).put("hasEarlier",false)).put("requests",if(approval)JSONArray().put(JSONObject().put("id","ui-approval").put("method","item/commandExecution/requestApproval").put("params",JSONObject().put("command","npm test").put("reason","仅用于隔离界面验收")))else JSONArray())
+            return JSONObject().put("thread",thread).put("messages",JSONArray(messages.toString())).put("artifacts",if(reference)JSONArray()else artifacts).put("historyComplete",true).put("history",JSONObject().put("total",messages.length()).put("hasEarlier",false)).put("requests",if(approval)JSONArray().put(JSONObject().put("id","ui-approval").put("method","item/commandExecution/requestApproval").put("params",JSONObject().put("command",if(reference)"./gradlew :app:testDebugUnitTest --tests \"*ReconnectAckTest\""else"npm test").put("reason","仅用于隔离界面验收").put("cwd","~/Projects/codex_android")))else JSONArray())
         }
         private fun handle(action:String,args:JSONObject):JSONObject=when(action){
             "projects.list"->JSONObject().put("projects",projects)
@@ -395,6 +463,7 @@ class UiRedesignTest {
             "thread.create"->JSONObject().put("threadId","ui-created").put("hostId","local")
             "thread.settings.update"->{listOf("model","reasoningEffort","permissionMode").forEach{if(args.has(it))settings.put(it,args.get(it))};JSONObject().put("verified",true)}
             "message.send"->JSONObject().put("sent",true)
+            "turn.stop"->{active=false;JSONObject().put("interrupted",true)}
             "message.read"->JSONObject().put("text","LOCAL UI TEST\n完整工具记录，来自隔离服务。").put("nextOffset",30).put("done",true)
             "approval.respond"->{approval=false;JSONObject().put("accepted",true)}
             "file.read"->{require(args.getString("threadId").startsWith("ui-"));val bytes=files[args.getString("artifactId")]!!;val offset=args.optInt("offset");val end=(offset+192*1024).coerceAtMost(bytes.size);JSONObject().put("data",android.util.Base64.encodeToString(bytes.copyOfRange(offset,end),android.util.Base64.NO_WRAP)).put("total",bytes.size).put("nextOffset",end).put("done",end==bytes.size)}

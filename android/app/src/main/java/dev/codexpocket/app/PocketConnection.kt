@@ -19,7 +19,7 @@ import javax.net.ssl.X509TrustManager
 
 class PairingHttpException(val status:Int,message:String):Exception(message)
 
-class PocketConnection(private val profile: JSONObject, private val onStatus: (ConnectionState) -> Unit, private val onEvent: (JSONObject) -> Unit, private val handshakeTimeoutMillis: Long = 20000, private val probeIntervalMillis:Long = 10000, private val probeTimeoutMillis:Long = 10000) {
+class PocketConnection(private val profile: JSONObject, private val onStatus: (ConnectionState) -> Unit, private val onEvent: (JSONObject) -> Unit, private val handshakeTimeoutMillis: Long = 20000, private val probeIntervalMillis:Long = 10000, private val probeTimeoutMillis:Long = 10000, private val onDiagnostic:(String)->Unit = {}) {
     private class Pending(val callback:(JSONObject?,String?)->Unit) { var timeout:ScheduledFuture<*>?=null }
     private val pending = ConcurrentHashMap<String, Pending>()
     private var socket: WebSocket? = null
@@ -29,21 +29,26 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
     private val timeouts = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy=true }
     private val ended = AtomicBoolean(false)
     private var handshake: ScheduledFuture<*>? = null
+    private var helloRetry:ScheduledFuture<*>?=null
+    private var helloAttempts=0
+    private val startedAt=System.nanoTime()
     private var probe:ScheduledFuture<*>?=null
     private var probeDeadline:ScheduledFuture<*>?=null
+    private var probeRetry:ScheduledFuture<*>?=null
     private var probeId:String?=null
     private var welcome:JSONObject?=null
     private var supportsProbe=false
     @Volatile var ready = false; private set
 
     fun connect() {
+        note("socket.connect mode=${if(isLanPairing(profile))"lan"else"cloud"}")
         onStatus(ConnectionState.CONNECTING)
         val url = profile.getString("relay").replaceFirst("https://", "wss://").trimEnd('/') + "/relay"
         val request = Request.Builder().url(url).header("Authorization", "Bearer ${profile.getString("mobileToken")}")
             .header("X-Pocket-Host", profile.getString("hostId")).header("X-Pocket-Role", "mobile")
             .apply { profile.optString("accountToken").takeIf { it.isNotBlank() }?.let { header("X-Pocket-Session",it) } }.build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) { synchronized(this@PocketConnection){if(ended.get()){webSocket.cancel();return};onStatus(ConnectionState.RELAY_CONNECTED);armHandshake()} }
+            override fun onOpen(webSocket: WebSocket, response: Response) { synchronized(this@PocketConnection){if(ended.get()){webSocket.cancel();return};note("socket.open");onStatus(ConnectionState.RELAY_CONNECTED);armHandshake();beginHello(webSocket)} }
             override fun onMessage(webSocket: WebSocket, text: String) {
                 synchronized(this@PocketConnection){
                 if (ended.get()) return
@@ -51,18 +56,24 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
                     val frame = JSONObject(text)
                     if (frame.optString("type") == "status") {
                         if (frame.optBoolean("peerOnline")) {
+                            note("peer.online")
+                            // The initial hello is already in flight. A relay
+                            // status must not restart its deadline or duplicate it.
+                            if(welcome==null&&helloAttempts>0){onStatus(ConnectionState.CONNECTING_DESKTOP);return}
                             cancelProbe();welcome=null;supportsProbe=false
                             ready = false
                             onStatus(ConnectionState.CONNECTING_DESKTOP);armHandshake()
-                            sendHello(webSocket)
-                        } else { cancelHandshake();cancelProbe();ready = false; onStatus(ConnectionState.COMPUTER_OFFLINE);failPending("电脑已离线；操作结果待确认，请恢复连接后检查") }
+                            beginHello(webSocket)
+                        } else { note("peer.offline");cancelHandshake();cancelHelloRetry();helloAttempts=0;cancelProbe();welcome=null;ready = false; onStatus(ConnectionState.COMPUTER_OFFLINE);failPending("电脑已离线；操作结果待确认，请恢复连接后检查") }
                         return
                     }
                     val payload = crypto.decrypt(frame)
                     if (payload.optString("channel") != channel) return
                     when (payload.optString("type")) {
                         "hello" -> {
-                            cancelHandshake();welcome=payload;supportsProbe=payload.optJSONObject("capabilities")?.optBoolean("connection.ping")==true
+                            note("hello.received ready=${payload.optBoolean("desktopReady")} attempts=$helloAttempts")
+                            cancelHandshake();cancelHelloRetry();welcome=payload;supportsProbe=payload.optJSONObject("capabilities")?.optBoolean("connection.ping")==true
+                            if(payload.optString("connectionError")=="clock-skew"){onEvent(payload);finish(ConnectionState.CLOCK_SKEW);return}
                             ready = payload.optBoolean("desktopReady"); onStatus(if (ready) ConnectionState.READY else ConnectionState.DESKTOP_UNAVAILABLE); onEvent(payload);scheduleProbe()
                         }
                         "pong" -> acceptProbe(payload)
@@ -75,23 +86,31 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
                             onEvent(payload)
                         }
                     }
-                } catch (_: Exception) { finish(ConnectionState.INVALID_DATA) }
+                } catch (e: Exception) { note("frame.invalid ${e.javaClass.simpleName}");finish(ConnectionState.INVALID_DATA) }
                 }
             }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { finish(when(response?.code){401->ConnectionState.AUTH_FAILED;403->ConnectionState.ACCESS_DENIED;else->ConnectionState.RECONNECTING}) }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { finish(when(code){4000->ConnectionState.REPLACED;4001->ConnectionState.REVOKED;4003->ConnectionState.ACCESS_DENIED;else->ConnectionState.CLOSED}) }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { note("socket.failure ${t.javaClass.simpleName} http=${response?.code}");finish(when(response?.code){401->ConnectionState.AUTH_FAILED;403->ConnectionState.ACCESS_DENIED;else->ConnectionState.RECONNECTING}) }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { note("socket.closed code=$code");finish(when(code){4000->ConnectionState.REPLACED;4001->ConnectionState.REVOKED;4003->ConnectionState.ACCESS_DENIED;else->ConnectionState.CLOSED}) }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         })
     }
     @Synchronized private fun armHandshake() {
         if(ended.get())return
         handshake?.cancel(false)
-        handshake=timeouts.schedule({finish(ConnectionState.HANDSHAKE_TIMEOUT)},handshakeTimeoutMillis,TimeUnit.MILLISECONDS)
+        handshake=timeouts.schedule({note("hello.timeout attempts=$helloAttempts");finish(ConnectionState.HANDSHAKE_TIMEOUT)},handshakeTimeoutMillis,TimeUnit.MILLISECONDS)
     }
     @Synchronized private fun cancelHandshake(){handshake?.cancel(false);handshake=null}
     @Synchronized private fun sendPayload(payload:JSONObject,target:WebSocket?=socket):Boolean = !ended.get()&&target?.send(crypto.encrypt(payload.put("channel",channel)))==true
-    private fun sendHello(target:WebSocket?=socket){if(!sendPayload(JSONObject().put("type","hello").put("sentAt",System.currentTimeMillis()),target))finish(ConnectionState.RECONNECTING)}
-    @Synchronized private fun cancelProbe(){probe?.cancel(false);probe=null;probeDeadline?.cancel(false);probeDeadline=null;probeId=null}
+    private fun note(event:String){try{onDiagnostic("${java.time.Instant.now()} +${(System.nanoTime()-startedAt)/1000000}ms $event")}catch(_:Exception){}}
+    @Synchronized private fun cancelHelloRetry(){helloRetry?.cancel(false);helloRetry=null}
+    @Synchronized private fun beginHello(target:WebSocket?=socket){
+        cancelHelloRetry();helloAttempts=0;sendHello(target)
+        if(ended.get())return
+        val interval=(handshakeTimeoutMillis/4).coerceIn(100,3000)
+        helloRetry=timeouts.scheduleWithFixedDelay({synchronized(this){if(!ended.get()&&welcome==null)sendHello()}},interval,interval,TimeUnit.MILLISECONDS)
+    }
+    private fun sendHello(target:WebSocket?=socket){helloAttempts++;note("hello.send attempt=$helloAttempts");if(!sendPayload(JSONObject().put("type","hello").put("sentAt",System.currentTimeMillis()),target))finish(ConnectionState.RECONNECTING)}
+    @Synchronized private fun cancelProbe(){probe?.cancel(false);probe=null;probeDeadline?.cancel(false);probeDeadline=null;probeRetry?.cancel(false);probeRetry=null;probeId=null}
     @Synchronized private fun scheduleProbe(){
         if(ended.get())return
         // An outstanding end-to-end deadline must survive unrelated events.
@@ -103,17 +122,24 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
                 if(ended.get())return@synchronized
                 if(supportsProbe){
                     val id=UUID.randomUUID().toString();probeId=id
-                    probeDeadline=timeouts.schedule({finish(ConnectionState.HANDSHAKE_TIMEOUT)},probeTimeoutMillis,TimeUnit.MILLISECONDS)
+                    note("ping.send")
+                    probeDeadline=timeouts.schedule({note("pong.timeout");finish(ConnectionState.HEARTBEAT_TIMEOUT)},probeTimeoutMillis,TimeUnit.MILLISECONDS)
                     if(!sendPayload(JSONObject().put("type","ping").put("id",id)))finish(ConnectionState.RECONNECTING)
+                    if(!ended.get()){
+                        val interval=(probeTimeoutMillis/3).coerceIn(100,3000)
+                        probeRetry=timeouts.scheduleWithFixedDelay({synchronized(this){if(!ended.get()&&probeId==id){note("ping.retry");if(!sendPayload(JSONObject().put("type","ping").put("id",id)))finish(ConnectionState.RECONNECTING)}}},interval,interval,TimeUnit.MILLISECONDS)
+                    }
                 }else{
                     // Older connectors do not announce recovery reliably.
-                    armHandshake();sendHello()
+                    welcome=null;armHandshake();beginHello()
                 }
             }
         },if(supportsProbe)probeIntervalMillis else 5000,TimeUnit.MILLISECONDS)
     }
     @Synchronized private fun acceptProbe(payload:JSONObject){
         if(probeId==null||payload.optString("id")!=probeId)return
+        note("pong.received ready=${payload.optBoolean("desktopReady")}")
+        probeRetry?.cancel(false);probeRetry=null
         probeDeadline?.cancel(false);probeDeadline=null;probeId=null
         if(payload.optBoolean("desktopReady")){if(!ready)markReady()}
         else if(ready){ready=false;onStatus(ConnectionState.DESKTOP_UNAVAILABLE);failPending("电脑上的 Codex 已断开；操作结果待确认")}
@@ -129,7 +155,7 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
     }
     @Synchronized private fun finish(state:ConnectionState) {
         if(!ended.compareAndSet(false,true))return
-        ready=false;cancelHandshake();cancelProbe();socket?.cancel();timeouts.shutdownNow()
+        note("connection.end state=${state.name}");ready=false;cancelHandshake();cancelHelloRetry();cancelProbe();socket?.cancel();timeouts.shutdownNow()
         client.dispatcher.cancelAll();client.connectionPool.evictAll()
         onStatus(state)
         failPending("连接中断；操作结果待确认，请刷新会话后检查")
@@ -146,7 +172,7 @@ class PocketConnection(private val profile: JSONObject, private val onStatus: (C
     }
     @Synchronized fun close() {
         if(!ended.compareAndSet(false,true))return
-        cancelHandshake();cancelProbe();socket?.cancel(); socket = null; ready = false
+        note("connection.pause");cancelHandshake();cancelHelloRetry();cancelProbe();socket?.cancel(); socket = null; ready = false
         failPending("连接已暂停；操作结果待确认，返回 App 后请刷新检查")
         client.dispatcher.cancelAll();client.connectionPool.evictAll();timeouts.shutdownNow()
     }

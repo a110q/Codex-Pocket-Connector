@@ -7,7 +7,7 @@ import { StandaloneAdapter } from '../standalone-adapter.mjs';
 import { readFileSync } from 'node:fs';
 
 // Unit fixtures must never discover or subscribe to the user's real desktop.
-const fixtureAdapter = options => new StandaloneAdapter({ ipcPath: '/codex-pocket-tests/no-ipc.sock', ...options });
+const fixtureAdapter = options => new StandaloneAdapter({ ipcPath: '/codex-pocket-tests/no-ipc.sock', runtimeCatalog: false, ...options });
 
 test('stdio connects without a caller chat, handles partial frames, paging, errors, timeouts and notifications', async t => {
   const client = new AppServerClient({ binary:process.execPath, env:{...process.env,CODEX_THREAD_ID:'private-thread',CODEX_APP_TOOLS_PIPE_PATH:'private-pipe'}, timeoutMs:1000, spawnProcess:(binary,args,opts)=>spawn(binary,['test/support/app-server-fixture.mjs'],opts) });
@@ -45,6 +45,41 @@ class Server extends EventEmitter {
   }
   send(value){this.replies.push(value)}close(){}
 }
+
+test('unopened desktop chats get live runtime summaries instead of a separate server notLoaded status', async t => {
+  const server = new Server();
+  server.pages = async method => { server.calls.push({method}); return [{id:'qa', status:{type:'notLoaded'}, updatedAt:1}]; };
+  let status='active'; const calls=[];
+  const reader={async connect(){calls.push('connect')},async tool(name,args){calls.push({name,args});return {threads:[{id:'qa',hostId:'local',kind:'codex',status}],pinnedThreads:[]}},close(){}};
+  const a=fixtureAdapter({server,runtimeReader:reader});t.after(()=>a.close());
+  a.localCatalog=async()=>({threads:[{id:'qa',status:'unknown',projectId:'project',membershipKnown:true}],localComplete:true});
+  assert.equal((await a.listThreads()).threads[0].status,'active');
+  assert.equal(a.snapshots.size,0);assert.equal(a.subscriptions.size,0);
+  status='waitingForApproval';assert.equal((await a.listThreads()).threads[0].status,'waitingForApproval');
+  status='idle';assert.equal((await a.listThreads()).threads[0].status,'idle');
+  assert(server.calls.every(c=>c.method==='thread/list'),'summary polling never reads or resumes histories');
+  assert.equal(calls.filter(c=>c.name==='list_threads').length,3);
+  assert.equal((await a.listThreads()).threads[0].projectId,'project');
+});
+
+test('Pocket-owned runtime comes from its own process and replaces active status on completion', async t => {
+  const server=new Server();server.pages=async()=>[{id:'qa',status:{type:'notLoaded'},updatedAt:1}];
+  let status='active';const requests=[];
+  const own={async request(method,args){requests.push({method,args});return {thread:{status:{type:status}}}},close(){}};
+  const a=fixtureAdapter({server,catalog:false});t.after(()=>a.close());a.ownedThreads.add('qa');a.threadServers.set('qa',own);
+  assert.equal((await a.listThreads()).threads[0].status,'active');
+  status='idle';assert.equal((await a.listThreads()).threads[0].status,'idle');
+  assert(requests.every(c=>c.method==='thread/read'&&c.args.includeTurns===false));
+});
+
+test('missing desktop runtime retains unknown evidence and never imports another host or ChatGPT status', async t => {
+  const server=new Server();server.pages=async()=>[{id:'qa',status:{type:'notLoaded'},updatedAt:1}];
+  let unavailable=false;
+  const reader={async connect(){if(unavailable)throw Error('offline')},async tool(){return {threads:[{id:'qa',kind:'chatgpt',status:'active'},{id:'qa',hostId:'remote',status:'active'}]}},close(){}};
+  const a=fixtureAdapter({server,catalog:false,runtimeReader:reader});t.after(()=>a.close());
+  assert.equal((await a.listThreads()).threads[0].status,'notLoaded');
+  unavailable=true;assert.equal((await a.listThreads()).threads[0].status,'notLoaded');
+});
 
 function publicCreateFixture(t, options = {}) {
   class PublicServer extends Server {
@@ -209,7 +244,7 @@ test('sending after desktop IPC disconnect reconnects and follows the existing d
   assert(calls.includes('connect')); assert(calls.includes('thread-follower-read-model-settings'));
   assert(!calls.includes('thread-follower-update-thread-settings'));
   assert.equal(calls.filter(c => c === 'thread-follower-start-turn').length, 1);
-  assert.equal(server.calls.length, 0); assert.equal(a.ownedThreads.size, 0);
+  assert(server.calls.every(call => call.method === 'thread/queue/list')); assert.equal(a.ownedThreads.size, 0);
 });
 
 test('a writer acquired during discovery is followed after a refused resume without duplicate submission', async t => {

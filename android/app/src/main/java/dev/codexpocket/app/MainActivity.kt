@@ -222,7 +222,7 @@ class MainActivity : ComponentActivity() {
         }}
     ){padding->
         Column(Modifier.fillMaxSize().padding(if(model.selected==null)padding else PaddingValues()).imePadding()){
-            if(model.selected!=null)key(model.selected?.optString("hostId"),model.selected?.optString("id")){ChatScreen(model,snack)}
+            if(model.selected!=null)key(model.selected?.optString("hostId"),model.selected?.optString("id")){ChatScreen(model,snack,onComputers={model.back();tab=2})}
             else{
                 PendingCard(model);model.error?.let{ErrorBanner(it){model.error=null}}
                 if(model.pairing&&tab !in 2..5)PairingWaiting(model)
@@ -283,7 +283,12 @@ class MainActivity : ComponentActivity() {
             TextButton(onClick={details=true}){Text("详情",fontSize=12.sp)}
         }
     }
-    if(details)AlertDialog(onDismissRequest={details=false},title={Text("连接与操作状态")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){Text(model.status);model.error?.let{Text(it)};if(!model.connected)Text("电脑、Codex 与连接器需保持运行。恢复连接后会重新读取会话；草稿会保留。",fontSize=12.sp)}},confirmButton={TextButton(onClick={details=false;model.error=null}){Text("知道了")}})
+    if(details)ConnectionDetailsDialog(model){details=false}
+}
+
+@Composable private fun ConnectionDetailsDialog(model:PocketModel,onDismiss:()->Unit){
+    val clipboard=LocalClipboard.current;val scope=rememberCoroutineScope();val log=remember{model.connectionDetails}
+    AlertDialog(onDismissRequest=onDismiss,title={Text("连接与操作状态")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){Text(model.status);model.error?.let{Text(it)};if(!model.connected)Text("电脑、Codex 与连接器需保持运行。恢复连接后会重新读取会话；草稿会保留。",fontSize=12.sp);SelectionContainer{Text(log,fontSize=11.sp)}}},confirmButton={TextButton(onClick=onDismiss){Text("知道了")}},dismissButton={TextButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("连接诊断",model.status+"\n"+log)))}}){Text("复制诊断")}})
 }
 
 
@@ -301,14 +306,18 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     };DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){DropdownMenuItem(text={Text(defaultLabel)},onClick={onChange(null);expanded=false});options.forEach{(id,name)->DropdownMenuItem(text={Text(name)},onClick={onChange(id);expanded=false})}} }
 }
 
-@Composable fun ChatScreen(model:PocketModel,snackbar:SnackbarHostState?=null) {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable fun ChatScreen(model:PocketModel,snackbar:SnackbarHostState?=null,onComputers:()->Unit={}) {
     val thread=model.selected?:return;val focus=LocalFocusManager.current
     val snapshot=model.snapshot;val messages=snapshot?.optJSONArray("messages").objects();val list=rememberLazyListState()
     val blocks=transcriptBlocks(messages,key={it.optString("turnId")+":"+it.optString("id")},turn={it.optString("turnId")},execution={it.optString("role") in listOf("tool","summary")})
     var expandedGroups by rememberSaveable(model.profile?.optString("relay"),model.profile?.optString("hostId"),thread.optString("id")){mutableStateOf(emptyList<String>())}
-    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}
+    // Keep failures visible even when the routine execution trace is folded.
+    val lastBlockByTurn=buildMap<String,Int>{blocks.forEachIndexed{index,block->block.records.forEach{put(it.optString("turnId"),index)}}}
+    val failuresByBlock=messages.filter(::failedExecution).groupBy{lastBlockByTurn[it.optString("turnId")]}
+
+    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}+failuresByBlock.values.sumOf{it.size}
     val chatScope=rememberCoroutineScope()
-    val pickImages=rememberImagePicker(model,thread.getString("id"))
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
     var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
     var addressFocused by remember { mutableStateOf(false) }
@@ -322,6 +331,8 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     BackHandler(enabled=browserFullscreen){focus.clearFocus();model.expandPreview(false)}
     val requests=snapshot?.optJSONArray("requests").objects();val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=!activeId.isNullOrBlank()&&activeId!="null"
     val settings=snapshot?.optJSONObject("thread")?.optJSONObject("settings")?:JSONObject()
+    val history=snapshot?.optJSONObject("history")
+    val historyNotice=history?.optBoolean("hasEarlier")==true||(snapshot!=null&&snapshot.optBoolean("historyComplete")!=true)||snapshot?.optString("source")=="desktop-history-summary"
     val lastText=messages.lastOrNull()?.optString("text")?.length?:0
     var initialScroll by remember{mutableStateOf(false)}
     var followLatest by remember{mutableStateOf(true)}
@@ -331,86 +342,119 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     } }
     val followBottom by remember { derivedStateOf { !list.canScrollForward } }
     LaunchedEffect(list){snapshotFlow{list.canScrollForward}.collect{if(!it)followLatest=true}}
-    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,model.scrollRequest,previewExpanded,model.previewKind){
+    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind){
         if(lastScrollRequest!=model.scrollRequest){lastScrollRequest=model.scrollRequest;followLatest=true}
-        if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){list.scrollToItem(transcriptRowCount+if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())1 else 0);initialScroll=true}
+        if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){list.scrollToItem((transcriptRowCount+requests.size+(if(historyNotice)1 else 0)+(if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())1 else 0)-1).coerceAtLeast(0));initialScroll=true}
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().navigationBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding().navigationBarsPadding()) {
         var menu by remember{mutableStateOf(false)}
-        if(!browserFullscreen)Row(Modifier.fillMaxWidth().heightIn(min=64.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
+        var connectionDetails by remember{mutableStateOf(false)}
+        if(!browserFullscreen)Row(Modifier.fillMaxWidth().heightIn(min=60.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
             PocketAction("返回","返回项目"){model.back()}
             Column(Modifier.weight(1f)){
                 Text(thread.label(),fontSize=16.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
                 val project=model.projects.find{it.optString("projectId")==thread.optString("projectId")}
-                Text(project?.label()?:snapshot?.optJSONObject("thread")?.optString("cwd")?.takeIf{it.isNotBlank()&&it!="null"}?.substringAfterLast('/')?:"独立对话",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
-            }
-            PocketAction("文件","打开项目文件"){tools="files"}
-            PocketAction("网页","打开网页预览"){model.showPreviewTab("browser")}
-            Box{
-                PocketAction("更多","对话更多操作"){menu=true}
-                DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
-                    DropdownMenuItem(text={Text("重命名对话")},onClick={menu=false;rename=true})
-                    DropdownMenuItem(text={Text("工作空间工具")},onClick={menu=false;tools="home"})
-                    DropdownMenuItem(text={Text("查看交付文件")},onClick={menu=false;showResults=true})
-                    DropdownMenuItem(text={Text("模型与权限")},enabled=model.connected&&!model.loadingThread,onClick={menu=false;settingsSection="model";showSettings=true})
-                    DropdownMenuItem(text={Text("刷新对话")},enabled=model.connected,onClick={menu=false;model.openThread(thread)})
+                Row(verticalAlignment=Alignment.CenterVertically){
+                    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("文件夹",Modifier.size(12.dp))}
+                    Spacer(Modifier.width(5.dp));Text(project?.label()?:snapshot?.optJSONObject("thread")?.optString("cwd")?.takeIf{it.isNotBlank()&&it!="null"}?.substringAfterLast('/')?:"独立对话",fontSize=12.sp,fontFamily=FontFamily.Monospace,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
                 }
             }
+            Spacer(Modifier.width(6.dp));ConnectionBadge(model,onComputers)
+            PocketAction("更多","对话更多操作"){focus.clearFocus();menu=true}
         }
+        if(menu)ModalBottomSheet(onDismissRequest={menu=false},containerColor=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(topStart=18.dp,topEnd=18.dp)){
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=16.dp).padding(bottom=16.dp)){
+                Text("会话操作",Modifier.padding(bottom=10.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold)
+                ChatMenuAction("文件","打开项目文件",model.connected){menu=false;tools="files"}
+                ChatMenuAction("网页","打开网页预览",model.connected){menu=false;model.showPreviewTab("browser")}
+                ChatMenuAction("工具","工作空间工具",model.connected){menu=false;tools="home"}
+                ChatMenuAction("差异","查看交付文件"){menu=false;showResults=true}
+                ChatMenuAction("运行配置","模型与权限",model.connected&&!model.loadingThread){menu=false;settingsSection="model";showSettings=true}
+                ChatMenuAction("编辑","重命名对话",model.connected){menu=false;rename=true}
+                ChatMenuAction("刷新","刷新对话",model.connected){menu=false;model.openThread(thread)}
+                ChatMenuAction("电脑","连接诊断"){menu=false;connectionDetails=true}
+            }
+        }
+        if(connectionDetails)ConnectionDetailsDialog(model){connectionDetails=false}
         HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
         ChatConnectionNotice(model)
-        if(!browserFullscreen&&requests.isNotEmpty())Column(Modifier.heightIn(max=if(keyboardOpen)104.dp else 250.dp).verticalScroll(rememberScrollState()).padding(horizontal=14.dp)){requests.forEach{ApprovalCard(it,model)}}
         if(model.loadingThread)LinearProgressIndicator(Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.secondary)
+        if(previewExpanded&&model.previewKind!=null&&!browserFullscreen&&requests.isNotEmpty())TextButton(onClick={focus.clearFocus();previewCollapsed=true;model.expandPreview(false);chatScope.launch{list.scrollToItem((transcriptRowCount+requests.size-1).coerceAtLeast(0))}},modifier=Modifier.fillMaxWidth()){
+            Text("${requests.size} 项待审批 · 回到对话处理",fontSize=12.sp)
+        }
         if(model.previewKind!=null)PreviewPane(model,if(previewCollapsed)Modifier.fillMaxWidth() else Modifier.fillMaxWidth().weight(if(previewExpanded)1f else 1.1f),previewExpanded,toggleExpand={focus.clearFocus();previewCollapsed=false;model.expandPreview(!model.previewExpanded)},onAddressFocusChange={addressFocused=it},minimized=previewCollapsed,onMinimize={focus.clearFocus();previewCollapsed=!previewCollapsed;model.expandPreview(false)})
-        if(!(previewExpanded&&model.previewKind!=null))LazyColumn(state=list,modifier=Modifier.weight(1f).fillMaxWidth().nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            item(key="history-header") {
-                val history=snapshot?.optJSONObject("history")
+        if(!(previewExpanded&&model.previewKind!=null))Box(Modifier.weight(1f).fillMaxWidth()){
+        LazyColumn(state=list,modifier=Modifier.fillMaxSize().nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+            if(historyNotice)item(key="history-header") {
                 Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally) {
                     if(history?.optBoolean("hasEarlier")==true)OutlinedButton(onClick=model::loadEarlier,enabled=model.connected&&!model.loadingHistory){Text(if(model.loadingHistory)"正在加载历史…" else "加载更早记录")}
-                    Text("已显示 ${messages.size} / ${history?.optInt("total")?:messages.size} 条记录",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    if(snapshot!=null && snapshot.optBoolean("historyComplete")!=true)Text("完整历史尚未同步，返回后重新进入可重试。",fontSize=11.sp,color=MaterialTheme.colorScheme.error)
+                    if(history?.optBoolean("hasEarlier")==true)Text("已显示 ${messages.size} / ${history?.optInt("total")} 条记录",fontSize=11.sp,color=PocketPalette.muted)
+                    if(snapshot?.optBoolean("historyComplete")!=true)Text("完整历史尚未同步，返回后重新进入可重试。",fontSize=11.sp,color=MaterialTheme.colorScheme.error)
                     if(snapshot?.optString("source")=="desktop-history-summary")Text("当前仅取得摘要，实时记录暂不可用。",fontSize=11.sp,color=MaterialTheme.colorScheme.error)
                 }
             }
             if(messages.isEmpty())item{EmptyState(if(model.loadingThread)"正在读取对话" else "工作从这里继续",if(model.connected)"发送指令，交给电脑上的 Codex。" else "连接后会读取最新内容。")}
-            blocks.forEach{block->
+            blocks.forEachIndexed{blockIndex,block->
                 if(block.execution)item(key=block.key){ExecutionGroupHeader(block.records,block.key in expandedGroups){
                     followLatest=false
                     expandedGroups=if(block.key in expandedGroups)expandedGroups-block.key else expandedGroups+block.key
                 }}
                 // Expanded records remain independent lazy rows, including very long tool runs.
-                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,computerName=model.profile?.computerName(),streaming=active&&message===messages.lastOrNull{it.optString("role")=="assistant"},images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+                failuresByBlock[blockIndex]?.forEach{failure->
+                    item(key="failure:"+failure.optString("turnId")+":"+failure.optString("id")){
+                        ExecutionFailureCard(failure){model.showMessage(failure,if(failure.optBoolean("hasDetail"))"detail"else"text")}
+                    }
+                }
             }
+            if(!browserFullscreen)items(requests,key={"approval:"+it.optString("id")}){ApprovalCard(it,model)}
             val artifacts=snapshot?.optJSONArray("artifacts").objects()
             if(artifacts.isNotEmpty())item{Surface(onClick={showResults=true},color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){
                 Row(Modifier.padding(horizontal=14.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){PocketIcon("文件",Modifier.size(17.dp));Spacer(Modifier.width(9.dp));Text("查看 ${artifacts.size} 个交付文件",Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);PocketIcon("展开",Modifier.size(14.dp))}
             }}
         }
+            if(messages.isNotEmpty()&&requests.isEmpty()&&!followLatest&&!followBottom)SmallFloatingActionButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}},modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp).size(48.dp).semantics{contentDescription="跳到最新"},containerColor=PocketPalette.lavender,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(14.dp)){
+                PocketIcon("下拉",Modifier.size(20.dp))
+            }
+        }
         snackbar?.let{SnackbarHost(it,Modifier.fillMaxWidth().padding(horizontal=14.dp))}
-        if(!editingAddress&&!browserFullscreen)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal=12.dp).padding(top=5.dp,bottom=if(keyboardOpen)4.dp else 8.dp)){
-            if(messages.isNotEmpty()&&!followBottom&&!(previewExpanded&&model.previewKind!=null))Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center){TextButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}){Text("跳到最新 ↓",fontSize=11.sp)}}
+        if(!editingAddress&&!browserFullscreen)Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)){
+
             PendingCard(model,compact=true)
             FileMentionSuggestions(model){tools="files"}
             OutgoingImageStrip(model,thread.getString("id"))
             OutgoingFileStrip(model,thread.getString("id"))
             if(model.referencesFor().isNotEmpty())Row(Modifier.horizontalScroll(rememberScrollState())){model.referencesFor().forEach{path->InputChip(true,{model.removeReference(path)},label={Text("@$path ×",fontSize=11.sp)})}}
             model.imageStatus?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)}
-            if(active&&model.connected)Row(Modifier.fillMaxWidth().padding(start=6.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(8.dp));Text("Codex 正在处理",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f));TextButton(onClick={model.stopTurn()},enabled=!model.busy&&model.pendingOperation==null){PocketIcon("停止",Modifier.size(13.dp));Spacer(Modifier.width(4.dp));Text("停止",fontSize=12.sp)}}
-            Surface(modifier=Modifier.testTag("chat-composer"),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surfaceContainerLow,border=BorderStroke(1.dp,if(composerFocused)MaterialTheme.colorScheme.primary.copy(alpha=.65f)else MaterialTheme.colorScheme.outlineVariant)){
-                Row(Modifier.fillMaxWidth().padding(horizontal=3.dp,vertical=2.dp),verticalAlignment=Alignment.Bottom){
-                    AttachmentPickerButton(model,thread.getString("id"))
-                    BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=14.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),modifier=Modifier.weight(1f).heightIn(min=48.dp,max=136.dp).padding(top=13.dp,bottom=13.dp,end=4.dp).onFocusChanged{composerFocused=it.isFocused}.semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
-                        Box { if(model.draft.isEmpty())Text(if(active)"补充你的想法…" else "继续向 Codex 发送指令…",fontSize=13.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis);inner() }
-                    })
-                    val canSend=model.connected&&!model.busy&&(model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty()||model.filesFor(thread.getString("id")).isNotEmpty())&&model.pendingOperation==null
-                    IconButton(onClick={model.send(model.draft)},enabled=canSend,modifier=Modifier.size(48.dp).semantics{contentDescription="发送"}){
-                        Surface(Modifier.size(38.dp),shape=RoundedCornerShape(12.dp),color=if(canSend)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(canSend)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f)){
-                            Box(contentAlignment=Alignment.Center){if(model.busy)CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=1.5.dp)else PocketIcon("发送",Modifier.size(18.dp))}
+            HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+            Column(Modifier.padding(horizontal=12.dp).padding(top=6.dp,bottom=if(keyboardOpen)4.dp else 12.dp)){
+                ComposerSettings(settings,model.connected&&!model.loadingThread&&!model.busy){section->focus.clearFocus();settingsSection=section;showSettings=true}
+                Spacer(Modifier.height(2.dp))
+                Surface(modifier=Modifier.testTag("chat-composer"),shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surface,
+                    border=BorderStroke(1.dp,if(composerFocused)MaterialTheme.colorScheme.primary.copy(alpha=.6f)else PocketPalette.inputBorder)){
+                    Row(Modifier.fillMaxWidth().padding(6.dp),horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.Bottom){
+                        AttachmentPickerButton(model,thread.getString("id"),onReference={tools="files"})
+                        BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=15.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier=Modifier.weight(1f).heightIn(min=56.dp,max=136.dp).padding(vertical=6.dp).onFocusChanged{composerFocused=it.isFocused}.semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
+                                Box{if(model.draft.isEmpty())Text("向${model.profile?.computerName()?:"电脑"}发送指令，或补充任务要求…",fontSize=15.sp,lineHeight=22.sp,color=PocketPalette.muted,maxLines=2,overflow=TextOverflow.Ellipsis);inner()}
+                            })
+                        val hasContent=model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty()||model.filesFor(thread.getString("id")).isNotEmpty()
+                        val stop=active&&!hasContent
+                        val ready=model.connected&&!model.busy&&model.pendingOperation==null
+                        Surface(onClick={if(stop)model.stopTurn()else model.send(model.draft)},enabled=ready&&(hasContent||stop),
+                            modifier=Modifier.size(48.dp).semantics{contentDescription=if(stop)"停止"else"发送"},shape=RoundedCornerShape(13.dp),
+                            color=if(hasContent&&ready)MaterialTheme.colorScheme.primary else PocketPalette.lavender,
+                            contentColor=if(hasContent&&ready)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary.copy(alpha=if(ready)1f else .45f),
+                            border=if(hasContent&&ready)null else BorderStroke(1.dp,PocketPalette.lavenderBorder)){
+                            Column(horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){
+                                if(model.busy)CircularProgressIndicator(Modifier.size(17.dp),strokeWidth=1.5.dp)else PocketIcon(if(stop)"停止"else"发送",Modifier.size(if(stop)17.dp else 20.dp))
+                                if(stop)Text("停止",fontSize=12.sp,lineHeight=15.sp,fontWeight=FontWeight.Medium)
+                            }
                         }
                     }
                 }
             }
-            if(!keyboardOpen){Spacer(Modifier.height(3.dp));ComposerSettings(settings,model.connected&&!model.loadingThread&&!model.busy){section->focus.clearFocus();settingsSection=section;showSettings=true}}
+
         }
     }
 
@@ -419,6 +463,15 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     if(showSettings)ThreadSettingsSheet(model,settingsSection){showSettings=false}
     if(showResults)ResultsDialog(model){showResults=false}
     if(model.detailMessage!=null)MessageDetails(model)
+}
+
+@Composable internal fun ChatMenuAction(icon:String,label:String,enabled:Boolean=true,onClick:()->Unit){
+    Surface(onClick=onClick,enabled=enabled,color=Color.Transparent,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)){
+        Row(Modifier.padding(horizontal=12.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon(icon,Modifier.size(18.dp))}
+            Spacer(Modifier.width(12.dp));Text(label,fontSize=14.sp)
+        }
+    }
 }
 
 @Composable fun ArtifactRow(file:JSONObject,onClick:()->Unit) {
@@ -450,13 +503,29 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
 
 @Composable fun MarkdownText(text:String,modifier:Modifier=Modifier,onLink:(String)->Unit={}){
     val colors=MaterialTheme.colorScheme;val context=LocalContext.current
+    val bubbleBorder=PocketPalette.bubbleBorder
     val linkCallback by rememberUpdatedState(onLink)
     fun argb(c:Color)=android.graphics.Color.argb((c.alpha*255).toInt(),(c.red*255).toInt(),(c.green*255).toInt(),(c.blue*255).toInt())
-    val markwon=remember(context,colors){Markwon.builder(context).usePlugin(io.noties.markwon.linkify.LinkifyPlugin.create(android.text.util.Linkify.WEB_URLS)).usePlugin(object:AbstractMarkwonPlugin(){
+    val markwon=remember(context,colors,bubbleBorder){Markwon.builder(context).usePlugin(io.noties.markwon.linkify.LinkifyPlugin.create(android.text.util.Linkify.WEB_URLS)).usePlugin(object:AbstractMarkwonPlugin(){
         override fun configureConfiguration(builder:MarkwonConfiguration.Builder){builder.linkResolver{_,link->linkCallback(link)}}
-        override fun configureTheme(builder:io.noties.markwon.core.MarkwonTheme.Builder){builder.linkColor(argb(colors.primary)).codeBackgroundColor(argb(colors.surfaceVariant)).codeBlockBackgroundColor(argb(colors.surfaceVariant)).blockQuoteColor(argb(colors.primary))}
+        override fun configureTheme(builder:io.noties.markwon.core.MarkwonTheme.Builder){builder.linkColor(argb(colors.primary)).codeBackgroundColor(0x01FFFFFF).codeBlockBackgroundColor(argb(colors.surfaceVariant))
+            .blockQuoteColor(argb(bubbleBorder)).blockQuoteWidth((2*context.resources.displayMetrics.density).toInt()).blockMargin((12*context.resources.displayMetrics.density).toInt())}
+        override fun configureVisitor(builder:io.noties.markwon.MarkwonVisitor.Builder){
+            builder.blockHandler(object:io.noties.markwon.BlockHandlerDef(){
+                override fun blockEnd(visitor:io.noties.markwon.MarkwonVisitor,node:org.commonmark.node.Node){
+                    if(visitor.hasNext(node)){
+                        visitor.ensureNewLine();val start=visitor.length();visitor.forceNewLine()
+                        val gap=android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,14f,context.resources.displayMetrics).toInt()
+                        visitor.builder().setSpan(android.text.style.LineHeightSpan.Standard(gap),start,visitor.length())
+                    }
+                }
+            })
+        }
+        override fun configureSpansFactory(builder:io.noties.markwon.MarkwonSpansFactory.Builder){
+            builder.appendFactory(org.commonmark.node.BlockQuote::class.java){_,_->arrayOf<Any>(android.text.style.RelativeSizeSpan(.87f),android.text.style.ForegroundColorSpan(argb(colors.onSurfaceVariant)),android.text.style.LineHeightSpan.Standard(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,20f,context.resources.displayMetrics).toInt()))}
+        }
     }).build()}
-    AndroidView(modifier=modifier,factory={TextView(it).apply{textSize=15f;setTextIsSelectable(true);movementMethod=android.text.method.LinkMovementMethod.getInstance();setLineSpacing(4f,1.15f)}},update={it.setTextColor(argb(colors.onSurface));it.setLinkTextColor(argb(colors.primary));markwon.setMarkdown(it,text)})
+    AndroidView(modifier=modifier,factory={TextView(it).apply{textSize=15.5f;includeFontPadding=false;setFallbackLineSpacing(false);setTextIsSelectable(true);movementMethod=android.text.method.LinkMovementMethod.getInstance();setLineHeight(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,25f,resources.displayMetrics).toInt())}},update={it.setTextColor(argb(colors.onSurface));it.setLinkTextColor(argb(colors.primary));markwon.setMarkdown(it,text)})
 }
 
 @Composable fun ApprovalCard(request:JSONObject,model:PocketModel) {
@@ -466,21 +535,39 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
     val supported=question||method=="item/commandExecution/requestApproval"||method=="item/fileChange/requestApproval"
     var details by remember(request.optString("id")){mutableStateOf(false)}
     val enabled=model.connected&&!model.busy&&model.pendingOperation==null
-    Surface(color=MaterialTheme.colorScheme.tertiaryContainer,shape=RoundedCornerShape(16.dp),modifier=Modifier.fillMaxWidth().padding(vertical=8.dp)) {
-        Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment=Alignment.CenterVertically){Text(if(question)"Codex 需要你的回答" else "等待你的审批",fontWeight=FontWeight.SemiBold,fontSize=14.sp,modifier=Modifier.weight(1f));TextButton(onClick={details=true}){Text("查看详情",fontSize=12.sp)}}
-            val summary=if(question)params.optJSONArray("questions").objects().firstOrNull()?.optString("question").orEmpty() else params.optString("command").ifBlank{params.optString("reason")}
-            if(summary.isNotBlank())Text(summary,fontSize=12.sp,maxLines=2,overflow=TextOverflow.Ellipsis,fontFamily=if(question)FontFamily.SansSerif else FontFamily.Monospace)
+    Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(15.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.primary.copy(alpha=.30f)),modifier=Modifier.fillMaxWidth()){
+        Column(Modifier.padding(horizontal=14.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
+            Row(verticalAlignment=Alignment.CenterVertically){
+                Surface(Modifier.size(20.dp),color=MaterialTheme.colorScheme.tertiaryContainer,contentColor=MaterialTheme.colorScheme.tertiary,shape=RoundedCornerShape(6.dp)){
+                    Box(contentAlignment=Alignment.Center){PocketIcon("权限",Modifier.size(13.dp))}
+                }
+                Spacer(Modifier.width(8.dp));Text(if(question)"Codex 需要你的回答"else"请求在电脑执行"+if(method=="item/fileChange/requestApproval")"文件修改"else"终端命令",Modifier.weight(1f),fontWeight=FontWeight.SemiBold,fontSize=13.5.sp,lineHeight=20.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+                Spacer(Modifier.width(6.dp));Surface(color=MaterialTheme.colorScheme.tertiaryContainer,contentColor=MaterialTheme.colorScheme.onTertiaryContainer,shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.tertiary.copy(alpha=.25f))){Text("待审批",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=12.sp,lineHeight=16.sp,fontWeight=FontWeight.SemiBold)}
+            }
+            val summary=if(question)params.optJSONArray("questions").objects().firstOrNull()?.optString("question").orEmpty()else params.optString("command").ifBlank{params.optString("reason")}
+            if(summary.isNotBlank())Surface(color=PocketPalette.subtle,shape=RoundedCornerShape(10.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){
+                SelectionContainer{Text(summary,Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=8.dp),fontSize=12.5.sp,lineHeight=18.sp,maxLines=3,overflow=TextOverflow.Ellipsis,fontFamily=if(question)FontFamily.SansSerif else FontFamily.Monospace)}
+            }
+            Row(verticalAlignment=Alignment.CenterVertically){
+                val cwd=params.optString("cwd").takeIf{it.isNotBlank()&&it!="null"}
+                Text(cwd?.let{"目录：$it"}?:"${model.profile?.computerName()?:"电脑"} · 等待你的决定",Modifier.weight(1f),fontSize=12.sp,lineHeight=16.sp,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+                TextButton(onClick={details=true},modifier=Modifier.height(24.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=0.dp)){Text("查看详情",fontSize=12.sp)}
+            }
             if(!supported)Text("此类授权请在电脑处理。",fontSize=12.sp)
-            else if(question)Button(onClick={details=true},enabled=enabled){Text("回答问题")}
-            else Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){
+            else if(question)Button(onClick={details=true},enabled=enabled,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)){Text("回答问题")}
+            else Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 val offered=params.optJSONArray("availableDecisions")?.let{a->(0 until a.length()).map{a.get(it)}}
-                if(offered==null||"accept" in offered)Button(onClick={model.approve(request,"accept")},enabled=enabled){Text("允许本次")}
-                if(offered==null||"decline" in offered)OutlinedButton(onClick={model.approve(request,"decline")},enabled=enabled){Text("拒绝")}
-                if(offered!=null&&"accept" !in offered)Button(onClick={details=true},enabled=enabled){Text("查看并审批")}
+                if(offered==null||"decline" in offered)OutlinedButton(onClick={model.approve(request,"decline")},enabled=enabled,shape=RoundedCornerShape(12.dp),colors=ButtonDefaults.outlinedButtonColors(containerColor=PocketPalette.subtle,contentColor=MaterialTheme.colorScheme.onSurfaceVariant),border=BorderStroke(1.dp,PocketPalette.inputBorder),modifier=Modifier.weight(1f).heightIn(min=48.dp)){
+                    PocketIcon("关闭",Modifier.size(15.dp));Spacer(Modifier.width(6.dp));Text("拒绝执行",fontSize=13.5.sp)
+                }
+                if(offered==null||"accept" in offered)Button(onClick={model.approve(request,"accept")},enabled=enabled,shape=RoundedCornerShape(12.dp),modifier=Modifier.weight(1f).heightIn(min=48.dp)){
+                    PocketIcon("检查",Modifier.size(15.dp));Spacer(Modifier.width(6.dp));Text("允许本次",fontSize=13.5.sp)
+                }
+                if(offered!=null&&"accept" !in offered)Button(onClick={details=true},enabled=enabled,shape=RoundedCornerShape(12.dp),modifier=Modifier.weight(1f).heightIn(min=48.dp)){Text("查看并审批")}
             }
         }
     }
+
     if(details) {
         var answers by remember(request.optString("id")){mutableStateOf(mapOf<String,String>())}
         Dialog(onDismissRequest={details=false},properties=DialogProperties(usePlatformDefaultWidth=false)) {

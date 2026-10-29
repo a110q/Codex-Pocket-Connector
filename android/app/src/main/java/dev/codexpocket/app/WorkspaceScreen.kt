@@ -21,24 +21,37 @@ import org.json.JSONObject
 import java.time.*
 import java.time.format.DateTimeFormatter
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable fun ConnectionBadge(model:PocketModel,onClick:()->Unit){
     var expanded by remember{mutableStateOf(false)}
-    Box {
-    Surface(onClick={expanded=true},color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(12.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="快速切换电脑"}){
-        Row(Modifier.padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
-            Box(Modifier.size(6.dp).background(if(model.connected)pocketSuccess() else MaterialTheme.colorScheme.tertiary,RoundedCornerShape(50)))
-            Spacer(Modifier.width(6.dp));Text(model.profile?.computerName()?:"我的电脑",modifier=Modifier.widthIn(max=90.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,fontWeight=FontWeight.Medium);Spacer(Modifier.width(5.dp));PocketIcon("下拉",Modifier.size(14.dp))
+    Box(Modifier.height(48.dp).clickable{expanded=true}.semantics{contentDescription="快速切换电脑"},contentAlignment=Alignment.Center){
+        Surface(color=PocketPalette.lavender,contentColor=MaterialTheme.colorScheme.onPrimaryContainer,shape=RoundedCornerShape(12.dp),border=BorderStroke(1.dp,PocketPalette.lavenderBorder)){
+            Row(Modifier.height(34.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
+                Box(Modifier.size(7.dp).background(if(model.connected)pocketSuccess() else MaterialTheme.colorScheme.tertiary,RoundedCornerShape(50)))
+                Spacer(Modifier.width(6.dp));Text(model.profile?.computerName()?:"我的电脑",modifier=Modifier.widthIn(max=80.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,fontWeight=FontWeight.Medium)
+                Spacer(Modifier.width(4.dp));PocketIcon("下拉",Modifier.size(12.dp))
+            }
         }
     }
-    DropdownMenu(expanded=expanded,onDismissRequest={expanded=false},modifier=Modifier.widthIn(min=250.dp,max=300.dp)) {
-        Text("切换电脑",Modifier.padding(horizontal=16.dp,vertical=8.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        model.computers.forEach{computer->
-            val current=computer.optString("hostId")==model.profile?.optString("hostId")
-            DropdownMenuItem(text={Column{Text(computer.computerName(),fontWeight=if(current)FontWeight.SemiBold else FontWeight.Normal,maxLines=2,overflow=TextOverflow.Ellipsis);Text(if(current)model.status else if(PocketConnection.isLanPairing(computer))"局域网 · 已保存"else"公网远程 · 已保存",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}},leadingIcon={PocketIcon("电脑")},trailingIcon={if(current)Text("当前",fontSize=11.sp,color=MaterialTheme.colorScheme.primary)},enabled=current||model.canSwitchComputer,onClick={if(model.switchComputer(computer.getString("hostId")))expanded=false})
+    if(expanded)ModalBottomSheet(onDismissRequest={expanded=false},containerColor=MaterialTheme.colorScheme.surface,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),shape=RoundedCornerShape(topStart=18.dp,topEnd=18.dp)){
+        Column(Modifier.fillMaxWidth().heightIn(max=600.dp).verticalScroll(rememberScrollState()).padding(horizontal=16.dp).padding(bottom=16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+            Text("切换连接的电脑",Modifier.padding(bottom=4.dp),fontSize=16.sp,fontWeight=FontWeight.SemiBold)
+            model.computers.forEach{computer->
+                val current=computer.optString("hostId")==model.profile?.optString("hostId")
+                Surface(onClick={if(model.switchComputer(computer.getString("hostId")))expanded=false},enabled=current||model.canSwitchComputer,
+                    color=if(current)MaterialTheme.colorScheme.primaryContainer.copy(alpha=.5f)else PocketPalette.subtle,
+                    shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,if(current)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)){
+                    Row(Modifier.fillMaxWidth().heightIn(min=54.dp).padding(horizontal=14.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
+                        Column(Modifier.weight(1f)){
+                            Text(computer.computerName(),fontSize=14.sp,fontWeight=if(current)FontWeight.SemiBold else FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
+                            Text(if(current)model.status else if(PocketConnection.isLanPairing(computer))"局域网 · 已保存"else"公网远程 · 已保存",fontSize=12.sp,color=PocketPalette.muted)
+                        }
+                        Spacer(Modifier.width(8.dp));Text(if(current)if(model.connected)"已连接"else"当前"else"切换",fontSize=12.sp,color=if(current&&model.connected)pocketSuccess()else PocketPalette.muted)
+                    }
+                }
+            }
+            TextButton(onClick={expanded=false;onClick()},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){PocketIcon("电脑",Modifier.size(18.dp));Spacer(Modifier.width(8.dp));Text("管理电脑与名称")}
         }
-        HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-        DropdownMenuItem(text={Text("管理电脑与名称")},leadingIcon={PocketIcon("设置")},onClick={expanded=false;onClick()})
-    }
     }
 }
 

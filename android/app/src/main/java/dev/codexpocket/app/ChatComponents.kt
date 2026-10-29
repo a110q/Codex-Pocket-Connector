@@ -11,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -23,29 +24,55 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-@Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},images:@Composable ()->Unit={}){
+@Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},computerName:String?=null,streaming:Boolean=false,images:@Composable ()->Unit={}){
     val role=message.optString("role");val text=message.optString("text")
     val clipboard=LocalClipboard.current;val scope=rememberCoroutineScope()
     when(role){
         "tool","summary"->ToolRecord(message,onDetail,onRelated)
-        "user"->Row(Modifier.fillMaxWidth().padding(start=34.dp),horizontalArrangement=Arrangement.End){
-            Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.onSurface,shape=RoundedCornerShape(18.dp,18.dp,6.dp,18.dp),modifier=Modifier.widthIn(max=350.dp)){
-                Column(Modifier.padding(horizontal=13.dp,vertical=11.dp)){
-                    images()
-                    if(text.isNotBlank())SelectionContainer{Text(text,fontSize=15.sp,lineHeight=24.sp)}
-                    if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容")}
+        "user"->BoxWithConstraints(Modifier.fillMaxWidth()){
+            val bubbleWidth=maxWidth*.84f
+            Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.End){
+                Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape=RoundedCornerShape(16.dp,6.dp,16.dp,16.dp),border=BorderStroke(1.dp,PocketPalette.bubbleBorder),modifier=Modifier.widthIn(max=bubbleWidth)){
+                    Column(Modifier.padding(horizontal=14.dp,vertical=10.dp)){
+                        images()
+                        if(text.isNotBlank())SelectionContainer{Text(text,fontSize=15.5.sp,lineHeight=23.5.sp)}
+                        if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容")}
+                    }
+                }
+                if(message.optString("type")!="queuedUserMessage"&&computerName!=null){
+                    Text("已同步至$computerName",Modifier.padding(top=4.dp,end=2.dp),fontSize=12.sp,lineHeight=12.sp,color=PocketPalette.muted)
+                }
+                if(message.optString("type")=="queuedUserMessage"){
+                    val queuedLabel=when(message.optString("status")){
+                        "sending"->"正在发送"
+                        "paused"->"排队已暂停 · 请在电脑端查看"
+                        "outcome-unknown"->"发送结果待确认 · 请在电脑端查看"
+                        else->"排队中 · 当前任务结束后自动发送"
+                    }
+                    Row(Modifier.padding(top=4.dp,end=2.dp),verticalAlignment=Alignment.CenterVertically){
+                        CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon("时钟",Modifier.size(12.dp))}
+                        Spacer(Modifier.width(4.dp));Text(queuedLabel,fontSize=12.sp,lineHeight=17.sp,color=PocketPalette.muted)
+                    }
                 }
             }
         }
-        else->Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.Top){
-            CodexMark(Modifier.padding(top=3.dp).size(24.dp));Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)){
-                MarkdownText(text,Modifier.fillMaxWidth().padding(top=3.dp),onLink)
-                if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容（${message.optInt("textLength")} 字符）",fontSize=12.sp)}
-                IconButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Codex",text)))}},modifier=Modifier.size(48.dp).semantics{contentDescription="复制回复"}){
-                    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("复制",Modifier.size(15.dp))}
+        else->Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            Row(Modifier.fillMaxWidth().padding(top=2.dp),verticalAlignment=Alignment.CenterVertically){
+                Surface(Modifier.size(20.dp),shape=RoundedCornerShape(6.dp),color=MaterialTheme.colorScheme.primary.copy(alpha=.10f),contentColor=MaterialTheme.colorScheme.primary,border=BorderStroke(1.dp,MaterialTheme.colorScheme.primary.copy(alpha=.20f))){
+                    Box(contentAlignment=Alignment.Center){PocketIcon("终端",Modifier.size(13.dp))}
+                }
+                Spacer(Modifier.width(8.dp));Text("Codex",fontSize=13.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(streaming){
+                    Text(" · 远程工作区同步中",Modifier.weight(1f),fontSize=12.sp,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Text("流式输出",fontSize=12.sp,fontFamily=FontFamily.Monospace,color=MaterialTheme.colorScheme.primary)
+                }else Spacer(Modifier.weight(1f))
+                IconButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Codex",text)))}},modifier=Modifier.size(24.dp).semantics{contentDescription="复制回复"}){
+                    CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon("复制",Modifier.size(14.dp))}
                 }
             }
+            MarkdownText(text,Modifier.fillMaxWidth(),onLink)
+            if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容（${message.optInt("textLength")} 字符）",fontSize=12.sp)}
         }
     }
 }
@@ -62,28 +89,60 @@ private fun executionState(message:JSONObject):ExecutionState {
     }
 }
 
+internal fun failedExecution(message:JSONObject)=message.optString("role") in listOf("tool","summary")&&executionState(message)==ExecutionState.FAILED
+
+@Composable fun ExecutionFailureCard(message:JSONObject,onDetail:()->Unit){
+    Surface(color=MaterialTheme.colorScheme.errorContainer,contentColor=MaterialTheme.colorScheme.onErrorContainer,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,PocketPalette.errorBorder),modifier=Modifier.fillMaxWidth()){
+        Column(Modifier.padding(horizontal=14.dp,vertical=10.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
+            Row(verticalAlignment=Alignment.CenterVertically){
+                PocketIcon("异常",Modifier.size(16.dp));Spacer(Modifier.width(8.dp))
+                Text("执行失败 · "+message.optString("title").ifBlank{"工具调用"},Modifier.weight(1f),fontSize=13.5.sp,lineHeight=20.sp,fontWeight=FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis)
+                Spacer(Modifier.width(8.dp));Surface(color=MaterialTheme.colorScheme.error.copy(alpha=.09f),shape=RoundedCornerShape(8.dp)){Text("失败",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=12.sp,lineHeight=16.sp)}
+            }
+            Surface(color=MaterialTheme.colorScheme.surface.copy(alpha=.8f),shape=RoundedCornerShape(10.dp),border=BorderStroke(1.dp,PocketPalette.errorBorder.copy(alpha=.7f))){
+                Text(message.optString("command").takeIf{it.isNotBlank()&&it!="null"}?:message.optString("text"),Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=6.dp),fontSize=12.5.sp,lineHeight=18.sp,fontFamily=FontFamily.Monospace,maxLines=3,overflow=TextOverflow.Ellipsis)
+            }
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+                val exit=if(!message.isNull("exitCode"))"退出码 ${message.optInt("exitCode")}"else"查看记录以确认失败原因"
+                Text(exit,Modifier.weight(1f),fontSize=12.sp,lineHeight=16.sp)
+                TextButton(onClick=onDetail,modifier=Modifier.height(36.dp),colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.onErrorContainer),contentPadding=PaddingValues(horizontal=8.dp)){
+                    PocketIcon("查看",Modifier.size(14.dp));Spacer(Modifier.width(5.dp));Text("查看记录",fontSize=12.5.sp)
+                }
+            }
+        }
+    }
+}
+
 @Composable fun ExecutionGroupHeader(records:List<JSONObject>,expanded:Boolean,onToggle:()->Unit){
     val states=records.map(::executionState)
-    val running=states.count{it==ExecutionState.RUNNING}
-    val failed=states.count{it==ExecutionState.FAILED}
-    val summary=listOfNotNull(
-        if(running>0)"$running 项进行中" else null,
-        if(failed>0)"$failed 项失败或拒绝" else null
-    ).joinToString(" · ").ifBlank{if(states.all{it==ExecutionState.COMPLETED})"已完成" else "查看工具与思考记录"}
-    Surface(onClick=onToggle,color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().semantics{
+    val running=states.count{it==ExecutionState.RUNNING};val failed=states.count{it==ExecutionState.FAILED}
+    val complete=states.all{it==ExecutionState.COMPLETED}
+    val summary=listOfNotNull(if(failed>0)"$failed 异常"else null,if(running>0)"$running 运行中"else null).joinToString(" · ")
+    val status=when{running>0->"运行中";failed>0->"有异常";complete->"已完成";else->"查看记录"}
+    Surface(onClick=onToggle,color=PocketPalette.subtle,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth().semantics{
         contentDescription=if(expanded)"收起执行过程" else "展开执行过程"
         stateDescription=if(expanded)"已展开" else "已折叠"
     }){
-        Row(Modifier.heightIn(min=56.dp).padding(horizontal=12.dp,vertical=9.dp),verticalAlignment=Alignment.CenterVertically){
-            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("终端",Modifier.size(19.dp))}
+        Row(Modifier.heightIn(min=48.dp).padding(horizontal=14.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon(if(expanded)"下拉"else"展开",Modifier.size(14.dp))}
             Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)){
-                Text("执行过程 · ${records.size} 条",fontSize=13.sp,fontWeight=FontWeight.Medium)
-                Text(summary,fontSize=11.sp,lineHeight=17.sp,color=if(failed>0)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+            if(LocalDensity.current.fontScale>1.2f)Column(Modifier.weight(1f)){
+                Text("执行过程 · ${records.size} 项",fontSize=14.sp,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
+                if(summary.isNotBlank())Text(summary,fontSize=11.sp,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+            }else{
+                Text("执行过程 · ${records.size} 项",fontSize=14.sp,fontWeight=FontWeight.Medium,maxLines=1)
+                Spacer(Modifier.width(8.dp))
+                Text(summary,Modifier.weight(1f),fontSize=11.sp,fontFamily=FontFamily.Monospace,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
-            if(running>0){CircularProgressIndicator(Modifier.size(12.dp),strokeWidth=1.5.dp);Spacer(Modifier.width(10.dp))}
-            Text(if(expanded)"收起" else "展开",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(5.dp));PocketIcon(if(expanded)"上拉" else "下拉",Modifier.size(13.dp))
+            Spacer(Modifier.width(6.dp))
+            Surface(color=if(running>0)PocketPalette.lavender else if(failed>0)MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,
+                contentColor=if(failed>0&&running==0)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,if(failed>0&&running==0)PocketPalette.errorBorder else PocketPalette.lavenderBorder)){
+                Row(Modifier.padding(horizontal=8.dp,vertical=4.dp),verticalAlignment=Alignment.CenterVertically){
+                    if(running>0){Box(Modifier.size(6.dp).background(MaterialTheme.colorScheme.primary,RoundedCornerShape(50)));Spacer(Modifier.width(5.dp))}
+                    Text(status,fontSize=12.sp,lineHeight=17.sp)
+                }
+            }
         }
     }
 }
@@ -99,7 +158,7 @@ private fun executionState(message:JSONObject):ExecutionState {
     val title=message.optString("title").ifBlank{if(message.optString("role")=="summary")"思考摘要" else "工具调用"}
     val icon=when{command!=null||type=="commandExecution"->"终端";type in listOf("fileChange","turnDiff")->"编辑";type.contains("search",true)->"搜索";message.optString("role")=="summary"->"推理";else->"文件"}
     val detail=message.optString("tool").takeIf{it.isNotBlank()&&it!="null"}
-    Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
+    Surface(color=if(failed)MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,if(failed)PocketPalette.errorBorder else MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
         Column{
             Row(Modifier.fillMaxWidth().clickable{expanded=!expanded}.heightIn(min=60.dp).padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
                 Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(10.dp),modifier=Modifier.size(34.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(icon,Modifier.size(19.dp))}}
@@ -114,7 +173,7 @@ private fun executionState(message:JSONObject):ExecutionState {
             if(expanded){
                 if(message.optBoolean("sourceTruncated"))Text("桌面接口已截断这段输出",Modifier.padding(horizontal=12.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.error)
                 val terminal=command!=null||type=="commandExecution"
-                Surface(color=if(terminal)Color(0xFF1C242D)else MaterialTheme.colorScheme.surfaceVariant,contentColor=if(terminal)Color(0xFFD9E5EE)else MaterialTheme.colorScheme.onSurface,shape=RoundedCornerShape(8.dp),modifier=Modifier.fillMaxWidth().padding(horizontal=8.dp)){
+                Surface(color=PocketPalette.subtle,contentColor=MaterialTheme.colorScheme.onSurface,shape=RoundedCornerShape(8.dp),modifier=Modifier.fillMaxWidth().padding(horizontal=8.dp)){
                     SelectionContainer{Text((command?.let{"> $it\n\n"}?:"")+message.optString("text"),Modifier.padding(12.dp),fontFamily=FontFamily.Monospace,fontSize=11.sp,lineHeight=18.sp,maxLines=18,overflow=TextOverflow.Ellipsis)}
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal=4.dp),verticalAlignment=Alignment.CenterVertically){
@@ -128,18 +187,27 @@ private fun executionState(message:JSONObject):ExecutionState {
 }
 
 @Composable fun ComposerSettings(settings:JSONObject,enabled:Boolean,onOpen:(String)->Unit){
-    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(6.dp)){
-        listOf(
-            Triple("model",settings.optString("model").takeIf{it.isNotBlank()&&it!="null"}?:"默认模型","选择模型"),
-            Triple("effort","推理 · ${effortLabel(settings.optString("reasoningEffort"))}","选择推理强度"),
-            Triple("permission",permissionLabel(settings.optString("permissionMode")),"选择访问权限")
-        ).forEachIndexed{index,(section,label,description)->
-            Surface(onClick={onOpen(section)},enabled=enabled,color=MaterialTheme.colorScheme.surfaceContainerLow,contentColor=if(enabled)MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha=.5f),shape=RoundedCornerShape(10.dp),modifier=Modifier.weight(if(index==0)1.2f else 1f).heightIn(min=48.dp).semantics{contentDescription=description}){
-                Row(Modifier.padding(horizontal=8.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
-                    Text(label,Modifier.weight(1f),fontSize=12.sp,lineHeight=18.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-                    Spacer(Modifier.width(3.dp));PocketIcon("下拉",Modifier.size(12.dp))
-                }
+    val model=settings.optString("model").takeIf{it.isNotBlank()&&it!="null"}?:"默认模型"
+    Surface(onClick={onOpen("model")},enabled=enabled,color=Color.Transparent,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().heightIn(min=48.dp).semantics{contentDescription="打开模型与权限设置面板"}){
+        Row(Modifier.padding(horizontal=10.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+            Surface(Modifier.size(22.dp),shape=RoundedCornerShape(8.dp),color=PocketPalette.lavender,contentColor=MaterialTheme.colorScheme.primary,border=BorderStroke(1.dp,PocketPalette.lavenderBorder)){
+                Box(contentAlignment=Alignment.Center){PocketIcon("运行配置",Modifier.size(13.dp))}
             }
+            Spacer(Modifier.width(8.dp))
+            if(LocalDensity.current.fontScale>1.2f)Column(Modifier.weight(1f)){
+                Text(model,fontSize=12.5.sp,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(effortLabel(settings.optString("reasoningEffort"))+"推理 · "+permissionLabel(settings.optString("permissionMode")),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+            }else{
+            Row(Modifier.weight(1f),verticalAlignment=Alignment.CenterVertically){
+                Text(model,Modifier.weight(1f,false),fontSize=12.5.sp,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(" · ",fontSize=12.sp,color=PocketPalette.muted)
+                Text(effortLabel(settings.optString("reasoningEffort"))+"推理",fontSize=12.5.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(" · ",fontSize=12.sp,color=PocketPalette.muted)
+                Text(permissionLabel(settings.optString("permissionMode")),fontSize=12.5.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.primary)
+            }
+            }
+            Spacer(Modifier.width(8.dp));Text("调整",fontSize=12.sp,color=PocketPalette.muted)
+            Spacer(Modifier.width(4.dp));CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon("上拉",Modifier.size(14.dp))}
         }
     }
 }

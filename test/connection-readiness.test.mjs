@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { fixture } from './support/connector-fixture.mjs';
 import { startCompanion } from '../companion.mjs';
@@ -22,7 +23,7 @@ class Adapter extends EventEmitter {
   async call(action) { this.calls.push(action); return { threads: [] }; }
   close() { this.ready = false; }
 }
-async function phone(f, config) {
+async function phone(f, config, helloTime = () => Date.now()) {
   const token = secret();
   await f.call('/api/pair', { hostId: config.hostId, pairCode: config.pairCode, mobileToken: token });
   await f.call('/api/pair/decision', { hostId: config.hostId, fingerprint: digest(token).slice(0, 12), accept: true }, config.desktopToken);
@@ -32,12 +33,24 @@ async function phone(f, config) {
   const send = payload => socket.send(JSON.stringify(codec.encrypt({ ...payload, channel })));
   socket.on('message', data => {
     const frame = JSON.parse(data);
-    if (frame.type === 'status') { if (frame.peerOnline) send({ type: 'hello', sentAt: Date.now() }); }
+    if (frame.type === 'status') { if (frame.peerOnline) send({ type: 'hello', sentAt: helloTime() }); }
     else messages.push(codec.decrypt(frame));
   });
   await until(() => socket.readyState === WebSocket.OPEN);
   return { messages, send, channel };
 }
+
+test('clock mismatch is explicitly rejected without silently timing out or executing a command', async t => {
+  const f=await fixture();t.after(()=>f.close());
+  const {config,paths}=await f.enroll('clock-mismatch');const {adapter}=await f.companion(config,paths);
+  const p=await phone(f,config,()=>Date.now()-180000);
+  await until(()=>p.messages.some(m=>m.connectionError==='clock-skew'));
+  assert.equal(p.messages[0].desktopReady,false);assert.match(p.messages[0].error,/自动校时/);
+  p.send({type:'request',id:randomUUID(),action:'threads.list',args:{},sentAt:Date.now()});
+  await delay(50);assert.equal(adapter.calls.length,0);
+  const log=readFileSync(resolve(paths.state,'connection-diagnostics.jsonl'),'utf8');
+  assert.match(log,/hello.received/);assert(!log.includes(config.key));assert(!log.includes(config.desktopToken));
+});
 
 test('standalone reconnection emits readiness and an expired initialization cannot resurrect a closed adapter', async t => {
   class Server extends EventEmitter {

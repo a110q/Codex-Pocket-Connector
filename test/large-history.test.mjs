@@ -74,7 +74,10 @@ test('a delayed coalesced event cannot regress history, and a new stream may res
 
 test('a snapshot timeout loads stored history once and never permits a send from it', async t => {
   const server = new EventEmitter(); let reads = 0, pages = 0;
-  server.close = () => {}; server.request = async () => { reads++; return { thread: { ...state(), historyMode: 'paginated' } }; };
+  server.close = () => {}; server.request = async method => {
+    if (method === 'thread/queue/list') return { data: [], nextCursor: null };
+    assert.equal(method, 'thread/read'); reads++; return { thread: { ...state(), historyMode: 'paginated' } };
+  };
   server.pages = async () => { pages++; return state().turns; };
   const a = new StandaloneAdapter({ server, timeoutMs: 20, ipcPath: '/pocket-tests/nonexistent' }); t.after(() => a.close());
   a.ready = true; a.desktopOwner = async () => 'owner'; a.broadcast = () => {};

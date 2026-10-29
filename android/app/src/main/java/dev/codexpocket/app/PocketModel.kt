@@ -26,6 +26,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
     private val store = SecureStore(context,filename)
+    private val connectionLog=ConnectionLog(File(context.filesDir,"connection-diagnostics.log"))
+    val connectionDetails:String get()=connectionLog.recent()
     private var saved = try { store.load() } catch (_: Exception) { JSONObject() }
     var profile by mutableStateOf(saved.optJSONObject("profile")); private set
     var computers by mutableStateOf(saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(profile)});private set
@@ -288,7 +290,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                     if (change.optString("type") == "desktop.disconnected" || change.optString("type") == "desktop.incompatible") error = change.optString("error", "电脑上的 Codex 连接已变化")
                 }
             }
-        } })
+        } }, onDiagnostic=connectionLog::record)
         connection = candidate; candidate.connect()
     }
     fun reconnectNow() { if (profile?.optBoolean("approved") == true) connect() else if (profile != null) waitForApproval() }
@@ -515,12 +517,16 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         val same = current?.optJSONObject("history") != null && current.optJSONObject("thread")?.optString("id") == next.optJSONObject("thread")?.optString("id")
         val sameSource = same && current?.optString("source") == next.optString("source") && current.optString("streamId") == next.optString("streamId")
         fun entries(value: JSONObject?) = value?.optJSONArray("messages").objects().mapIndexed { index, message -> TimelineEntry(message.optString("key", message.optString("turnId")+":"+message.optString("id")), message.optInt("order",index), message) }
-        val stale = sameSource && !next.isNull("revision") && current?.isNull("revision") == false && current.optLong("revision") > next.optLong("revision")
+        val stale = sameSource && !next.isNull("revision") && current?.isNull("revision") == false && (current.optLong("revision") > next.optLong("revision") || (current.optLong("revision") == next.optLong("revision") && current.optLong("queueRevision") > next.optLong("queueRevision")))
         if (stale && !olderPage) return
         if (olderPage && same && !sameSource) { selected?.let { openThread(it) }; return }
-        val previous = if (sameSource) entries(current) else emptyList()
-        val merged = if (olderPage && sameSource) mergeTimeline(entries(next), previous)
-            else replaceTimelineTail(previous, entries(next), next.optJSONObject("history")?.optBoolean("hasEarlier") == true)
+        // Queue entries are transient. A fresh tail may start after a removed
+        // queue entry when more than forty messages are loaded; never retain
+        // such entries as older conversation history.
+        val previous = if (sameSource) entries(current).filter { olderPage || it.value.optString("type") != "queuedUserMessage" } else emptyList()
+        val incoming = entries(next).filter { !olderPage || !stale || it.value.optString("type") != "queuedUserMessage" }
+        val merged = if (olderPage && sameSource) mergeTimeline(incoming, previous)
+            else replaceTimelineTail(previous, incoming, next.optJSONObject("history")?.optBoolean("hasEarlier") == true)
         val accepted = if (olderPage && sameSource && current != null) JSONObject(current.toString()) else next
         accepted.put("messages", JSONArray(merged.map { it.value }))
         accepted.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }

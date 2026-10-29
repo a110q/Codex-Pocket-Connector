@@ -1,5 +1,6 @@
 package dev.codexpocket.app
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -27,7 +28,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-val PocketGreen = Color(0xFF238367)
+val PocketGreen = Color(0xFF10B981)
+
+object PocketPalette {
+    @Composable private fun tone(light:Long,dark:Long)=Color(if(MaterialTheme.colorScheme.background.luminance()>.5f)light else dark)
+    val muted:Color @Composable get()=tone(0xFF7C8496,0xFF9199AF)
+    val subtle:Color @Composable get()=tone(0xFFF1F4FA,0xFF232737)
+    val lavender:Color @Composable get()=tone(0xFFF3F0FF,0xFF302D4B)
+    val lavenderBorder:Color @Composable get()=tone(0xFFE4DFFF,0xFF4A4368)
+    val bubbleBorder:Color @Composable get()=tone(0xFFDCE2FF,0xFF454D77)
+    val inputBorder:Color @Composable get()=tone(0xFFDCE2F0,0xFF3A4058)
+    val errorBorder:Color @Composable get()=tone(0xFFF3C7C9,0xFF79444B)
+}
 
 @Composable fun pocketSuccess():Color = if(MaterialTheme.colorScheme.background.luminance()>.5f)PocketGreen else Color(0xFF7BD5B1)
 
@@ -38,23 +50,23 @@ val PocketGreen = Color(0xFF238367)
         androidx.core.view.WindowCompat.getInsetsController(window,view).apply{isAppearanceLightStatusBars=!dark;isAppearanceLightNavigationBars=!dark}
     }}
     val colors=if(dark)darkColorScheme(
-        primary=Color(0xFF9BB8FF),onPrimary=Color(0xFF102651),primaryContainer=Color(0xFF263958),onPrimaryContainer=Color(0xFFDCE6FF),
-        secondary=Color(0xFF9BB8FF),onSecondary=Color(0xFF102651),secondaryContainer=Color(0xFF243650),onSecondaryContainer=Color(0xFFDCE6FF),
+        primary=Color(0xFFBDC5FF),onPrimary=Color(0xFF202750),primaryContainer=Color(0xFF2A3154),onPrimaryContainer=Color(0xFFE0E4FF),
+        secondary=Color(0xFFBDC5FF),onSecondary=Color(0xFF202750),secondaryContainer=Color(0xFF302D4B),onSecondaryContainer=Color(0xFFE0E4FF),
         tertiary=Color(0xFFE7B868),tertiaryContainer=Color(0xFF372C1C),onTertiaryContainer=Color(0xFFF3D49E),
-        background=Color(0xFF111923),onBackground=Color(0xFFE8EEF8),surface=Color(0xFF18222F),onSurface=Color(0xFFE8EEF8),
-        surfaceVariant=Color(0xFF253243),onSurfaceVariant=Color(0xFFACB9CB),outline=Color(0xFF8394AD),outlineVariant=Color(0xFF344257),
-        surfaceContainerLowest=Color(0xFF111923),surfaceContainerLow=Color(0xFF18222F),surfaceContainer=Color(0xFF1D2A3A),surfaceContainerHigh=Color(0xFF253243),surfaceContainerHighest=Color(0xFF344257),
+        background=Color(0xFF141620),onBackground=Color(0xFFE9EBF4),surface=Color(0xFF1D202C),onSurface=Color(0xFFE9EBF4),
+        surfaceVariant=Color(0xFF282C3E),onSurfaceVariant=Color(0xFFB0B5C6),outline=Color(0xFF8C94AD),outlineVariant=Color(0xFF3A4058),
+        surfaceContainerLowest=Color(0xFF141620),surfaceContainerLow=Color(0xFF1D202C),surfaceContainer=Color(0xFF232737),surfaceContainerHigh=Color(0xFF282C3E),surfaceContainerHighest=Color(0xFF3A4058),
         error=Color(0xFFFFB4AC),errorContainer=Color(0xFF402522),onErrorContainer=Color(0xFFFFDAD4),surfaceTint=Color.Transparent
     )else lightColorScheme(
-        primary=Color(0xFF3266E3),onPrimary=Color.White,primaryContainer=Color(0xFFEDF2FF),onPrimaryContainer=Color(0xFF2855BB),
-        secondary=Color(0xFF3266E3),onSecondary=Color.White,secondaryContainer=Color(0xFFEEF3FC),onSecondaryContainer=Color(0xFF3B5F9E),
+        primary=Color(0xFF4355B9),onPrimary=Color.White,primaryContainer=Color(0xFFEEF1FF),onPrimaryContainer=Color(0xFF1E2547),
+        secondary=Color(0xFF4355B9),onSecondary=Color.White,secondaryContainer=Color(0xFFF3F0FF),onSecondaryContainer=Color(0xFF4355B9),
         tertiary=Color(0xFF9A6416),tertiaryContainer=Color(0xFFFFF6E6),onTertiaryContainer=Color(0xFF765015),
-        background=Color(0xFFF4F6FA),onBackground=Color(0xFF1C273B),surface=Color.White,onSurface=Color(0xFF1C273B),
-        surfaceVariant=Color(0xFFEEF2F8),onSurfaceVariant=Color(0xFF67758A),outline=Color(0xFF7F8CA1),outlineVariant=Color(0xFFE1E7F0),
-        surfaceContainerLowest=Color.White,surfaceContainerLow=Color(0xFFF4F6FA),surfaceContainer=Color(0xFFF0F3F8),surfaceContainerHigh=Color(0xFFEAF0F8),surfaceContainerHighest=Color(0xFFE1E7F0),
-        error=Color(0xFFBD423A),errorContainer=Color(0xFFFFEFEC),onErrorContainer=Color(0xFF8F2B26),surfaceTint=Color.Transparent
+        background=Color(0xFFF8FAFD),onBackground=Color(0xFF191C24),surface=Color.White,onSurface=Color(0xFF191C24),
+        surfaceVariant=Color(0xFFF1F4FA),onSurfaceVariant=Color(0xFF525866),outline=Color(0xFF7C8496),outlineVariant=Color(0xFFE5E9F2),
+        surfaceContainerLowest=Color.White,surfaceContainerLow=Color(0xFFF8FAFD),surfaceContainer=Color(0xFFF1F4FA),surfaceContainerHigh=Color(0xFFE8ECF6),surfaceContainerHighest=Color(0xFFE5E9F2),
+        error=Color(0xFFB91C1C),errorContainer=Color(0xFFFFF8F8),onErrorContainer=Color(0xFF991B1B),surfaceTint=Color.Transparent
     )
-    MaterialTheme(colorScheme=colors,shapes=Shapes(small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(16.dp),large=RoundedCornerShape(24.dp)),typography=Typography(
+    MaterialTheme(colorScheme=colors,shapes=Shapes(small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(16.dp),large=RoundedCornerShape(18.dp)),typography=Typography(
         bodyLarge=TextStyle(fontFamily=FontFamily.SansSerif,fontSize=15.sp,lineHeight=24.sp),
         bodyMedium=TextStyle(fontFamily=FontFamily.SansSerif,fontSize=14.sp,lineHeight=22.sp),
         bodySmall=TextStyle(fontFamily=FontFamily.SansSerif,fontSize=12.sp,lineHeight=18.sp),
@@ -64,7 +76,16 @@ val PocketGreen = Color(0xFF238367)
     ),content=content)
 }
 
+// Chat glyphs are converted directly from the supplied HTML's SVG assets.
 @Composable fun PocketIcon(kind:String,modifier:Modifier=Modifier) {
+    val sourceIcon=when(kind){
+        "返回"->R.drawable.ref_back;"更多"->R.drawable.ref_more;"发送"->R.drawable.ref_send
+        "附件"->R.drawable.ref_attachment;"运行配置"->R.drawable.ref_settings;"终端"->R.drawable.ref_terminal
+        "项目","文件夹"->R.drawable.ref_folder;"异常"->R.drawable.ref_error
+        else->null
+    }
+    if(sourceIcon!=null){Icon(painterResource(sourceIcon),contentDescription=null,modifier=modifier.size(22.dp));return}
+
     val color=LocalContentColor.current
     Canvas(modifier.size(22.dp)) {
         val s=size.minDimension;val stroke=Stroke(s*.062f,cap=StrokeCap.Round)
@@ -123,5 +144,11 @@ val PocketGreen = Color(0xFF238367)
 @Composable internal fun PocketIconTile(kind:String,modifier:Modifier=Modifier,tint:Color=MaterialTheme.colorScheme.primary,filled:Boolean=false){
     Surface(modifier.size(42.dp),shape=RoundedCornerShape(13.dp),color=if(filled)tint else tint.copy(alpha=.09f),contentColor=if(filled)MaterialTheme.colorScheme.onPrimary else tint){
         Box(contentAlignment=Alignment.Center){PocketIcon(kind,Modifier.size(22.dp))}
+    }
+}
+
+@Composable fun PocketSheetHandle(){
+    Box(Modifier.fillMaxWidth().padding(top=16.dp,bottom=12.dp),contentAlignment=Alignment.Center){
+        Box(Modifier.size(width=36.dp,height=4.dp).background(MaterialTheme.colorScheme.outlineVariant,RoundedCornerShape(50)))
     }
 }

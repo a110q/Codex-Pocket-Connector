@@ -17,6 +17,7 @@ const VERSIONS = Object.freeze({
   'thread-stream-state-changed': 11,
   'thread-stream-following-changed': 1,
   'thread-stream-following-status-requested': 1,
+  'thread-queued-followups-changed': 2,
   'thread-follower-load-complete-history': 1,
   'thread-follower-read-model-settings': 1,
   'thread-follower-update-thread-settings': 2,
@@ -280,11 +281,30 @@ export function orderedTurns(state) {
   return turns;
 }
 
-export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', revision = null } = {}) {
+// Queue contexts include internal instructions and attachment metadata. Only
+// explicitly visible text/status leaves this adapter, never the raw context.
+export function normalizeQueuedMessages(messages) {
+  const seen = new Set();
+  return (Array.isArray(messages) ? messages : []).flatMap(message => {
+    if (typeof message?.id !== 'string' || !message.id || seen.has(message.id)) return [];
+    seen.add(message.id);
+    const context = record(message.context);
+    const input = Array.isArray(message.input) ? message.input : [];
+    const images = Array.isArray(context.imageAttachments) ? context.imageAttachments.length : input.filter(part => ['image', 'localImage'].includes(part?.type)).length;
+    const files = Array.isArray(context.fileAttachments) ? context.fileAttachments.length : 0;
+    const attachments = [images ? `${images} 张图片` : '', files ? `${files} 个文件` : ''].filter(Boolean).join('、');
+    const text = userMessage(typeof message.text === 'string' ? message.text : contentText(input), input).text.replaceAll('](codex-text-link://', '](');
+    const status = message.submission?.status === 'outcome-unknown' ? 'outcome-unknown' : message.pausedReason ? 'paused' : message.submission?.status === 'sending' ? 'sending' : 'queued';
+    return [{ id: message.id, ...(typeof message.clientUserMessageId === 'string' ? { clientUserMessageId: message.clientUserMessageId } : {}), text: text || (attachments ? `附带 ${attachments}` : '待发送消息'), status }];
+  });
+}
+
+export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', revision = null, queuedMessages = [] } = {}) {
   const turns = orderedTurns(state); const messages = []; const artifacts = []; const diffs = [];
   const userItems = turns.flatMap(turn => turn.items ?? []).filter(item => item.type === 'userMessage');
   const userIds = new Set(userItems.map(item => item.id).filter(Boolean));
   const userClientIds = new Set(userItems.map(item => item.clientId ?? item.clientUserMessageId).filter(Boolean));
+  for (const turn of turns) if (turn.params?.clientUserMessageId) userClientIds.add(turn.params.clientUserMessageId);
   const settings = normalizeThreadSettings(state);
   for (const turn of turns) {
     const turnId = turn.turnId ?? turn.id;
@@ -336,6 +356,10 @@ export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', re
       messages.push({ id: `${turnId}:diff`, turnId, role: 'tool', type: 'turnDiff', title: '本轮修改汇总', text: turn.diff });
     }
     if (turn.error) messages.push({ id: `${turnId}:error`, turnId, role: 'tool', type: 'turnError', title: '运行错误', status: 'failed', text: JSON.stringify(turn.error, null, 2) });
+  }
+  for (const message of queuedMessages) {
+    if (userIds.has(message.id) || userClientIds.has(message.id) || userClientIds.has(message.clientUserMessageId)) continue;
+    messages.push({ ...message, turnId: 'queued', role: 'user', type: 'queuedUserMessage' });
   }
   messages.forEach((message, order) => { message.key = `${message.turnId}:${message.id}`; message.order = order; });
   const activeTurn = [...turns].reverse().find(turn => turn.status === 'inProgress');
@@ -483,7 +507,58 @@ export class DesktopAdapter extends EventEmitter {
     const snapshot = this.snapshots.get(key);
     if (!snapshot) return null;
     const sub = this.subscriptions.get(key);
-    return snapshot.normalized ??= { ...normalizeSnapshot(snapshot.state, { hostId: sub?.hostId ?? 'local', revision: snapshot.revision }), streamId: sub?.streamId };
+    return snapshot.normalized ??= { ...normalizeSnapshot(snapshot.state, { hostId: sub?.hostId ?? 'local', revision: snapshot.revision, queuedMessages: sub?.queuedMessages }), streamId: sub?.streamId, queueRevision: sub?.queueRevision ?? 0 };
+  }
+  setQueuedMessages(key, messages, { server = false } = {}) {
+    const sub = this.subscriptions.get(key);
+    if (!sub) return;
+    sub[server ? 'serverQueuedMessages' : 'clientQueuedMessages'] = normalizeQueuedMessages(messages);
+    const seen = new Set();
+    const normalized = [...(sub.serverQueuedMessages ?? []), ...(sub.clientQueuedMessages ?? [])].filter(message => {
+      if (seen.has(message.id) || (message.clientUserMessageId && seen.has(message.clientUserMessageId))) return false;
+      seen.add(message.id); if (message.clientUserMessageId) seen.add(message.clientUserMessageId);
+      return true;
+    });
+    if (JSON.stringify(sub.queuedMessages ?? []) === JSON.stringify(normalized)) return;
+    sub.queuedMessages = normalized;
+    sub.queueRevision = (sub.queueRevision ?? 0) + 1;
+    const snapshot = this.snapshots.get(key);
+    if (snapshot) delete snapshot.normalized;
+    this.emitSnapshot(key);
+  }
+  async refreshQueuedMessages() {
+    // Persisted queues cover messages enqueued before Pocket connected. Read
+    // once for all subscriptions; an in-flight read cannot undo a live event.
+    const subscriptions = [...this.subscriptions].map(([key, sub]) => [key, sub, sub.queueGeneration ?? 0, sub.queueReadGeneration = (sub.queueReadGeneration ?? 0) + 1]);
+    if (!subscriptions.length) return;
+    let state;
+    try {
+      const read = this.options.readQueuedFollowUps ?? (async () => {
+        const home = this.options.codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+        const global = JSON.parse(await readFile(this.options.globalStatePath ?? path.join(home, '.codex-global-state.json'), 'utf8'));
+        return record(global['queued-follow-ups']);
+      });
+      state = record(await read());
+    } catch { /* A missing or mid-replacement state file must not clear a known queue. */ }
+    await Promise.all(subscriptions.map(async ([key, sub, generation, readGeneration]) => {
+      let serverMessages = null;
+      try { serverMessages = await this.readServerQueuedMessages(sub.threadId, sub.hostId); } catch {}
+      if (this.subscriptions.get(key) !== sub || sub.queueReadGeneration !== readGeneration) return;
+      if (state && generation === 0 && (sub.queueGeneration ?? 0) === generation) {
+        const messages = Array.isArray(state[sub.threadId]) ? state[sub.threadId] : [];
+        this.setQueuedMessages(key, messages.filter(message => message && (message.submission?.hostId ?? message.submissionOptions?.executionHostId ?? 'local') === sub.hostId));
+      }
+      if (Array.isArray(serverMessages) && (sub.queueGeneration ?? 0) === generation) this.setQueuedMessages(key, serverMessages, { server: true });
+    }));
+  }
+  async readServerQueuedMessages() { return null; }
+  watchQueuedMessages() {
+    if (this.queuedRefreshTimer) return;
+    this.queuedRefreshTimer = setInterval(() => {
+      if (this.queuedRefreshPending) return;
+      this.queuedRefreshPending = this.refreshQueuedMessages().finally(() => { this.queuedRefreshPending = null; });
+    }, this.options.queuePollMs ?? 2000);
+    this.queuedRefreshTimer.unref?.();
   }
   emitSnapshot(key) {
     const sub = this.subscriptions.get(key);
@@ -499,6 +574,7 @@ export class DesktopAdapter extends EventEmitter {
     this.broadcast('thread-stream-following-changed', { conversationId: sub.threadId, hostId: sub.hostId, following: true }, [owner]);
   }
   clearStreamState() {
+    clearInterval(this.queuedRefreshTimer); this.queuedRefreshTimer = null;
     for (const timer of this.streamTimers.values()) clearTimeout(timer);
     this.streamTimers.clear(); this.subscriptions.clear(); this.snapshots.clear(); this.owners.clear();
     this.emit('stream.reset');
@@ -507,6 +583,15 @@ export class DesktopAdapter extends EventEmitter {
     if (message.type === 'client-discovery-request') { this.ipc.write({ type: 'client-discovery-response', requestId: message.requestId, response: { canHandle: false } }); return; }
     this.emit('notification', message);
     if (message.type !== 'broadcast') return;
+    if (message.method === 'thread-queued-followups-changed') {
+      const p = message.params;
+      if (message.version !== VERSIONS[message.method] || !p || !Array.isArray(p.messages)) return;
+      const key = `${p.hostId}:${p.conversationId}`, sub = this.subscriptions.get(key);
+      if (!sub || !sub.owner || sub.owner !== message.sourceClientId) return;
+      sub.queueGeneration = (sub.queueGeneration ?? 0) + 1;
+      this.setQueuedMessages(key, p.messages);
+      return;
+    }
     if (message.method === 'thread-stream-following-status-requested') {
       const p = message.params; const key = `${p.hostId}:${p.conversationId}`;
       if (this.subscriptions.has(key)) this.broadcast('thread-stream-following-changed', { hostId: p.hostId, conversationId: p.conversationId, following: true }, [message.sourceClientId]);
@@ -568,6 +653,8 @@ export class DesktopAdapter extends EventEmitter {
         this.subscriptions.delete(oldKey); this.snapshots.delete(oldKey); this.owners.delete(oldKey);
         clearTimeout(this.streamTimers.get(oldKey)); this.streamTimers.delete(oldKey);
       }
+      await this.refreshQueuedMessages();
+      this.watchQueuedMessages();
       let initial = !refresh && !sub.resyncRequestedAt && this.snapshotData(key);
       if (!initial) {
         if (!sub.reading) sub.reading = new Promise((resolve, reject) => {

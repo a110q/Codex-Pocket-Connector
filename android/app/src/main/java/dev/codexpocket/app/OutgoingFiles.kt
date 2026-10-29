@@ -50,16 +50,23 @@ val LocalOutgoingFilePicker=staticCompositionLocalOf<((PocketModel,String)->Unit
     return {launcher.launch(arrayOf("*/*"))}
 }
 
-@Composable fun AttachmentPickerButton(model:PocketModel,key:String) {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable fun AttachmentPickerButton(model:PocketModel,key:String,onReference:(()->Unit)?=null) {
     var menu by remember{mutableStateOf(false)}
     val images=rememberImagePicker(model,key);val files=rememberFilePicker(model,key)
-    Box {
-        IconButton(onClick={menu=true},enabled=!model.busy&&model.pendingOperation==null,modifier=Modifier.size(48.dp).semantics{contentDescription="添加附件"}){PocketIcon("附件",Modifier.size(21.dp))}
-        DropdownMenu(expanded=menu,onDismissRequest={menu=false}) {
-            DropdownMenuItem(text={Text("添加图片")},leadingIcon={PocketIcon("图片")},onClick={menu=false;images()})
-            DropdownMenuItem(text={Column{Text("添加文件");Text(if(model.supportsFiles)"文档、代码等 · 单个最多 50 MB"else"请先更新电脑连接器",fontSize=11.sp)}},leadingIcon={PocketIcon("文件")},enabled=model.supportsFiles,onClick={menu=false;files()})
+    IconButton(onClick={menu=true},enabled=!model.busy&&model.pendingOperation==null,modifier=Modifier.size(48.dp).semantics{contentDescription="添加附件"}){
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon("附件",Modifier.size(20.dp))}
+    }
+    if(menu)ModalBottomSheet(onDismissRequest={menu=false},containerColor=MaterialTheme.colorScheme.surface,shape=androidx.compose.foundation.shape.RoundedCornerShape(topStart=18.dp,topEnd=18.dp)){
+        Column(Modifier.fillMaxWidth().padding(horizontal=16.dp).padding(bottom=16.dp)){
+            Text("附加到当前指令",Modifier.padding(bottom=10.dp),fontSize=16.sp,fontWeight=androidx.compose.ui.text.font.FontWeight.SemiBold)
+            ChatMenuAction("图片","添加图片"){menu=false;images()}
+            ChatMenuAction("文件","添加文件",model.supportsFiles){menu=false;files()}
+            onReference?.let{ChatMenuAction("电脑","引用电脑文件",model.connected){menu=false;it()}}
+            if(!model.supportsFiles)Text("添加文件需先更新电脑连接器",Modifier.padding(12.dp),fontSize=12.sp,color=PocketPalette.muted)
         }
     }
+
 }
 
 @Composable fun OutgoingFileStrip(model:PocketModel,key:String) {

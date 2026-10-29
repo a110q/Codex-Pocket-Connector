@@ -1,6 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, statSync, lstatSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, existsSync, realpathSync, statSync, lstatSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, resolve, basename, relative, extname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, X509Certificate } from 'node:crypto';
@@ -185,6 +185,13 @@ export class FileAccess {
 
 export async function startCompanion(config, { adapter = new DesktopAdapter({ callerThreadId: config.contextThreadId }), port = 43785, statePath = resolve(ROOT, '.private/commands.sqlite'), configPath = CONFIG, desktopRetryMs = 3000 } = {}) {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
+  const logPath = resolve(dirname(statePath), 'connection-diagnostics.jsonl');
+  const connectionLog = (event, details = {}) => {
+    try {
+      if (existsSync(logPath) && statSync(logPath).size > 65536) renameSync(logPath, logPath + '.previous');
+      appendFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), event, ...details }) + '\n', { mode: 0o600 });
+    } catch { /* Diagnostics must never interrupt a connection. */ }
+  };
   const uploads = new ImageUploads(resolve(dirname(statePath), 'image-uploads'));
   const fileUploads = new FileUploads(resolve(dirname(statePath), 'file-uploads'));
   const ledger = new CommandLedger(statePath), files = new FileAccess(fileUploads.directory), preview = new PreviewTunnel(), history = new HistoryStore();
@@ -231,8 +238,9 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
   }
   const url = new URL('/relay', config.mode==='lan'?`https://127.0.0.1:${config.lanPort}`:config.relay); url.protocol = 'wss:';
   const link = new RelayConnection(url, { ca: config.caCert, maxPayload: MAX_FRAME, headers: { Authorization: `Bearer ${config.desktopToken}`, 'X-Pocket-Host': config.hostId, 'X-Pocket-Role': 'desktop' } }, {
-    onOpen: () => { relayError = ''; },
+    onOpen: () => { relayError = ''; connectionLog('relay.open'); },
     onDisconnect: reason => {
+      connectionLog('relay.disconnected', { reason });
       preview.close(); mobileOnline = false; channel = null;
       relayError = reason === 'replaced' ? '另一连接器已接管这台电脑，请关闭重复实例；需要时重新点击连接 Codex。'
         : reason === 'authorization-failed' ? '连接授权已失效，请检查账号或重新连接并配对。'
@@ -241,21 +249,31 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
     onMessage: async (data, socket) => {
       try {
         const frame = JSON.parse(data.toString());
-        if (frame.type === 'status') { mobileOnline = !!frame.peerOnline; if (!mobileOnline) { channel = null; preview.close(); } return; }
+        if (frame.type === 'status') { mobileOnline = !!frame.peerOnline; connectionLog('phone.status', { online: mobileOnline }); if (!mobileOnline) { channel = null; preview.close(); } return; }
         if (frame.type === 'pair/cancelled') { if(pairRequest?.fingerprint===frame.fingerprint)pairRequest=null;return; }
         if (frame.type === 'pair/request') { pairRequest = { name: String(frame.name).slice(0, 80), fingerprint: frame.fingerprint }; return; }
         const payload = crypto.decrypt(frame);
         if (payload.type === 'hello') {
-          if (Math.abs(Date.now() - payload.sentAt) > 120000 || typeof payload.channel !== 'string' || !/^[a-f0-9-]{36}$/i.test(payload.channel)) return;
+          if (typeof payload.channel !== 'string' || !/^[a-f0-9-]{36}$/i.test(payload.channel) || !Number.isFinite(payload.sentAt)) { connectionLog('hello.invalid'); return; }
+          const clockDifferenceMs = Date.now() - payload.sentAt;
+          connectionLog('hello.received', { clockDifferenceMs, desktopReady: adapter.ready });
+          if (Math.abs(clockDifferenceMs) > 120000) {
+            // Explain the rejection on the authenticated channel instead of
+            // silently leaving the phone in an endless timeout/retry loop.
+            link.send(JSON.stringify(crypto.encrypt({ type: 'hello', channel: payload.channel, desktopReady: false, connectionError: 'clock-skew', error: '手机与电脑时间相差超过两分钟，请在两端开启自动校时后重新连接。' })));
+            return;
+          }
           preview.close(); channel = payload.channel;
           // Transport readiness must not wait for a slow or restarting Codex.
           send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true, 'command.status': true, 'connection.ping': true }, desktopReady: adapter.ready, error: lastError });
+          connectionLog('hello.sent', { desktopReady: adapter.ready });
           void connectDesktop(); return;
         }
         if (!channel || payload.channel !== channel) return;
         if (payload.type === 'ping') {
           if (typeof payload.id !== 'string' || !payload.id.length || payload.id.length > 80) return;
           send({ type: 'pong', id: payload.id, desktopReady: adapter.ready, error: lastError });
+          connectionLog('ping.replied', { desktopReady: adapter.ready });
           void connectDesktop(); return;
         }
         if (payload.type !== 'request') return;
@@ -290,7 +308,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           }, payload.action === 'message.send' && adapter.confirmMessage ? () => adapter.confirmMessage({ ...payload.args, clientUserMessageId: payload.id }) : undefined);
           if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, result: result ?? {} });
         } catch (e) { if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, error: e.message, uncertain: !!e.uncertain }); }
-      } catch { /* Unauthenticated or replayed content cannot reach desktop methods. */ }
+      } catch { connectionLog('frame.rejected'); /* No payload or credentials are recorded. */ }
     }
   });
   const manager = http.createServer(async (req, res) => {

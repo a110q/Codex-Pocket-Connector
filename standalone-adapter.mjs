@@ -20,6 +20,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     super(options); this.server = options.server ?? new AppServerClient(options);
     this.models = []; this.ownedThreads = new Set(); this.createdThreads = new Set(); this.catalogRefreshTimers = new Map(); this.states = new Map(); this.approvals = new Map(); this.refreshTimers = new Map(); this.ipcAvailable = false;
     this.ipcConnecting = null; this.ownerErrors = new Map(); this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
+    this.runtimeReader = options.runtimeReader ?? null; this.runtimeRetryAt = 0;
     this.ownerBridge = new DesktopOwnerBridge(this);
     this.workspace = new WorkspaceTools(this);
     this.extensions = new ExtensionTools(this);
@@ -113,19 +114,55 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   async listThreads(args = {}) {
     const catalog = await this.localCatalog();
-    const values = await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], ...(args.includeArchived ? {} : { archived: false }) });
+    const [values, runtime] = await Promise.all([
+      this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], ...(args.includeArchived ? {} : { archived: false }) }),
+      this.desktopRuntime(catalog),
+    ]);
     if (args.includeArchived) values.push(...(await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: true })).map(value=>({...value,_pocketArchived:true})));
     const threads = new Map(catalog.threads.map(thread => [thread.id, thread]));
     for (const value of values) {
       const old = threads.get(value.id) ?? {};
       threads.set(value.id, { ...old, id: value.id, kind: 'codex', hostId: 'local', title: value.name || old.title || value.preview || '新对话', cwd: value.cwd,
         projectId: old.membershipKnown ? old.projectId : value.projectId, archived: value._pocketArchived ?? old.archived ?? false,
-        status: value.status?.type ?? 'idle', model: value.model, reasoningEffort: value.reasoningEffort,
+        status: value.status?.type ?? 'unknown', model: value.model, reasoningEffort: value.reasoningEffort,
         updatedAt: new Date(value.updatedAt * 1000).toISOString(), recencyAt: new Date((value.recencyAt ?? value.updatedAt) * 1000).toISOString() });
+    }
+    for (const [id, status] of runtime) {
+      const thread = threads.get(id);
+      if (thread) threads.set(id, { ...thread, ...status });
     }
     let result = [...threads.values()].filter(t => (args.includeArchived || !t.archived) && (args.includeSubagents || !t.isSubagent) && (!Object.hasOwn(args, 'projectId') || t.projectId === args.projectId) && (!args.hostId || args.hostId === 'local'));
     result.sort((a,b) => Number(!!b.isPinned) - Number(!!a.isPinned) || (Date.parse(b.recencyAt ?? b.updatedAt) || 0) - (Date.parse(a.recencyAt ?? a.updatedAt) || 0));
     return { threads: result, pinnedThreads: result.filter(t => t.isPinned), catalog: { localComplete: catalog.localComplete, remoteComplete: false, chatgptComplete: false, source: 'codex-app-server+desktop-membership' } };
+  }
+  async desktopRuntime(catalog) {
+    const runtime = new Map();
+    // A separate App Server reports desktop-owned chats as notLoaded. Query
+    // the desktop's summary tool; opening/resuming each chat would acquire
+    // writers and download histories merely to paint the sidebar.
+    if ((this.runtimeReader || (this.options.runtimeCatalog !== false && this.options.catalog !== false)) && Date.now() >= this.runtimeRetryAt) {
+      try {
+        if (!this.runtimeReader) this.runtimeReader = new DesktopAdapter({ ...this.options, timeoutMs: 2000, callerThreadId: this.callerThreadId || catalog.threads[0]?.id });
+        await this.runtimeReader.connect();
+        const result = await this.runtimeReader.tool('list_threads', { limit: 50 });
+        for (const thread of [...(result.threads ?? []), ...(result.pinnedThreads ?? [])]) {
+          if ((thread.kind ?? 'codex') !== 'codex' || (thread.hostId ?? 'local') !== 'local' || !thread.id) continue;
+          if (['unknown', 'notLoaded', undefined, null].includes(thread.status)) continue;
+          runtime.set(thread.id, { status: thread.status });
+        }
+      } catch {
+        this.runtimeReader?.close(); this.runtimeRetryAt = Date.now() + 5000;
+      }
+    }
+    // Pocket-owned chats run in independent processes as well. Ask only for
+    // their metadata so completion replaces a previous active observation.
+    await Promise.all([...this.ownedThreads].map(async id => {
+      try {
+        const { thread } = await this.serverFor(id).request('thread/read', { threadId: id, includeTurns: false }, 2000);
+        if (this.ownedThreads.has(id) && thread?.status?.type && thread.status.type !== 'notLoaded') runtime.set(id, { status: thread.status.type, threadRuntimeStatus: thread.status });
+      } catch {}
+    }));
+    return runtime;
   }
   async listProjects() {
     const [catalog, values] = await Promise.all([this.localCatalog(), this.server.pages('project/list')]);
@@ -217,6 +254,24 @@ export class StandaloneAdapter extends DesktopAdapter {
       else if (options.liveOnly) throw this.ownerUnavailable(threadId);
     }
     return { ...normalizeSnapshot(await this.storedState(threadId)), tokenUsage:this.extensions.tokens.get(threadId)??null, source: 'codex-app-server', live: true };
+  }
+  async readServerQueuedMessages(threadId, hostId) {
+    if (!this.ready || hostId !== 'local' || this.serverQueueUnsupported) return null;
+    const messages = [], seen = new Set(); let cursor = null;
+    try {
+      do {
+        // Listing a queue does not resume the thread or acquire its writer.
+        const page = await this.server.request('thread/queue/list', { threadId, cursor, limit: 100 }, 3000);
+        if (!Array.isArray(page.data)) return null;
+        messages.push(...page.data); cursor = page.nextCursor;
+        if (cursor != null && seen.has(cursor)) throw new Error('Repeated queue cursor');
+        seen.add(cursor);
+      } while (cursor != null);
+      return messages;
+    } catch (error) {
+      if (error.code === -32601) this.serverQueueUnsupported = true;
+      return null;
+    }
   }
   async tool(name, args) {
     if (name !== 'read_thread') throw new Error('此独立连接不使用桌面工具管道。');
@@ -494,6 +549,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   close() {
     this.initializationAttempt = null;
+    this.runtimeReader?.close(); this.runtimeRetryAt = 0;
     for (const timer of this.refreshTimers?.values() ?? []) clearTimeout(timer);
     this.refreshTimers?.clear(); this.server?.close(); this.ipcAvailable = false;
     for (const server of new Set(this.threadServers.values())) if (server !== this.server) server.close();

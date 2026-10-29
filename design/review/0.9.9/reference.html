@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Codex Pocket - 远程控制聊天界面</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: {
+              bg: '#F8FAFD',       // 浅冷白背景
+              card: '#FFFFFF',     // 纯白表面
+              subtle: '#F1F4FA',   // 次级浅冷灰蓝
+              lavender: '#F3F0FF', // 淡薰衣草辅助底色
+              lavenderBorder: '#E4DFFF'
+            },
+            indigo: {
+              bubble: '#EEF1FF',   // 轻盈淡靛蓝用户气泡
+              bubbleBorder: '#DCE2FF',
+              primary: '#4355B9',  // 靛蓝主色
+              hover: '#36469C',
+              deep: '#1E2547'
+            },
+            ink: {
+              primary: '#191C24',  // 主正文
+              secondary: '#525866',// 次级文字
+              muted: '#7C8496'     // 辅助文字
+            }
+          },
+          fontFamily: {
+            sans: ['"HarmonyOS Sans SC"', '"PingFang SC"', '"Noto Sans SC"', '"Microsoft YaHei"', 'system-ui', '-apple-system', 'sans-serif'],
+            mono: ['"JetBrains Mono"', '"SF Mono"', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* 保证精确的 390x844 纯净平面视图，同时在大屏预览时居中且无多余装饰外壳 */
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: #EEF1F6;
+      font-family: "HarmonyOS Sans SC", "PingFang SC", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* 精确 390x844 逻辑尺寸画布 */
+    #app-plane {
+      width: 390px;
+      height: 844px;
+      background-color: #F8FAFD;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      margin: 0 auto;
+      box-shadow: 0 0 0 1px rgba(25, 28, 36, 0.06);
+    }
+
+    /* 细滚动条隐藏，保持高保真平面干净 */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    @keyframes pulse-ring {
+      0% { transform: scale(0.85); opacity: 0.8; }
+      70% { transform: scale(1.75); opacity: 0; }
+      100% { transform: scale(1.75); opacity: 0; }
+    }
+    .running-ping::before {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 9999px;
+      background-color: #4355B9;
+      animation: pulse-ring 1.8s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+    }
+
+    @keyframes spin-slow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .animate-spin-slow {
+      animation: spin-slow 2.2s linear infinite;
+    }
+
+    /* 当屏幕宽度正好为移动端时铺满，桌面端精准维持390x844平面 */
+    @media (min-width: 400px) {
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部浮动辅助导出工具栏（仅在外部预览大屏时悬停在右上角，不侵入 390x844 画布） -->
+  <div class="fixed top-3 right-3 z-50 hidden md:flex items-center gap-2">
+    <button id="exportHiResBtn" onclick="exportHighResPNG()" class="px-3 py-1.5 rounded-[12px] bg-white/90 backdrop-blur border border-slate-200/80 text-[12px] font-medium text-ink-secondary hover:text-indigo-primary hover:border-indigo-bubbleBorder shadow-sm transition flex items-center gap-1.5">
+      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      <span>导出 1170×2532 PNG</span>
+    </button>
+  </div>
+
+  <!-- 唯一一张 App 内容平面图（390×844 逻辑尺寸，无手机壳、无系统状态栏） -->
+  <main id="app-plane" role="application" aria-label="Codex Pocket 远程控制聊天界面">
+
+    <!-- ==================== 1. 顶部紧凑导航栏 ==================== -->
+    <header class="h-[60px] px-1.5 bg-[#F8FAFD]/95 backdrop-blur-md border-b border-[#E5E9F2] flex items-center justify-between shrink-0 select-none z-20">
+      <!-- 左侧：返回按钮 (48x48 触控区) + 标题与项目名 -->
+      <div class="flex items-center min-w-0 flex-1">
+        <button type="button" onclick="showToast('返回会话列表')" aria-label="返回" class="w-[48px] h-[48px] rounded-[14px] flex items-center justify-center text-ink-primary hover:bg-surface-subtle active:scale-95 transition shrink-0">
+          <svg class="w-[20px] h-[20px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 18l-6-6 6-6"/>
+          </svg>
+        </button>
+
+        <div class="min-w-0 pl-0.5 pr-2">
+          <div class="flex items-center gap-1.5">
+            <h1 class="text-[16px] font-semibold text-ink-primary tracking-[-0.01em] truncate leading-[21px]">修复自动重连</h1>
+          </div>
+          <div class="flex items-center gap-1.5 mt-0.5">
+            <svg class="w-[12px] h-[12px] text-indigo-primary shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span class="font-mono text-[12px] text-ink-secondary truncate leading-[15px]">codex_android</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右侧：容易发现的“工作电脑 ▾”切换入口 + 更多操作 (点击区域均满足 >=48px 高) -->
+      <div class="flex items-center gap-0.5 shrink-0">
+        <button type="button" onclick="toggleSheet('hostSheet')" class="h-[48px] px-2.5 flex items-center group" aria-label="切换远程电脑">
+          <span class="h-[34px] px-2.5 rounded-[12px] bg-surface-lavender border border-surface-lavenderBorder flex items-center gap-1.5 text-[13px] font-medium text-indigo-deep group-hover:border-indigo-primary/40 group-active:scale-[0.98] transition">
+            <span class="w-[7px] h-[7px] rounded-full bg-emerald-500 ring-2 ring-emerald-500/20"></span>
+            <span id="currentHostLabel">工作电脑</span>
+            <span class="text-indigo-primary text-[12px] leading-none">▾</span>
+          </span>
+        </button>
+
+        <button type="button" onclick="toggleSheet('moreSheet')" aria-label="更多操作" class="w-[48px] h-[48px] rounded-[14px] flex items-center justify-center text-ink-primary hover:bg-surface-subtle active:scale-95 transition">
+          <svg class="w-[20px] h-[20px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="5" r="1.25" fill="currentColor"/>
+            <circle cx="12" cy="12" r="1.25" fill="currentColor"/>
+            <circle cx="12" cy="19" r="1.25" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ==================== 2. 主体对话阅读区（尽量充足、层次克制） ==================== -->
+    <section id="chatScrollArea" class="flex-1 overflow-y-auto no-scrollbar px-4 pt-4 pb-3 space-y-4">
+
+      <!-- 2.1 用户消息：轻盈的淡靛蓝气泡 (圆角 16px, 正文 15.5px) -->
+      <div class="flex flex-col items-end">
+        <div class="max-w-[84%] rounded-[16px] rounded-tr-[6px] bg-indigo-bubble border border-indigo-bubbleBorder px-3.5 py-2.5 text-[15.5px] leading-[1.52] text-indigo-deep">
+          检查项目连接，完成后告诉我结果。
+        </div>
+        <span class="mt-1 pr-0.5 text-[12px] text-ink-muted leading-none">14:28 · 已送达工作电脑</span>
+      </div>
+
+      <!-- 2.2 工具记录：默认折叠成一行“执行过程 · 3 项”，带展开箭头和运行中标记 -->
+      <div class="w-full">
+        <button
+          id="toolTraceToggle"
+          type="button"
+          onclick="toggleToolTrace()"
+          aria-expanded="false"
+          class="w-full min-h-[48px] px-3.5 py-2 rounded-[14px] bg-surface-subtle/90 hover:bg-surface-subtle border border-[#E4E9F4] flex items-center justify-between text-left transition"
+        >
+          <div class="flex items-center gap-2.5 min-w-0">
+            <!-- 展开箭头 -->
+            <svg id="toolTraceChevron" class="w-[16px] h-[16px] text-ink-secondary transition-transform duration-200 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+            <span class="text-[14px] font-medium text-ink-primary truncate">执行过程 · 3 项</span>
+            <span class="text-[12px] text-ink-muted font-mono truncate">1 异常 · 1 运行中</span>
+          </div>
+
+          <!-- 运行中标记 -->
+          <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-[10px] bg-surface-lavender border border-surface-lavenderBorder text-[12px] font-medium text-indigo-primary shrink-0">
+            <span class="relative flex w-2 h-2">
+              <span class="running-ping relative inline-flex rounded-full w-2 h-2 bg-indigo-primary"></span>
+            </span>
+            <span>运行中</span>
+          </span>
+        </button>
+
+        <!-- 点击可展开的 3 项工具明细（默认隐藏，满足“工具记录默认折叠成一行”） -->
+        <div id="toolTraceDetails" class="hidden mt-1.5 px-3 py-2.5 rounded-[14px] bg-white border border-[#E5E9F2] space-y-2 text-[12.5px]">
+          <div class="flex items-center justify-between text-ink-secondary">
+            <span class="font-mono truncate">1. read_file · ReconnectManager.kt</span>
+            <span class="text-emerald-600 font-medium shrink-0">已完成 · 0.4s</span>
+          </div>
+          <div class="flex items-center justify-between text-ink-secondary">
+            <span class="font-mono truncate">2. bash · adb reverse --list</span>
+            <span class="text-rose-600 font-medium shrink-0">退出码 1</span>
+          </div>
+          <div class="flex items-center justify-between text-ink-secondary">
+            <span class="font-mono truncate">3. test · WebSocketAckTest</span>
+            <span class="text-indigo-primary font-medium shrink-0">执行中...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2.3 助手回复：开放式正文（无聊天气泡包裹，阅读舒适，15.5px 正文） -->
+      <article class="space-y-3.5 pt-0.5">
+        <!-- 助手标识微栏 -->
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="w-[20px] h-[20px] rounded-[6px] bg-indigo-primary/10 border border-indigo-primary/20 flex items-center justify-center text-indigo-primary">
+              <svg class="w-[13px] h-[13px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 17 10 11 4 5"/>
+                <line x1="12" y1="19" x2="20" y2="19"/>
+              </svg>
+            </span>
+            <span class="text-[13px] font-medium text-ink-secondary">Codex</span>
+            <span class="text-[12px] text-ink-muted">· 远程工作区同步中</span>
+          </div>
+          <span class="text-[12px] font-mono text-indigo-primary">流式输出</span>
+        </div>
+
+        <!-- 开放式正文主体 -->
+        <p class="text-[15.5px] leading-[1.62] text-ink-primary tracking-[0.005em]">
+          连接恢复逻辑已调整，正在检查断网重连和消息回执。
+        </p>
+
+        <!-- 补充开放式轻量检查要点，保持正文阅读区充足且层次克制 -->
+        <div class="pl-3 border-l-2 border-indigo-bubbleBorder space-y-1 text-[13.5px] leading-[1.5] text-ink-secondary">
+          <div>• 心跳超时阈值由 <span class="font-mono text-ink-primary">30s</span> 收敛为指数退避 <span class="font-mono text-ink-primary">2s → 16s</span></div>
+          <div>• 断线期间离线队列缓存序列号，重连后校验 ACK 回执</div>
+        </div>
+
+        <!-- 2.4 失败状态（清楚可见，克制精致的细描边通知块，圆角 14px，点击区 >=48px） -->
+        <div id="failureCard" class="rounded-[14px] bg-[#FFF8F8] border border-[#F3C7C9] px-3.5 py-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="w-[20px] h-[20px] rounded-[6px] bg-[#FEE2E2] text-[#B91C1C] flex items-center justify-center shrink-0">
+                <svg class="w-[13px] h-[13px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="9"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+              </span>
+              <span class="text-[13.5px] font-semibold text-[#991B1B] truncate">执行失败 · 本机调试隧道未就绪</span>
+            </div>
+            <span class="px-2 py-0.5 rounded-[8px] bg-[#FEE2E2] text-[#991B1B] text-[12px] font-medium shrink-0">失败</span>
+          </div>
+
+          <p class="mt-1.5 text-[12.5px] leading-[1.45] text-[#7F1D1D] font-mono bg-white/80 px-2.5 py-1.5 rounded-[10px] border border-[#F5D5D7]">
+            adb reverse tcp:8765 tcp:8765 → error: closed (exit 1)
+          </p>
+
+          <div class="mt-2 flex items-center justify-between">
+            <span class="text-[12px] text-[#991B1B]/85" id="failureHintText">已自动切换局域网 WebSocket 通道</span>
+            <button type="button" onclick="retryFailedStep()" class="min-h-[48px] -my-1.5 px-3 flex items-center gap-1.5 text-[12.5px] font-semibold text-[#991B1B] hover:text-[#7F1D1D] active:scale-95 transition">
+              <svg class="w-[14px] h-[14px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span>重试命令</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 2.5 待审批状态（清楚可见，远程控制核心交互，按钮触控高度 48px，圆角 12-14px） -->
+        <div id="approvalCard" class="rounded-[15px] bg-white border border-indigo-primary/30 shadow-[0_2px_10px_rgba(67,85,185,0.06)] px-3.5 py-3">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="w-[20px] h-[20px] rounded-[6px] bg-amber-500/15 text-amber-700 flex items-center justify-center shrink-0">
+                <svg class="w-[13px] h-[13px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+              </span>
+              <span class="text-[13.5px] font-semibold text-ink-primary truncate">请求在工作电脑执行终端命令</span>
+            </div>
+            <span id="approvalBadge" class="px-2 py-0.5 rounded-[8px] bg-amber-500/15 border border-amber-500/30 text-amber-800 text-[12px] font-semibold shrink-0">
+              待审批
+            </span>
+          </div>
+
+          <div class="mt-2 px-2.5 py-2 rounded-[10px] bg-surface-subtle border border-[#E3E8F3] font-mono text-[12.5px] text-ink-primary leading-[1.45] break-all">
+            ./gradlew :app:testDebugUnitTest --tests "*ReconnectAckTest"
+          </div>
+
+          <div class="mt-1.5 flex items-center justify-between text-[12px] text-ink-muted">
+            <span>目录：~/Projects/codex_android</span>
+            <span>需读写本地测试报告</span>
+          </div>
+
+          <!-- 审批动作栏：每个按钮点击区域严格 >=48px 高，圆角 12px，避免胶囊化 -->
+          <div id="approvalActions" class="mt-2.5 grid grid-cols-2 gap-2">
+            <button type="button" onclick="handleApproval(false)" class="h-[48px] rounded-[12px] bg-surface-subtle hover:bg-[#E7ECF6] border border-[#DCE2F0] text-[13.5px] font-medium text-ink-secondary flex items-center justify-center gap-1.5 active:scale-[0.99] transition">
+              <svg class="w-[15px] h-[15px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+              <span>拒绝执行</span>
+            </button>
+            <button type="button" onclick="handleApproval(true)" class="h-[48px] rounded-[12px] bg-indigo-primary hover:bg-indigo-hover text-white text-[13.5px] font-medium flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.99] transition">
+              <svg class="w-[15px] h-[15px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              <span>批准运行</span>
+            </button>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- ==================== 3. 底部输入与合并设置区（无全局底部导航） ==================== -->
+    <footer class="bg-[#F8FAFD] border-t border-[#E5E9F2] px-3 pt-1.5 pb-3 shrink-0 z-20 select-none">
+
+      <!-- 3.1 模型、推理强度、访问权限合并为一行设置摘要，点击打开底部面板 (高度 48px) -->
+      <button
+        type="button"
+        onclick="toggleSheet('configSheet')"
+        class="w-full h-[48px] px-2.5 rounded-[12px] hover:bg-surface-subtle/80 flex items-center justify-between text-left transition group"
+        aria-label="打开模型与权限设置面板"
+      >
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="w-[22px] h-[22px] rounded-[8px] bg-surface-lavender border border-surface-lavenderBorder flex items-center justify-center text-indigo-primary shrink-0">
+            <svg class="w-[13px] h-[13px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="4" y1="21" x2="4" y2="14"/>
+              <line x1="4" y1="10" x2="4" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12" y2="3"/>
+              <line x1="20" y1="21" x2="20" y2="16"/>
+              <line x1="20" y1="12" x2="20" y2="3"/>
+              <line x1="1" y1="14" x2="7" y2="14"/>
+              <line x1="9" y1="8" x2="15" y2="8"/>
+              <line x1="17" y1="16" x2="23" y2="16"/>
+            </svg>
+          </span>
+          <div class="flex items-center gap-1.5 text-[12.5px] text-ink-secondary truncate">
+            <span id="summaryModel" class="font-medium text-ink-primary">codex-1</span>
+            <span class="text-ink-muted">·</span>
+            <span id="summaryEffort">高推理</span>
+            <span class="text-ink-muted">·</span>
+            <span id="summaryAccess" class="text-indigo-primary font-medium">读写需审批</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1 text-[12px] text-ink-muted group-hover:text-indigo-primary shrink-0">
+          <span>调整</span>
+          <svg class="w-[14px] h-[14px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="18 15 12 9 6 15"/>
+          </svg>
+        </div>
+      </button>
+
+      <!-- 3.2 附件 + 舒适的多行输入框 + 发送/停止按钮 (圆角 16px，按钮触控区 48x48) -->
+      <div class="mt-0.5 flex items-end gap-1.5 bg-white rounded-[16px] border border-[#DCE2F0] focus-within:border-indigo-primary/60 p-1.5 shadow-[0_1px_4px_rgba(25,28,36,0.03)]">
+        <!-- 附件按钮 (48x48) -->
+        <button
+          type="button"
+          onclick="toggleSheet('attachmentSheet')"
+          aria-label="添加附件或引用文件"
+          class="w-[48px] h-[48px] rounded-[12px] text-ink-secondary hover:text-indigo-primary hover:bg-surface-subtle flex items-center justify-center shrink-0 active:scale-95 transition"
+        >
+          <svg class="w-[20px] h-[20px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+
+        <!-- 舒适的多行输入框 -->
+        <div class="flex-1 min-w-0 py-1">
+          <textarea
+            id="composerInput"
+            rows="2"
+            oninput="handleComposerInput()"
+            placeholder="向工作电脑发送指令，或补充重连测试要求…"
+            class="w-full resize-none bg-transparent text-[15px] leading-[1.45] text-ink-primary placeholder:text-ink-muted focus:outline-none max-h-[96px]"
+          ></textarea>
+        </div>
+
+        <!-- 停止 / 发送 切换按钮 (48x48 点击区域，圆角 13px) -->
+        <button
+          id="sendOrStopBtn"
+          type="button"
+          onclick="handleSendOrStop()"
+          aria-label="停止当前任务或发送指令"
+          class="w-[48px] h-[48px] rounded-[13px] bg-surface-lavender border border-surface-lavenderBorder text-indigo-primary hover:bg-indigo-primary hover:text-white flex flex-col items-center justify-center gap-0.5 shrink-0 active:scale-95 transition"
+        >
+          <!-- 默认处于运行中时显示“停止”图标与微字，也可一键切换发送 -->
+          <span id="btnStopIcon" class="flex flex-col items-center">
+            <svg class="w-[17px] h-[17px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" fill-opacity="0.18"/>
+            </svg>
+            <span class="text-[12px] font-medium leading-none mt-0.5">停止</span>
+          </span>
+          <span id="btnSendIcon" class="hidden flex-col items-center">
+            <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5"/>
+              <polyline points="5 12 12 5 19 12"/>
+            </svg>
+          </span>
+        </button>
+      </div>
+    </footer>
+
+    <!-- ==================== 4. 交互式底部面板（点击设置摘要或电脑切换时呼出） ==================== -->
+    <div id="sheetBackdrop" onclick="closeAllSheets()" class="hidden absolute inset-0 bg-ink-primary/30 backdrop-blur-[1px] z-30 transition-opacity"></div>
+
+    <!-- 4.1 模型、推理强度、访问权限 底部面板 -->
+    <section id="configSheet" class="hidden absolute bottom-0 inset-x-0 bg-white rounded-t-[18px] border-t border-[#E5E9F2] p-4 z-40 shadow-2xl">
+      <div class="w-9 h-1 bg-slate-200 rounded-full mx-auto mb-3"></div>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-[16px] font-semibold text-ink-primary">运行配置</h2>
+        <button type="button" onclick="closeAllSheets()" class="w-[48px] h-[48px] -mr-2 flex items-center justify-center text-ink-secondary">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="space-y-3.5 text-[13px]">
+        <!-- 模型选择 -->
+        <div>
+          <label class="block text-[12px] text-ink-muted mb-1.5">模型</label>
+          <div class="grid grid-cols-2 gap-2">
+            <button type="button" onclick="selectConfig('model', 'codex-1')" data-model="codex-1" class="cfg-model h-[48px] px-3 rounded-[12px] border border-indigo-primary bg-indigo-bubble/60 text-indigo-deep font-medium text-left flex items-center justify-between">
+              <span>codex-1</span>
+              <span class="text-[12px] text-indigo-primary">推荐</span>
+            </button>
+            <button type="button" onclick="selectConfig('model', 'o4-mini')" data-model="o4-mini" class="cfg-model h-[48px] px-3 rounded-[12px] border border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary font-medium text-left flex items-center justify-between">
+              <span>o4-mini</span>
+              <span class="text-[12px] text-ink-muted">极速</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 推理强度 -->
+        <div>
+          <label class="block text-[12px] text-ink-muted mb-1.5">推理强度</label>
+          <div class="grid grid-cols-3 gap-2">
+            <button type="button" onclick="selectConfig('effort', '低推理')" data-effort="低推理" class="cfg-effort h-[48px] rounded-[12px] border border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary font-medium">低</button>
+            <button type="button" onclick="selectConfig('effort', '中推理')" data-effort="中推理" class="cfg-effort h-[48px] rounded-[12px] border border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary font-medium">中</button>
+            <button type="button" onclick="selectConfig('effort', '高推理')" data-effort="高推理" class="cfg-effort h-[48px] rounded-[12px] border border-indigo-primary bg-indigo-bubble/60 text-indigo-deep font-medium">高推理</button>
+          </div>
+        </div>
+
+        <!-- 访问权限 -->
+        <div>
+          <label class="block text-[12px] text-ink-muted mb-1.5">远程电脑访问权限</label>
+          <div class="grid grid-cols-3 gap-2">
+            <button type="button" onclick="selectConfig('access', '仅只读')" data-access="仅只读" class="cfg-access h-[48px] rounded-[12px] border border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary font-medium">仅只读</button>
+            <button type="button" onclick="selectConfig('access', '读写需审批')" data-access="读写需审批" class="cfg-access h-[48px] rounded-[12px] border border-indigo-primary bg-indigo-bubble/60 text-indigo-deep font-medium">读写需审批</button>
+            <button type="button" onclick="selectConfig('access', '完全自主')" data-access="完全自主" class="cfg-access h-[48px] rounded-[12px] border border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary font-medium">完全自主</button>
+          </div>
+        </div>
+      </div>
+
+      <button type="button" onclick="closeAllSheets()" class="mt-4 w-full h-[48px] rounded-[12px] bg-indigo-primary text-white text-[14px] font-medium">
+        完成设置
+      </button>
+    </section>
+
+    <!-- 4.2 “工作电脑 ▾” 切换面板 -->
+    <section id="hostSheet" class="hidden absolute bottom-0 inset-x-0 bg-white rounded-t-[18px] border-t border-[#E5E9F2] p-4 z-40 shadow-2xl">
+      <div class="w-9 h-1 bg-slate-200 rounded-full mx-auto mb-3"></div>
+      <h2 class="text-[16px] font-semibold text-ink-primary mb-2.5">切换连接的电脑</h2>
+      <div class="space-y-2">
+        <button type="button" onclick="switchHost('工作电脑')" class="w-full min-h-[54px] px-3.5 py-2 rounded-[14px] border border-indigo-primary bg-indigo-bubble/50 flex items-center justify-between text-left">
+          <div>
+            <div class="text-[14px] font-semibold text-indigo-deep">工作电脑 · Mac Studio</div>
+            <div class="text-[12px] text-ink-secondary font-mono">Tailscale · 18ms · ~/Projects/codex_android</div>
+          </div>
+          <span class="text-[12px] font-medium text-emerald-600">已连接</span>
+        </button>
+        <button type="button" onclick="switchHost('家里台式机')" class="w-full min-h-[54px] px-3.5 py-2 rounded-[14px] border border-[#E5E9F2] bg-surface-subtle/60 flex items-center justify-between text-left">
+          <div>
+            <div class="text-[14px] font-medium text-ink-primary">家里台式机 · Ubuntu 24.04</div>
+            <div class="text-[12px] text-ink-muted font-mono">空闲待机 · Codex CLI v0.19</div>
+          </div>
+          <span class="text-[12px] text-ink-muted">切换</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 4.3 附件与更多面板 -->
+    <section id="attachmentSheet" class="hidden absolute bottom-0 inset-x-0 bg-white rounded-t-[18px] border-t border-[#E5E9F2] p-4 z-40 shadow-2xl">
+      <div class="w-9 h-1 bg-slate-200 rounded-full mx-auto mb-3"></div>
+      <h2 class="text-[16px] font-semibold text-ink-primary mb-2.5">附加到当前指令</h2>
+      <div class="grid grid-cols-2 gap-2 text-[13.5px]">
+        <button type="button" onclick="insertAttachment('@ReconnectManager.kt ')" class="h-[48px] px-3 rounded-[12px] bg-surface-subtle hover:bg-indigo-bubble text-ink-primary font-medium flex items-center gap-2">
+          <span class="font-mono text-indigo-primary">@</span><span>引用电脑文件</span>
+        </button>
+        <button type="button" onclick="insertAttachment('[终端报错日志] ')" class="h-[48px] px-3 rounded-[12px] bg-surface-subtle hover:bg-indigo-bubble text-ink-primary font-medium flex items-center gap-2">
+          <span class="font-mono text-indigo-primary">#</span><span>附上最新日志</span>
+        </button>
+      </div>
+    </section>
+
+    <section id="moreSheet" class="hidden absolute bottom-0 inset-x-0 bg-white rounded-t-[18px] border-t border-[#E5E9F2] p-4 z-40 shadow-2xl">
+      <div class="w-9 h-1 bg-slate-200 rounded-full mx-auto mb-3"></div>
+      <h2 class="text-[16px] font-semibold text-ink-primary mb-2.5">会话操作</h2>
+      <div class="space-y-1.5 text-[14px]">
+        <button type="button" onclick="showToast('已同步电脑端最新 Git 变更');closeAllSheets()" class="w-full h-[48px] px-3 rounded-[12px] hover:bg-surface-subtle text-left text-ink-primary flex items-center justify-between">
+          <span>查看电脑端 Git 变更集 (2 个文件)</span>
+          <span class="font-mono text-[12px] text-indigo-primary">+48 -12</span>
+        </button>
+        <button type="button" onclick="showToast('已复制远程终端会话 ID');closeAllSheets()" class="w-full h-[48px] px-3 rounded-[12px] hover:bg-surface-subtle text-left text-ink-primary flex items-center justify-between">
+          <span>重启远程 Codex 守护进程</span>
+          <span class="text-[12px] text-ink-muted">PID 48291</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 轻量反馈提示条 -->
+    <div id="toastBar" class="pointer-events-none opacity-0 transition-opacity duration-200 absolute top-[68px] left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-[12px] bg-indigo-deep text-white text-[12.5px] font-medium shadow-md z-50 whitespace-nowrap">
+      提示内容
+    </div>
+
+  </main>
+
+  <script>
+    let isTaskRunning = true;
+
+    function toggleToolTrace() {
+      const details = document.getElementById('toolTraceDetails');
+      const chevron = document.getElementById('toolTraceChevron');
+      const toggleBtn = document.getElementById('toolTraceToggle');
+      const isHidden = details.classList.contains('hidden');
+
+      if (isHidden) {
+        details.classList.remove('hidden');
+        chevron.style.transform = 'rotate(90deg)';
+        toggleBtn.setAttribute('aria-expanded', 'true');
+      } else {
+        details.classList.add('hidden');
+        chevron.style.transform = 'rotate(0deg)';
+        toggleBtn.setAttribute('aria-expanded', 'false');
+      }
+    }
+
+    function retryFailedStep() {
+      const hint = document.getElementById('failureHintText');
+      hint.textContent = '正在通过工作电脑重新建立 ADB 端口映射…';
+      showToast('已向工作电脑下发重试指令');
+    }
+
+    function handleApproval(approved) {
+      const badge = document.getElementById('approvalBadge');
+      const actions = document.getElementById('approvalActions');
+
+      if (approved) {
+        badge.textContent = '已批准执行';
+        badge.className = 'px-2 py-0.5 rounded-[8px] bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 text-[12px] font-semibold shrink-0';
+        actions.innerHTML = `
+          <div class="col-span-2 h-[48px] rounded-[12px] bg-emerald-50/70 border border-emerald-200 px-3 flex items-center justify-between text-[13px] text-emerald-800">
+            <span>已授权工作电脑运行单元测试</span>
+            <button type="button" onclick="resetApproval()" class="text-[12px] font-medium underline">重置演示</button>
+          </div>
+        `;
+        showToast('已批准远程命令执行');
+      } else {
+        badge.textContent = '已拒绝';
+        badge.className = 'px-2 py-0.5 rounded-[8px] bg-slate-200 text-ink-secondary text-[12px] font-semibold shrink-0';
+        actions.innerHTML = `
+          <div class="col-span-2 h-[48px] rounded-[12px] bg-surface-subtle border border-[#DCE2F0] px-3 flex items-center justify-between text-[13px] text-ink-secondary">
+            <span>已中止该终端命令并通知 Codex</span>
+            <button type="button" onclick="resetApproval()" class="text-[12px] font-medium text-indigo-primary">重新审批</button>
+          </div>
+        `;
+        showToast('已拒绝执行该命令');
+      }
+    }
+
+    function resetApproval() {
+      const badge = document.getElementById('approvalBadge');
+      const actions = document.getElementById('approvalActions');
+      badge.textContent = '待审批';
+      badge.className = 'px-2 py-0.5 rounded-[8px] bg-amber-500/15 border border-amber-500/30 text-amber-800 text-[12px] font-semibold shrink-0';
+      actions.innerHTML = `
+        <button type="button" onclick="handleApproval(false)" class="h-[48px] rounded-[12px] bg-surface-subtle hover:bg-[#E7ECF6] border border-[#DCE2F0] text-[13.5px] font-medium text-ink-secondary flex items-center justify-center gap-1.5 active:scale-[0.99] transition">
+          <svg class="w-[15px] h-[15px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+          <span>拒绝执行</span>
+        </button>
+        <button type="button" onclick="handleApproval(true)" class="h-[48px] rounded-[12px] bg-indigo-primary hover:bg-indigo-hover text-white text-[13.5px] font-medium flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.99] transition">
+          <svg class="w-[15px] h-[15px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <span>批准运行</span>
+        </button>
+      `;
+    }
+
+    function handleComposerInput() {
+      const input = document.getElementById('composerInput');
+      const stopIcon = document.getElementById('btnStopIcon');
+      const sendIcon = document.getElementById('btnSendIcon');
+      const btn = document.getElementById('sendOrStopBtn');
+
+      if (input.value.trim().length > 0) {
+        stopIcon.classList.add('hidden');
+        sendIcon.classList.remove('hidden');
+        sendIcon.classList.add('flex');
+        btn.className = 'w-[48px] h-[48px] rounded-[13px] bg-indigo-primary text-white flex flex-col items-center justify-center shrink-0 active:scale-95 transition';
+      } else {
+        stopIcon.classList.remove('hidden');
+        sendIcon.classList.add('hidden');
+        sendIcon.classList.remove('flex');
+        btn.className = 'w-[48px] h-[48px] rounded-[13px] bg-surface-lavender border border-surface-lavenderBorder text-indigo-primary hover:bg-indigo-primary hover:text-white flex flex-col items-center justify-center gap-0.5 shrink-0 active:scale-95 transition';
+      }
+    }
+
+    function handleSendOrStop() {
+      const input = document.getElementById('composerInput');
+      const text = input.value.trim();
+
+      if (text.length > 0) {
+        const scrollArea = document.getElementById('chatScrollArea');
+        const msgWrapper = document.createElement('div');
+        msgWrapper.className = 'flex flex-col items-end';
+        msgWrapper.innerHTML = `
+          <div class="max-w-[84%] rounded-[16px] rounded-tr-[6px] bg-indigo-bubble border border-indigo-bubbleBorder px-3.5 py-2.5 text-[15.5px] leading-[1.52] text-indigo-deep"></div>
+          <span class="mt-1 pr-0.5 text-[12px] text-ink-muted leading-none">刚刚 · 已同步至工作电脑</span>
+        `;
+        msgWrapper.querySelector('div').textContent = text;
+        scrollArea.appendChild(msgWrapper);
+        scrollArea.scrollTop = scrollArea.scrollHeight;
+        input.value = '';
+        handleComposerInput();
+        showToast('指令已发送至工作电脑');
+      } else {
+        isTaskRunning = !isTaskRunning;
+        showToast(isTaskRunning ? '已恢复远程任务执行' : '已向工作电脑发送停止信号');
+      }
+    }
+
+    function toggleSheet(sheetId) {
+      closeAllSheets();
+      document.getElementById('sheetBackdrop').classList.remove('hidden');
+      document.getElementById(sheetId).classList.remove('hidden');
+    }
+
+    function closeAllSheets() {
+      document.getElementById('sheetBackdrop').classList.add('hidden');
+      ['configSheet', 'hostSheet', 'attachmentSheet', 'moreSheet'].forEach(id => {
+        document.getElementById(id).classList.add('hidden');
+      });
+    }
+
+    function selectConfig(type, value) {
+      if (type === 'model') {
+        document.getElementById('summaryModel').textContent = value;
+        document.querySelectorAll('.cfg-model').forEach(btn => {
+          const active = btn.dataset.model === value;
+          btn.className = `cfg-model h-[48px] px-3 rounded-[12px] border ${active ? 'border-indigo-primary bg-indigo-bubble/60 text-indigo-deep' : 'border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary'} font-medium text-left flex items-center justify-between`;
+        });
+      } else if (type === 'effort') {
+        document.getElementById('summaryEffort').textContent = value;
+        document.querySelectorAll('.cfg-effort').forEach(btn => {
+          const active = btn.dataset.effort === value;
+          btn.className = `cfg-effort h-[48px] rounded-[12px] border ${active ? 'border-indigo-primary bg-indigo-bubble/60 text-indigo-deep' : 'border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary'} font-medium`;
+        });
+      } else if (type === 'access') {
+        document.getElementById('summaryAccess').textContent = value;
+        document.querySelectorAll('.cfg-access').forEach(btn => {
+          const active = btn.dataset.access === value;
+          btn.className = `cfg-access h-[48px] rounded-[12px] border ${active ? 'border-indigo-primary bg-indigo-bubble/60 text-indigo-deep' : 'border-[#E5E9F2] bg-surface-subtle/50 text-ink-secondary'} font-medium`;
+        });
+      }
+    }
+
+    function switchHost(hostName) {
+      document.getElementById('currentHostLabel').textContent = hostName;
+      closeAllSheets();
+      showToast(`已切换至：${hostName}`);
+    }
+
+    function insertAttachment(token) {
+      const input = document.getElementById('composerInput');
+      input.value = (input.value ? input.value + ' ' : '') + token;
+      closeAllSheets();
+      handleComposerInput();
+      input.focus();
+    }
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const bar = document.getElementById('toastBar');
+      bar.textContent = msg;
+      bar.classList.remove('opacity-0');
+      bar.classList.add('opacity-100');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        bar.classList.remove('opacity-100');
+        bar.classList.add('opacity-0');
+      }, 1800);
+    }
+
+    // 一键导出 1170×2532 (3x) 高清平面图 PNG
+    async function exportHighResPNG() {
+      const btn = document.getElementById('exportHiResBtn');
+      const originalText = btn.innerHTML;
+      btn.innerHTML = '<span>正在渲染 1170×2532…</span>';
+
+      try {
+        if (!window.html2canvas) {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+        const plane = document.getElementById('app-plane');
+        const canvas = await window.html2canvas(plane, {
+          width: 390,
+          height: 844,
+          scale: 3, // 390*3 = 1170, 844*3 = 2532
+          backgroundColor: '#F8FAFD',
+          useCORS: true
+        });
+        const link = document.createElement('a');
+        link.download = 'Codex_Pocket_1170x2532.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        showToast('已导出 1170×2532 高清平面图');
+      } catch (e) {
+        showToast('可直接全屏截图保存');
+      } finally {
+        btn.innerHTML = originalText;
+      }
+    }
+  </script>
+</body>
+</html>

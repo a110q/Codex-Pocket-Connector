@@ -69,11 +69,11 @@ class ConnectionRecoveryTest {
         try{
             connection.connect();until{connection.ready};peer.ignoreMessages=true
             connection.request("message.send",JSONObject().put("threadId","local-network-test").put("text","one message")){_,_->callbacks.incrementAndGet()}
-            until{states.contains(ConnectionState.HANDSHAKE_TIMEOUT)}
+            until{states.contains(ConnectionState.HEARTBEAT_TIMEOUT)}
             Assert.assertFalse(connection.ready);Assert.assertEquals(1,callbacks.get())
             Thread.sleep(600)
             Assert.assertEquals(1,callbacks.get());Assert.assertEquals(1,peer.messages.size)
-            Assert.assertEquals(1,states.count{it==ConnectionState.HANDSHAKE_TIMEOUT})
+            Assert.assertEquals(1,states.count{it==ConnectionState.HEARTBEAT_TIMEOUT})
         }finally{connection.close()}
     }
     @Test fun olderConnectorIsProbedAgainWhileCodexIsUnavailable(){
@@ -82,13 +82,41 @@ class ConnectionRecoveryTest {
         until(9000){model!!.connected&&model!!.projects.isNotEmpty()}
         Assert.assertEquals(1,peer.opens.get());Assert.assertEquals(2,peer.hellos.get())
     }
-    @Test fun lostHelloAutomaticallyReconnectsAndReloadsProjects(){
+    @Test fun lostFirstHelloRecoversOnTheFirstSocketWithoutDisplayingTimeout(){
         peer.dropFirstHello=true;start()
-        until(32000){model!!.connected&&model!!.projects.isNotEmpty()}
-        Assert.assertEquals(2,peer.opens.get())
+        until(8000){model!!.connected&&model!!.projects.isNotEmpty()}
+        Assert.assertEquals(1,peer.opens.get())
         Assert.assertEquals(2,peer.hellos.get())
         Assert.assertTrue(peer.auth.all{it=="Bearer ${peer.profile.getString("mobileToken")}"})
         Assert.assertTrue(peer.actions.contains("projects.list"))
+    }
+    @Test fun firstConnectionDoesNotDependOnReceivingTheRelayStatusFrame(){
+        peer.sendStatus=false;start()
+        until{model!!.connected&&model!!.projects.isNotEmpty()}
+        Assert.assertEquals(1,peer.opens.get());Assert.assertEquals(1,peer.hellos.get())
+        Assert.assertFalse(peer.actions.contains("message.send"))
+    }
+    @Test fun persistentHelloLossKeepsTheDeadlineAndRecordsItsStageWithoutSendingMessages(){
+        peer.ignoreHellos=true
+        val states=CopyOnWriteArrayList<ConnectionState>();val logs=CopyOnWriteArrayList<String>()
+        val connection=PocketConnection(peer.profile,{states.add(it)},{},800,onDiagnostic={logs.add(it)})
+        try{
+            connection.connect();until{states.contains(ConnectionState.HANDSHAKE_TIMEOUT)}
+            Assert.assertTrue(peer.hellos.get()>1);Assert.assertEquals(1,peer.opens.get())
+            Assert.assertTrue(logs.any{it.contains("hello.timeout")})
+            Assert.assertTrue(logs.none{it.contains(peer.profile.getString("key"))||it.contains(peer.profile.getString("mobileToken"))})
+            Assert.assertTrue(peer.actions.isEmpty())
+        }finally{connection.close()}
+    }
+    @Test fun aLostFirstPongIsRetriedBeforeTheDeadlineWithoutDisconnecting(){
+        peer.capabilities.put("connection.ping",true);peer.dropFirstProbe=true
+        val states=CopyOnWriteArrayList<ConnectionState>();val logs=CopyOnWriteArrayList<String>()
+        val connection=PocketConnection(peer.profile,{states.add(it)},{},2000,100,900,onDiagnostic={logs.add(it)})
+        try{
+            connection.connect();until{peer.probes.get()>=2&&logs.any{it.contains("pong.received")}}
+            Assert.assertTrue(connection.ready);Assert.assertEquals(1,peer.opens.get())
+            Assert.assertFalse(states.contains(ConnectionState.HEARTBEAT_TIMEOUT));Assert.assertTrue(logs.any{it.contains("ping.retry")})
+        }finally{connection.close()}
     }
     @Test fun desktopReturnsOnTheSameRelayAndUncertainMessageIsNeverResent(){
         start();until{model!!.connected&&model!!.projects.isNotEmpty()}
@@ -246,6 +274,7 @@ class ConnectionRecoveryTest {
         private val channels=java.util.concurrent.ConcurrentHashMap<WebSocket,String>()
         val imageBytes=java.io.ByteArrayOutputStream()
         var dropFirstHello=false;var ignoreMessages=false;var rejectAuthorization=false;var authorizationStatus=401
+        var sendStatus=true;var ignoreHellos=false;var dropFirstProbe=false
         @Volatile var holdPairStatus=false
         val pairStatusRequests=AtomicInteger()
         val releasePairStatus=CountDownLatch(1)
@@ -276,16 +305,16 @@ class ConnectionRecoveryTest {
                     return MockResponse().setHeader("Content-Type","application/json").setBody("{\"state\":\"approved\"}")
                 }
                 return MockResponse().withWebSocketUpgrade(object:WebSocketListener(){
-                    override fun onOpen(webSocket:WebSocket,response:Response){sockets.add(webSocket);opens.incrementAndGet();auth.add(request.getHeader("Authorization"));webSocket.send(JSONObject().put("type","status").put("peerOnline",true).toString())}
+                    override fun onOpen(webSocket:WebSocket,response:Response){sockets.add(webSocket);opens.incrementAndGet();auth.add(request.getHeader("Authorization"));if(sendStatus)webSocket.send(JSONObject().put("type","status").put("peerOnline",true).toString())}
                     override fun onMessage(webSocket:WebSocket,text:String){
                         val payload=codec.decode(text);val channel=payload.getString("channel")
                         if(payload.optString("type")=="hello"){
-                            channels[webSocket]=channel;val n=hellos.incrementAndGet();if(dropFirstHello&&n==1)return
+                            channels[webSocket]=channel;val n=hellos.incrementAndGet();if(ignoreHellos||(dropFirstHello&&n==1))return
                             webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",desktopReady).put("capabilities",capabilities)));return
                         }
                         if(payload.optString("type")=="ping"){
-                            probes.incrementAndGet()
-                            if(!ignoreProbes)webSocket.send(codec.encode(JSONObject().put("type","pong").put("channel",channel).put("id",payload.getString("id")).put("desktopReady",desktopReady)))
+                            val n=probes.incrementAndGet()
+                            if(!ignoreProbes&&!(dropFirstProbe&&n==1))webSocket.send(codec.encode(JSONObject().put("type","pong").put("channel",channel).put("id",payload.getString("id")).put("desktopReady",desktopReady)))
                             return
                         }
                         val action=payload.getString("action");actions.add(action)
