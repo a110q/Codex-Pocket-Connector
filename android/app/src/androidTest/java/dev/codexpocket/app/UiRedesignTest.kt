@@ -208,7 +208,9 @@ class UiRedesignTest {
         executionTranscript(listOf(execution("check","检查连接"),execution("retry","首次连接检查","failed"),execution("recover","恢复连接").put("role","summary").put("type","reasoning").put("command",JSONObject.NULL).put("title","思考摘要")))
         chat()
         compose.onNodeWithText("执行过程 · 3 项").assertIsDisplayed()
-        compose.onNodeWithText("1 异常").assertIsDisplayed()
+        compose.onNodeWithText("1 条未成功记录").assertIsDisplayed()
+        compose.onNodeWithText("执行失败 ·",substring=true).assertDoesNotExist()
+        compose.onNodeWithText("任务运行出错").assertDoesNotExist()
         compose.onNodeWithText("命令执行 · 检查连接").assertDoesNotExist()
         onView(withText("连接已恢复，可以继续工作。")).check(androidx.test.espresso.assertion.ViewAssertions.matches(isDisplayed()))
         shot("tool-process-collapsed")
@@ -230,6 +232,50 @@ class UiRedesignTest {
         compose.runOnUiThread{model.updateAppearance("dark")}
         compose.onNodeWithContentDescription("展开执行过程").assertIsDisplayed()
         shot("tool-process-dark")
+    }
+    @Test fun nonzeroCommandResultsNeverBecomeTaskFailuresDuringWorkOrAfterRecovery(){
+        val failed=execution("query","npm view package-that-does-not-exist version","failed").put("exitCode",1)
+        val running=execution("retry","继续检查项目","inProgress")
+        peer.active=true
+        executionTranscript(listOf(failed,execution("read","读取项目配置"),running),reply=false)
+        chat()
+        compose.onNodeWithText("执行过程 · 3 项").assertIsDisplayed()
+        compose.onNodeWithText("任务运行出错").assertDoesNotExist()
+        compose.onNodeWithText("执行失败 ·",substring=true).assertDoesNotExist()
+        shot("command-result-running")
+        compose.onNodeWithContentDescription("展开执行过程").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("命令返回非零 · 退出码 1"))
+        compose.onNodeWithText("命令返回非零 · 退出码 1").assertIsDisplayed()
+        compose.onNodeWithText("命令执行 · npm view package-that-does-not-exist version").performClick()
+        compose.onNodeWithText("查看完整详情").performScrollTo().performClick()
+        until{model.detailDone}
+        Assert.assertEquals("ui-turn:query",peer.calls.last{it.optString("action")=="message.read"}.getJSONObject("args").getString("messageKey"))
+        compose.onNodeWithContentDescription("关闭记录详情").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasContentDescription("收起执行过程"))
+        compose.onNodeWithContentDescription("收起执行过程").performClick()
+        running.put("status","completed");peer.active=false;peer.threads.getJSONObject(0).put("status","idle")
+        peer.messages.put(JSONObject().put("id","recovered").put("turnId","ui-turn").put("role","assistant").put("text","问题已绕过，项目继续正常运行。"))
+        peer.publish();until{model.snapshot!!.getJSONArray("messages").length()==5}
+        compose.onNodeWithText("任务运行出错").assertDoesNotExist()
+        compose.onNodeWithText("执行失败 ·",substring=true).assertDoesNotExist()
+        onView(withText("问题已绕过，项目继续正常运行。")).check(androidx.test.espresso.assertion.ViewAssertions.matches(isDisplayed()))
+        Assert.assertEquals(1,model.snapshot!!.getJSONArray("messages").getJSONObject(1).getInt("exitCode"))
+        compose.runOnUiThread{model.updateAppearance("dark")};shot("command-result-recovered-dark")
+    }
+    @Test fun actualTaskErrorIsShownOnceAndClearsWhenTheTaskResumes(){
+        peer.threads.getJSONObject(0).put("status","systemError")
+        val error=execution("turn-error","","failed").put("type","turnError").put("title","运行错误").put("text","隔离测试：任务连接已终止")
+        executionTranscript(listOf(execution("query","rg missing-pattern .","failed").put("exitCode",1),error),reply=false)
+        chat()
+        compose.onAllNodesWithText("任务运行出错").assertCountEquals(1)
+        compose.onNodeWithText("查看任务错误").performClick();until{model.detailDone}
+        Assert.assertEquals("ui-turn:turn-error",peer.calls.last{it.optString("action")=="message.read"}.getJSONObject("args").getString("messageKey"))
+        compose.onNodeWithContentDescription("关闭记录详情").performClick()
+        shot("actual-task-error")
+        peer.threads.getJSONObject(0).put("status","running");peer.active=true;peer.publish()
+        until{model.snapshot!!.getJSONObject("thread").optString("status")=="running"}
+        compose.onNodeWithText("任务运行出错").assertDoesNotExist()
+        Assert.assertEquals(3,model.snapshot!!.getJSONArray("messages").length())
     }
     @Test fun streamingExecutionGroupsKeepFoldChoiceAndUpdateTheirStatus(){
         val running=execution("check","检查连接","inProgress")

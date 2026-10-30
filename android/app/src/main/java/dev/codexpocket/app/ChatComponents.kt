@@ -82,33 +82,22 @@ private enum class ExecutionState { RUNNING, FAILED, COMPLETED, UNKNOWN }
 private fun executionState(message:JSONObject):ExecutionState {
     val status=message.optString("status")
     return when {
-        status in listOf("failed","error","declined","cancelled","canceled")||(!message.isNull("exitCode")&&message.optInt("exitCode")!=0)->ExecutionState.FAILED
         status in listOf("inProgress","running","active")->ExecutionState.RUNNING
+        status in listOf("failed","error","declined","cancelled","canceled")||(!message.isNull("exitCode")&&message.optInt("exitCode")!=0)->ExecutionState.FAILED
         status=="completed"||(!message.isNull("exitCode")&&message.optInt("exitCode")==0)->ExecutionState.COMPLETED
         else->ExecutionState.UNKNOWN
     }
 }
 
-internal fun failedExecution(message:JSONObject)=message.optString("role") in listOf("tool","summary")&&executionState(message)==ExecutionState.FAILED
-
-@Composable fun ExecutionFailureCard(message:JSONObject,onDetail:()->Unit){
+@Composable fun TaskErrorCard(message:JSONObject?,onDetail:(JSONObject)->Unit){
     Surface(color=MaterialTheme.colorScheme.errorContainer,contentColor=MaterialTheme.colorScheme.onErrorContainer,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,PocketPalette.errorBorder),modifier=Modifier.fillMaxWidth()){
         Column(Modifier.padding(horizontal=14.dp,vertical=10.dp),verticalArrangement=Arrangement.spacedBy(6.dp)){
             Row(verticalAlignment=Alignment.CenterVertically){
                 PocketIcon("异常",Modifier.size(16.dp));Spacer(Modifier.width(8.dp))
-                Text("执行失败 · "+message.optString("title").ifBlank{"工具调用"},Modifier.weight(1f),fontSize=13.5.sp,lineHeight=20.sp,fontWeight=FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis)
-                Spacer(Modifier.width(8.dp));Surface(color=MaterialTheme.colorScheme.error.copy(alpha=.09f),shape=RoundedCornerShape(8.dp)){Text("失败",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=12.sp,lineHeight=16.sp)}
+                Text("任务运行出错",Modifier.weight(1f),fontSize=13.5.sp,lineHeight=20.sp,fontWeight=FontWeight.SemiBold)
+                if(message!=null)TextButton(onClick={onDetail(message)},colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.onErrorContainer),contentPadding=PaddingValues(horizontal=8.dp)){Text("查看任务错误",fontSize=12.5.sp)}
             }
-            Surface(color=MaterialTheme.colorScheme.surface.copy(alpha=.8f),shape=RoundedCornerShape(10.dp),border=BorderStroke(1.dp,PocketPalette.errorBorder.copy(alpha=.7f))){
-                Text(message.optString("command").takeIf{it.isNotBlank()&&it!="null"}?:message.optString("text"),Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical=6.dp),fontSize=12.5.sp,lineHeight=18.sp,fontFamily=FontFamily.Monospace,maxLines=3,overflow=TextOverflow.Ellipsis)
-            }
-            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
-                val exit=if(!message.isNull("exitCode"))"退出码 ${message.optInt("exitCode")}"else"查看记录以确认失败原因"
-                Text(exit,Modifier.weight(1f),fontSize=12.sp,lineHeight=16.sp)
-                TextButton(onClick=onDetail,modifier=Modifier.height(36.dp),colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.onErrorContainer),contentPadding=PaddingValues(horizontal=8.dp)){
-                    PocketIcon("查看",Modifier.size(14.dp));Spacer(Modifier.width(5.dp));Text("查看记录",fontSize=12.5.sp)
-                }
-            }
+            Text("电脑报告当前任务出错。命令执行记录可在执行过程中展开查看。",fontSize=12.sp,lineHeight=18.sp)
         }
     }
 }
@@ -117,8 +106,8 @@ internal fun failedExecution(message:JSONObject)=message.optString("role") in li
     val states=records.map(::executionState)
     val running=states.count{it==ExecutionState.RUNNING};val failed=states.count{it==ExecutionState.FAILED}
     val complete=states.all{it==ExecutionState.COMPLETED}
-    val summary=listOfNotNull(if(failed>0)"$failed 异常"else null,if(running>0)"$running 运行中"else null).joinToString(" · ")
-    val status=when{running>0->"运行中";failed>0->"有异常";complete->"已完成";else->"查看记录"}
+    val summary=listOfNotNull(if(failed>0)"$failed 条未成功记录"else null,if(running>0)"$running 运行中"else null).joinToString(" · ")
+    val status=when{running>0->"运行中";complete->"已完成";failed>0&&states.none{it==ExecutionState.UNKNOWN}->"已结束";else->"查看记录"}
     Surface(onClick=onToggle,color=PocketPalette.subtle,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth().semantics{
         contentDescription=if(expanded)"收起执行过程" else "展开执行过程"
         stateDescription=if(expanded)"已展开" else "已折叠"
@@ -135,9 +124,9 @@ internal fun failedExecution(message:JSONObject)=message.optString("role") in li
                 Text(summary,Modifier.weight(1f),fontSize=11.sp,fontFamily=FontFamily.Monospace,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(6.dp))
-            Surface(color=if(running>0)PocketPalette.lavender else if(failed>0)MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,
-                contentColor=if(failed>0&&running==0)MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,if(failed>0&&running==0)PocketPalette.errorBorder else PocketPalette.lavenderBorder)){
+            Surface(color=if(running>0)PocketPalette.lavender else MaterialTheme.colorScheme.surface,
+                contentColor=MaterialTheme.colorScheme.primary,
+                shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,PocketPalette.lavenderBorder)){
                 Row(Modifier.padding(horizontal=8.dp,vertical=4.dp),verticalAlignment=Alignment.CenterVertically){
                     if(running>0){Box(Modifier.size(6.dp).background(MaterialTheme.colorScheme.primary,RoundedCornerShape(50)));Spacer(Modifier.width(5.dp))}
                     Text(status,fontSize=12.sp,lineHeight=17.sp)
@@ -158,13 +147,22 @@ internal fun failedExecution(message:JSONObject)=message.optString("role") in li
     val title=message.optString("title").ifBlank{if(message.optString("role")=="summary")"思考摘要" else "工具调用"}
     val icon=when{command!=null||type=="commandExecution"->"终端";type in listOf("fileChange","turnDiff")->"编辑";type.contains("search",true)->"搜索";message.optString("role")=="summary"->"推理";else->"文件"}
     val detail=message.optString("tool").takeIf{it.isNotBlank()&&it!="null"}
-    Surface(color=if(failed)MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,if(failed)PocketPalette.errorBorder else MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
+    val outcome=when{
+        running->"正在执行…"
+        state=="declined"->"已拒绝"
+        state in listOf("cancelled","canceled")->"已取消"
+        failed&&!message.isNull("exitCode")->"命令返回非零 · 退出码 ${message.optInt("exitCode")}"
+        failed->"工具返回错误"
+        completed->"已完成"
+        else->"点击查看记录"
+    }
+    Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
         Column{
             Row(Modifier.fillMaxWidth().clickable{expanded=!expanded}.heightIn(min=60.dp).padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
                 Surface(color=MaterialTheme.colorScheme.primaryContainer,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(10.dp),modifier=Modifier.size(34.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(icon,Modifier.size(19.dp))}}
                 Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){
                     Text(title+(command?.let{" · ${it.lineSequence().first().take(100)}"}?:""),fontSize=13.sp,lineHeight=19.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
-                    Text(detail?:when{failed->if(state=="declined")"已拒绝" else "执行失败";running->"正在执行…";completed->"已完成";else->"点击查看记录"},fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Text(if(detail!=null)"$detail · $outcome"else outcome,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.width(6.dp))
                 when{running->CircularProgressIndicator(Modifier.size(13.dp),strokeWidth=1.5.dp);completed->CompositionLocalProvider(LocalContentColor provides pocketSuccess()){PocketIcon("检查",Modifier.size(15.dp))};failed->Text("!",color=MaterialTheme.colorScheme.error,fontWeight=FontWeight.Bold)}

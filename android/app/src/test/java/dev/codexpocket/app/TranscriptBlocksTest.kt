@@ -33,4 +33,13 @@ class TranscriptBlocksTest {
         assertEquals(earlier+current,after.flatMap{it.records})
         assertTrue(blocks(emptyList()).isEmpty())
     }
+    @Test fun prependingIntoTheSameToolGroupKeepsItsKeyAndAllRecords(){
+        val identity=TranscriptBlockIdentity<Record>()
+        val tool=Record("80")
+        val first=identity.update(listOf(tool,Record("90",execution=false)),{it.id},{it.turn},{it.execution})
+        val second=identity.update((60..80).map{Record(it.toString())}+Record("90",execution=false),{it.id},{it.turn},{it.execution})
+        assertEquals(first.first().key,second.first().key)
+        assertEquals(21,second.first().records.size)
+        assertEquals(first.last().key,second.last().key)
+    }
 }

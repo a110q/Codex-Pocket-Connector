@@ -89,6 +89,11 @@ import org.json.JSONObject
                         kind=="image"&&artifact.optString("mime")!="image/svg+xml"->RasterPreview(file,Modifier.weight(1f))
                         else->TextFilePreview(file,artifact.optString("name"),Modifier.weight(1f),model::openLink)
                     }}
+                }else if(model.previewLoading||model.previewError!=null){
+                    Column(Modifier.fillMaxWidth().weight(1f).padding(18.dp)){
+                        if(model.previewLoading){LinearProgressIndicator(Modifier.fillMaxWidth());Text("正在打开电脑上的文件…",Modifier.padding(top=12.dp),fontSize=13.sp)}
+                        model.previewError?.let{Text(it,color=MaterialTheme.colorScheme.error,fontSize=13.sp)}
+                    }
                 }else {
                     val artifacts=model.snapshot?.optJSONArray("artifacts").objects().filter{it.optString("mime").startsWith("image/")==(kind=="image")}
                     LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
@@ -115,7 +120,7 @@ import org.json.JSONObject
     var proxyPort by remember(model.previewUrl, model.previewRevision) { mutableIntStateOf(0) }
     val proxy = remember(model.previewUrl, model.previewRevision) { PreviewProxy(model::rpc) }
     fun openAddress() {
-        if(model.openBrowser(address.trim(),expand=model.previewExpanded))focus.clearFocus()
+        if(model.reopenBrowser(address.trim()))focus.clearFocus()
         else problem=model.error
     }
     LaunchedEffect(loading,loadGeneration,proxy){
@@ -155,10 +160,18 @@ import org.json.JSONObject
         }
     }
     Column(modifier) {
+        val localHtml=model.previewArtifact?.takeIf{it.optString("mime").startsWith("text/html")}
+        if(localHtml!=null)Row(Modifier.fillMaxWidth().heightIn(min=56.dp).padding(horizontal=14.dp),verticalAlignment=Alignment.CenterVertically){
+            PocketIcon("文件",Modifier.size(18.dp));Spacer(Modifier.width(10.dp))
+            Text(localHtml.optString("name"),Modifier.weight(1f),fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+            Text("电脑文件",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            PocketAction("刷新","刷新网页"){model.preview(localHtml)}
+        }else{
         Row(Modifier.fillMaxWidth().heightIn(min=68.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
             if(web?.canGoBack()==true)PocketAction("返回","网页后退"){web?.goBack()}
             TextField(address,{address=it},modifier=Modifier.weight(1f).padding(vertical=6.dp).heightIn(min=56.dp).onFocusChanged{onAddressFocusChange(it.isFocused)}.semantics{contentDescription="网页地址"},shape=RoundedCornerShape(11.dp),singleLine=true,textStyle=LocalTextStyle.current.copy(fontSize=14.sp),placeholder={Text("输入网页地址",fontSize=14.sp)},leadingIcon={PocketIcon("网页",Modifier.size(18.dp))},trailingIcon={if(web!=null)PocketAction("刷新","刷新网页",onClick=::openAddress)},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Uri,imeAction=ImeAction.Go),keyboardActions=KeyboardActions(onGo={openAddress()}),colors=TextFieldDefaults.colors(focusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,unfocusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,focusedIndicatorColor=androidx.compose.ui.graphics.Color.Transparent,unfocusedIndicatorColor=androidx.compose.ui.graphics.Color.Transparent))
             Spacer(Modifier.width(6.dp));FilledIconButton(onClick=::openAddress,shape=RoundedCornerShape(11.dp),modifier=Modifier.size(48.dp).semantics{contentDescription="打开网页"}){PocketIcon("前往")}
+        }
         }
         if (loading) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -166,7 +179,7 @@ import org.json.JSONObject
         }
         problem?.let { message->Column(Modifier.padding(12.dp)){
             Text(message,color=MaterialTheme.colorScheme.error,fontSize=12.sp)
-            TextButton(onClick={model.openBrowser(address.trim(),expand=model.previewExpanded)},enabled=model.connected){Text("重新打开网页")}
+            TextButton(onClick={model.reopenBrowser(address.trim())},enabled=model.connected){Text("重新打开网页")}
         } }
         if (proxyPort > 0) key(proxyPort) {
             AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = {

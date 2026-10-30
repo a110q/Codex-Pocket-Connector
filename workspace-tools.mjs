@@ -83,6 +83,13 @@ export class WorkspaceTools {
       return {name:path.basename(file),size:stat.size,total:stat.size,fingerprint,data:data.subarray(0,bytesRead).toString('base64'),nextOffset:offset+bytesRead,done:offset+bytesRead===stat.size};
     } finally {await handle.close();}
   }
+  async previewFile(args) {
+    const root = await this.root(args), file = await this.resolve(root, text(args.path, '文件路径', 4096));
+    const stat = await fs.stat(file);
+    if (!stat.isFile() || stat.size > 50 * 1024 * 1024 || !['.html', '.htm'].includes(path.extname(file).toLowerCase())) fail('请选择 50 MB 以内的 HTML 文件');
+    if (args.fingerprint && args.fingerprint !== hash(`${file}|${stat.size}|${stat.mtimeMs}`)) fail('文件已经更新，请重新打开');
+    return { path: file, root };
+  }
   async references(args) {
     if (!args.fileReferences?.length) return [];
     if (!Array.isArray(args.fileReferences)||args.fileReferences.length>20) fail('每条消息最多引用 20 个项目文件');

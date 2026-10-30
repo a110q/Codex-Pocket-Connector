@@ -46,7 +46,9 @@ class PocketLayoutTest {
     }
     @Test fun addressKeepsHeightWithKeyboardAndRestoresChat() {
         showChat()
-        compose.onNodeWithContentDescription("打开网页预览").performClick()
+        // This fixture is intentionally offline. Preview navigation is tested
+        // with a connected peer elsewhere; open the pane to isolate IME layout.
+        compose.runOnUiThread { model.showPreviewTab("browser") }
         compose.onNodeWithContentDescription("网页地址").assertIsDisplayed()
         screenshot("address-before")
         compose.onNodeWithContentDescription("网页地址").performClick().performTextReplacement("http://127.0.0.1:5174/a/very/long/path?example=value")

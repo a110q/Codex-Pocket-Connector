@@ -57,6 +57,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
     var error by mutableStateOf<String?>(null)
     var notice by mutableStateOf<String?>(null)
     var users by mutableStateOf<List<JSONObject>>(emptyList());private set
+    var usersVerified by mutableStateOf(false);private set
     var events by mutableStateOf<List<JSONObject>>(emptyList());private set
     var pending by mutableIntStateOf(0);private set
     var alerts by mutableIntStateOf(0);private set
@@ -65,14 +66,19 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
     val loggedIn get()=token!=null
     val canUse get()=loggedIn&&verified&&user?.optString("accessState")=="active"
     val isAdmin get()=canUse&&user?.optString("role")=="admin"
+    suspend fun saveContacts(body:JSONObject):JSONObject {
+        check(isAdmin){"需要管理员权限"}
+        val current=token?:throw IllegalStateException("请先登录")
+        return withContext(Dispatchers.IO){api.post("/api/admin/contacts",body,current).getJSONObject("contacts")}
+    }
     private fun persist(){saved.put("token",token?:JSONObject.NULL).put("user",user?:JSONObject.NULL);store.save(saved)}
     private fun grant(){
         val next=if(canUse)AccountAuthorization(user!!.getString("id"),token!!,hostId,api.defaults.getString("relay"),api.defaults.getString("pin"),hosts.map{it.getString("id")}.toSet())else null
         if(next!=granted){granted=next;onAccess(next)}
     }
     fun close(){generation++;stop();scope.cancel()}
-    fun start(){foreground=true;polling?.cancel();polling=scope.launch{while(isActive&&foreground){if(!busy&&token!=null)refreshNow();delay(15000)}}}
-    fun stop(){foreground=false;polling?.cancel();polling=null;verified=false;grant()}
+    fun start(){foreground=true;usersVerified=false;polling?.cancel();polling=scope.launch{while(isActive&&foreground){if(!busy&&token!=null)refreshNow();delay(15000)}}}
+    fun stop(){foreground=false;polling?.cancel();polling=null;verified=false;usersVerified=false;grant()}
     fun refresh(){if(!busy)scope.launch{busy=true;try{refreshNow()}finally{busy=false}}}
     private suspend fun refreshNow(){
         val current=token?:return;val epoch=generation
@@ -83,7 +89,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
             if(isAdmin){
                 val lists=withContext(Dispatchers.IO){api.post("/api/admin/users",token=current) to api.post("/api/admin/events",token=current)}
                 if(epoch!=generation)return
-                users=lists.first.optJSONArray("users").objects();events=lists.second.optJSONArray("events").objects();pending=lists.second.optInt("pending");alerts=lists.second.optInt("alerts")
+                users=lists.first.optJSONArray("users").objects();usersVerified=true;events=lists.second.optJSONArray("events").objects();pending=lists.second.optInt("pending");alerts=lists.second.optInt("alerts")
                 AccountNotifications.show(context,events)
                 AccountNotifications.schedule(context)
             }
@@ -91,20 +97,23 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
         } catch(e:CancellationException){throw e}
         catch(e:Exception){
             if(epoch!=generation)return
-            verified=false;error=e.message?:"无法验证账号状态"
+            verified=false;usersVerified=false;error=e.message?:"无法验证账号状态"
             if(e is AccountException&&e.status==401){token=null;user=null;persist();AccountNotifications.cancel(context)}
             grant()
         }
     }
     fun login(username:String,password:String){
-        if(busy)return;busy=true;error=null;val epoch=++generation
+        if(busy)return;busy=true;usersVerified=false;error=null;val epoch=++generation
         scope.launch{try{
             val result=withContext(Dispatchers.IO){api.post("/api/account/login",JSONObject().put("username",username.trim()).put("password",password).put("client","android").put("deviceId",deviceId).put("deviceName","${Build.MANUFACTURER} ${Build.MODEL}"))}
             if(epoch==generation){token=result.getString("token");user=result.getJSONObject("user");integrityFingerprint=null;persist();refreshNow()}
         }catch(e:Exception){if(epoch==generation)error=e.message?:"登录失败"}finally{if(epoch==generation)busy=false}}
     }
     fun register(username:String,password:String,displayName:String,reason:String){
-        if(busy)return;busy=true;error=null;val epoch=generation
+        if(busy)return
+        notice=null
+        accountRegistrationError(username,password,displayName,reason)?.let{error=it;return}
+        busy=true;error=null;val epoch=generation
         scope.launch{try{withContext(Dispatchers.IO){api.post("/api/account/register",JSONObject().put("username",username.trim()).put("password",password).put("displayName",displayName.trim()).put("reason",reason.trim()))};if(epoch==generation)notice="申请已提交，请登录查看审批进度"}catch(e:Exception){if(epoch==generation)error=e.message?:"申请失败"}finally{if(epoch==generation)busy=false}}
     }
     private suspend fun reportIntegrity(){
@@ -135,7 +144,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
     fun acknowledge(id:String)=operation("/api/admin/events/ack",JSONObject().put("id",id))
     fun changePassword(old:String,next:String)=operation("/api/account/password",JSONObject().put("currentPassword",old).put("password",next)){notice="登录密码已修改，其他设备需要重新登录"}
     fun logout(){
-        val current=token;generation++;token=null;user=null;verified=false;busy=false;error=null;notice=null;users=emptyList();events=emptyList();pending=0;alerts=0;hostId=null;hosts=emptyList();persist();grant();AccountNotifications.cancel(context)
+        val current=token;generation++;token=null;user=null;verified=false;usersVerified=false;busy=false;error=null;notice=null;users=emptyList();events=emptyList();pending=0;alerts=0;hostId=null;hosts=emptyList();persist();grant();AccountNotifications.cancel(context)
         if(current!=null)scope.launch{try{withContext(Dispatchers.IO){api.post("/api/account/logout",token=current)}}catch(_:Exception){}}
     }
 }

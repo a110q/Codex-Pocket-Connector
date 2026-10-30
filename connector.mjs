@@ -12,10 +12,11 @@ import { secret, digest, equalHash } from './protocol.mjs';
 import { CodexInstallation } from './codex-installation.mjs';
 import { RelayProfiles } from './relay-profiles.mjs';
 import { ConnectorRuntime } from './connector-runtime.mjs';
+import { UpdateManager, loadUpdateConfig } from './updates.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const hashScript = html => createHash('sha256').update(html.match(/<script>([\s\S]*?)<\/script>/)[1]).digest('base64');
-export async function startConnector({ paths = connectorPaths(), defaults, port = 43786, managerPort = 43787, root = ROOT, request, status = companionStatus, runtime = new ConnectorRuntime(), installation = new CodexInstallation(paths.state), onShutdown } = {}) {
+export async function startConnector({ paths = connectorPaths(), defaults, port = 43786, managerPort = 43787, root = ROOT, request, status = companionStatus, runtime = new ConnectorRuntime(), installation = new CodexInstallation(paths.state), updates = new UpdateManager({ config:loadUpdateConfig(root), directory:resolve(paths.state,'updates') }), onShutdown } = {}) {
   const profiles = new RelayProfiles(paths, defaults);
   const enrollments=new Map(), accounts=new Map();
   const enrollment = () => { const key=profiles.paths().state; if(!enrollments.has(key))enrollments.set(key,new Enrollment({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return enrollments.get(key); };
@@ -67,10 +68,14 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         return res.end(JSON.stringify(await managerRequest('/api/pairing')));
       }
       if (req.method === 'GET' && url.pathname === '/api/diagnostics') return res.end(JSON.stringify(await diagnose({ paths:activePaths(), defaults: profiles.defaults(), managerPort, status:currentStatus, ...(request ? { request } : {}) })));
+      if (req.method === 'GET' && url.pathname === '/api/updates') return res.end(JSON.stringify(updates.state()));
       if (req.method !== 'POST') { res.writeHead(404).end('{}'); return; }
       let text = ''; for await (const part of req) { text += part; if (Buffer.byteLength(text) > 32768) throw new Error('输入内容过长'); }
       const body = JSON.parse(text || '{}');
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('输入内容无效');
+      if (url.pathname === '/api/updates/check') return res.end(JSON.stringify(await updates.check()));
+      if (url.pathname === '/api/updates/download') return res.end(JSON.stringify(updates.download()));
+      if (url.pathname === '/api/updates/open') return res.end(JSON.stringify(updates.open()));
       if (url.pathname === '/api/relay') {
         if(runtime.busy)throw new Error('正在连接，请稍后切换中继');
         const selected=await profiles.validate(body);
@@ -120,7 +125,7 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
   });
   server.requestTimeout = 20000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-  return { server, token, url: `${origin()}/#${token}`, runtime, close: async () => { await runtime.stop(); await new Promise(resolve => server.close(resolve)); } };
+  return { server, token, url: `${origin()}/#${token}`, runtime, close: async () => { await updates.close(); await runtime.stop(); await new Promise(resolve => server.close(resolve)); } };
 }
 
 async function main() {

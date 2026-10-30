@@ -61,6 +61,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     var pendingStatus by mutableStateOf(""); private set
     private var computerGeneration=0
     private var supportsReceipts=false
+    private var supportsFileLinks=false
+    private var supportsHtmlPreview=false
     private var receiptPolling:Job?=null
     private var pendingCompletion:Pair<String,(JSONObject)->Unit>?=null
     val canSwitchComputer get()=!busy||pendingOperation!=null
@@ -160,6 +162,9 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     var loadingThread by mutableStateOf(false); private set
     var loadingHistory by mutableStateOf(false); private set
+    var historyError by mutableStateOf<String?>(null); private set
+    private var historyRequest: Any? = null
+    private fun resetHistoryRequest() { historyRequest=null;loadingHistory=false;historyError=null }
     var detailMessage by mutableStateOf<JSONObject?>(null); private set
     var detailChunks by mutableStateOf<List<String>>(emptyList()); private set
     var detailLoading by mutableStateOf(false); private set
@@ -251,7 +256,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         }
     }
     fun stop() {
-        closePreview()
+        closePreview();resetHistoryRequest()
         foreground = false; reconnect?.let(handler::removeCallbacks); reconnect = null
         cacheWrite?.let(handler::removeCallbacks);cacheWrite=null
         receiptPolling?.cancel();receiptPolling=null
@@ -276,7 +281,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }, { event -> handler.post {
             if (connection !== candidate || !foreground) return@post
             when (event.optString("type")) {
-                "hello" -> { resetSummaryConnection();if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; if(connected){refresh(); selected?.let { openThread(it) };watchPendingReceipt(0)} }
+                "hello" -> { resetSummaryConnection();resetHistoryRequest();supportsFileLinks=event.optJSONObject("capabilities")?.optBoolean("file.resolve")==true;supportsHtmlPreview=event.optJSONObject("capabilities")?.optBoolean("preview.file.open")==true;if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; if(connected){refresh(); selected?.let { openThread(it) };watchPendingReceipt(0)} }
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
                     if(change.optString("type") in listOf("mcp.updated","automation.updated","catalog.updated")){toolRevision++;if(change.optString("type")=="catalog.updated")refresh()}
@@ -296,7 +301,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun reconnectNow() { if (profile?.optBoolean("approved") == true) connect() else if (profile != null) waitForApproval() }
     private fun activateComputer(next:JSONObject?) {
         val resume=foreground;stop();scope.cancel();pairingRequest=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
-        computerGeneration++;supportsReceipts=false;pendingStatus="";pendingCompletion=null
+        computerGeneration++;supportsFileLinks=false;supportsHtmlPreview=false;resetHistoryRequest();supportsReceipts=false;pendingStatus="";pendingCompletion=null
         profile=next?.let{JSONObject(it.toString())};account?.let{profile?.put("accountToken",it.token)}
         val cache=next?.let{computerStates.optJSONObject(it.optString("hostId"))}?:JSONObject()
         threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
@@ -362,7 +367,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             next.put("approved", false)
             persist();cacheWrite?.let(handler::removeCallbacks);cacheWrite=null;pairingJob?.cancel();pairingJob=null;reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();pairingRequest=null;taskPolling=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
             closePreview(); closeMessage(); threadBackStack.clear(); threads = emptyList(); projects = emptyList(); models = emptyList(); snapshot = null; selected = null; drafts = DraftBook(); outgoing=emptyMap()
-            computerGeneration++;supportsReceipts=false;receiptPolling?.cancel();receiptPolling=null
+            computerGeneration++;supportsFileLinks=false;supportsHtmlPreview=false;resetHistoryRequest();supportsReceipts=false;receiptPolling?.cancel();receiptPolling=null
             profile = next;messageImages=MessageImageLoader(context,next.getString("hostId")); pairing = true; error = null; persist()
             TaskMonitorService.releaseUi(context,this)
             status = "配对中，等待电脑确认"
@@ -500,7 +505,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         return true
     }
     fun openThread(thread: JSONObject) {
-        if(selected?.optString("id")!=thread.optString("id"))closeMessage()
+        if(selected?.optString("id")!=thread.optString("id")){closeMessage();resetHistoryRequest()}
         if (selected?.optString("id") != thread.optString("id")) closePreview()
         if (selected?.optString("id") != thread.optString("id")) error = null
         selected = thread
@@ -538,11 +543,12 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         val thread = selected ?: return
         val history = snapshot?.optJSONObject("history") ?: return
         if (loadingHistory || !connected || !history.optBoolean("hasEarlier")) return
-        loadingHistory = true
+        val token=Any();val computer=computerGeneration
+        historyRequest=token;loadingHistory=true;historyError=null
         request("thread.history", JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("before",history.getString("before"))) { r,e ->
-            loadingHistory = false
-            if (selected?.optString("id") != thread.optString("id")) return@request
-            if(e != null) error=e else { r?.let { acceptSnapshot(it, olderPage = true) }; persistSoon() }
+            if(historyRequest!==token||computerGeneration!=computer||selected?.optString("id")!=thread.optString("id"))return@request
+            historyRequest=null;loadingHistory=false
+            if(e!=null)historyError=e else { r?.let{acceptSnapshot(it,olderPage=true)};persistSoon() }
         }
     }
     fun showMessage(message: JSONObject, mode: String = "text") {
@@ -562,7 +568,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     fun openAgentThread(thread:JSONObject) { selected?.let { threadBackStack.add(it to snapshot) };openThread(thread) }
     fun back() {
-        closeMessage();closePreview()
+        closeMessage();closePreview();resetHistoryRequest()
         if(threadBackStack.isNotEmpty()){val previous=threadBackStack.removeAt(threadBackStack.lastIndex);selected=previous.first;snapshot=previous.second;openThread(previous.first)}
         else{selected=null;refresh()}
     }
@@ -679,26 +685,54 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             true
         } catch (e: Exception) { error = e.message ?: "网页地址无效";false }
     }
+    fun reopenBrowser(url:String):Boolean {
+        val artifact=previewArtifact
+        if(artifact!=null&&url.trim()==previewUrl&&artifact.optString("mime").startsWith("text/html")){preview(artifact);return true}
+        return openBrowser(url,expand=previewExpanded)
+    }
     fun showPreviewTab(kind: String) { previewKind = kind }
     fun showArtifactList(kind: String) { closePreview(); previewKind = kind }
+    private var linkJob: Job? = null
     fun openLink(link: String) {
-        if (link.startsWith("https://",true) || link.startsWith("http://",true)) { openBrowser(link,expand=true); return }
-        val path = link.removePrefix("file://").replace(Regex(":\\d+$"), "")
-        val artifact = snapshot?.optJSONArray("artifacts").objects().find { it.optString("path") == path || it.optString("name") == path }
-        if (artifact != null) preview(artifact) else error = "该文件未包含在当前会话可访问的文件中，请先刷新会话"
+        if(link.startsWith("https://",true)||link.startsWith("http://",true)){openBrowser(link,expand=true);return}
+        val thread=selected?:return
+        closePreview()
+        previewKind="file";previewLoading=true
+        val computer=computerGeneration;val threadId=thread.getString("id")
+        linkJob=scope.launch {
+            try {
+                val artifact=if(supportsFileLinks)rpc("file.resolve",JSONObject().put("threadId",threadId).put("hostId",thread.optString("hostId","local")).put("link",link)).getJSONObject("artifact")
+                else {
+                    val current=rpc("thread.read",JSONObject().put("threadId",threadId).put("hostId",thread.optString("hostId","local")))
+                    val path=android.net.Uri.decode(link.removePrefix("file://").substringBefore('#').replace(Regex(":\\d+(?::\\d+)?$"),""))
+                    current.optJSONArray("artifacts").objects().find{it.optString("path")==path||it.optString("name")==path}
+                        ?:error("请将电脑连接器更新到 0.9.9.2 或更高版本后打开此文件")
+                }
+                if(computer==computerGeneration&&selected?.optString("id")==threadId){linkJob=null;preview(artifact)}
+            }catch(e:CancellationException){throw e}catch(e:Exception){previewLoading=false;previewError=e.message;error=e.message}
+        }
     }
     fun closePreview() {
-        previewJob?.cancel(); previewJob = null; previewFile?.delete(); previewFile = null
-        previewKind = null; previewExpanded=false; previewArtifact = null; previewError = null; previewLoading = false
+        linkJob?.cancel();linkJob=null
+        previewJob?.cancel();previewJob=null;previewFile?.delete();previewFile=null
+        previewKind=null;previewUrl="";previewExpanded=false;previewArtifact=null;previewError=null;previewLoading=false
     }
     fun preview(artifact: JSONObject) {
-        val threadId = selected?.optString("id") ?: if(artifact.has("workspaceArgs"))"__workspace__"else return
-        closePreview(); previewArtifact = artifact
-        previewKind = if (artifact.optString("mime").startsWith("image/")) "image" else "file"
-        previewLoading = true
+        val threadId=selected?.optString("id")?:if(artifact.has("workspaceArgs"))"__workspace__"else return
+        closePreview();previewArtifact=artifact
+        val isHtml=artifact.optString("mime").startsWith("text/html")||artifact.optString("name").substringAfterLast('.').lowercase() in listOf("html","htm")
+        previewKind=if(artifact.optString("mime").startsWith("image/"))"image"else"file"
+        previewLoading=true
         previewJob = scope.launch {
             var file: File? = null
             try {
+                if(isHtml){
+                    require(supportsHtmlPreview){"请将电脑连接器更新到 0.9.9.2 或更高版本后预览 HTML"}
+                    val result=if(artifact.has("workspaceArgs"))rpc("preview.workspace.open",JSONObject(artifact.getJSONObject("workspaceArgs").toString()))
+                        else rpc("preview.file.open",JSONObject().put("threadId",threadId).put("artifactId",artifact.getString("id")))
+                    if(previewArtifact===artifact){previewUrl=result.getString("url");previewKind="browser";previewExpanded=true;previewRevision++}
+                    return@launch
+                }
                 require(artifact.getLong("size") <= 50L * 1024 * 1024) { "此文件超过 50 MB，请保存后查看" }
                 val temp = File.createTempFile("pocket-preview-", ".tmp", context.cacheDir)
                 file = temp
@@ -722,7 +756,16 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             finally { if (previewFile !== file) file?.delete(); if (previewArtifact === artifact) previewLoading = false }
         }
     }
-    fun previewProjectFile(args:JSONObject,path:String){scope.launch{try{val input=JSONObject(args.toString()).put("path",path);val result=rpc("workspace.read",input.put("offset",0));val ext=path.substringAfterLast('.').lowercase();val mime=when(ext){"pdf"->"application/pdf";"png","jpg","jpeg","gif","webp","bmp"->"image/"+if(ext=="jpg")"jpeg"else ext;else->"text/plain"};preview(JSONObject().put("name",result.getString("name")).put("size",result.getLong("size")).put("mime",mime).put("fingerprint",result.getString("fingerprint")).put("workspaceArgs",input))}catch(e:Exception){error=e.message}}}
+    fun previewProjectFile(args:JSONObject,path:String){
+        val computer=computerGeneration
+        scope.launch{try{
+            val input=JSONObject(args.toString()).put("path",path);val result=rpc("workspace.read",JSONObject(input.toString()).put("offset",0))
+            if(computer!=computerGeneration)return@launch
+            val ext=path.substringAfterLast('.').lowercase()
+            val mime=when(ext){"html","htm"->"text/html";"pdf"->"application/pdf";"png","jpg","jpeg","gif","webp","bmp"->"image/"+if(ext=="jpg")"jpeg"else ext;else->"text/plain"}
+            preview(JSONObject().put("name",result.getString("name")).put("size",result.getLong("size")).put("mime",mime).put("fingerprint",result.getString("fingerprint")).put("workspaceArgs",input))
+        }catch(e:CancellationException){throw e}catch(e:Exception){error=e.message}}
+    }
     fun respondApproval(request:JSONObject,decision:String,response:JSONObject?=null) {
         val thread=selected?:return
         val args=JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("requestId",request.get("id")).put("decision",decision)
@@ -739,7 +782,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     private fun forgetAll() {
         pairingRequest?.cancel();pairingRequest=null
-        computerGeneration++;supportsReceipts=false;pendingCompletion=null;pendingStatus=""
+        computerGeneration++;supportsFileLinks=false;supportsHtmlPreview=false;resetHistoryRequest();supportsReceipts=false;pendingCompletion=null;pendingStatus=""
         scope.cancel();scope=CoroutineScope(SupervisorJob()+Dispatchers.Main);busy=false
         stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; outgoing=emptyMap();outgoingFiles=emptyMap();pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
         computers=emptyList();computerStates=JSONObject();pendingScannedPair=null;persist()

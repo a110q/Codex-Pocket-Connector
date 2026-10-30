@@ -73,6 +73,7 @@ import io.noties.markwon.MarkwonConfiguration
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
+    private val updates by lazy{AppUpdateModel(applicationContext)}
     private lateinit var model: PocketModel
     private lateinit var account: AccountModel
     private var serviceRevision by mutableIntStateOf(0)
@@ -153,7 +154,7 @@ class MainActivity : ComponentActivity() {
         receiveTaskIntent(intent)
         intent?.data = null
         setContent { PocketTheme(activeModel.appearance) {
-            CompositionLocalProvider(LocalOutgoingImagePicker provides { target,key->imagePickKey=key;imagePickLan=target===lanModel;imagePicker.launch("image/*")},LocalOutgoingFilePicker provides {target,key->filePickKey=key;filePickLan=target===lanModel;filePicker.launch(arrayOf("*/*"))}) {
+            CompositionLocalProvider(LocalAppUpdateModel provides updates,LocalOutgoingImagePicker provides { target,key->imagePickKey=key;imagePickLan=target===lanModel;imagePicker.launch("image/*")},LocalOutgoingFilePicker provides {target,key->filePickKey=key;filePickLan=target===lanModel;filePicker.launch(arrayOf("*/*"))}) {
             LaunchedEffect(account.isAdmin){
                 if(account.isAdmin&&android.os.Build.VERSION.SDK_INT>=33){
                     val preferences=getSharedPreferences("admin-alerts",MODE_PRIVATE)
@@ -191,6 +192,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent);receiveTaskIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin){connectionPage=null;if(lanMode)switchMode(false)}; intent.data = null; setIntent(intent) }
     override fun onStart() { super.onStart();TaskMonitorService.foreground(this); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
     override fun onStop() { if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop();TaskMonitorService.background(this); super.onStop() }
+    override fun onDestroy(){updates.close();super.onDestroy()}
 }
 
 @Composable fun PocketApp(model:PocketModel,scan:()->Unit,incoming:String?,dismissIncoming:()->Unit,account:AccountModel?=null,openAdmin:Boolean=false,consumeAdmin:()->Unit={},onExitLan:(()->Unit)?=null,onEnterLan:(()->Unit)?=null,onSwitchService:(()->Unit)?=null){
@@ -308,15 +310,22 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun ChatScreen(model:PocketModel,snackbar:SnackbarHostState?=null,onComputers:()->Unit={}) {
+    key(model.profile?.optString("relay"),model.profile?.optString("hostId"),model.selected?.optString("id")){
+        ChatContent(model,snackbar,onComputers)
+    }
+}
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun ChatContent(model:PocketModel,snackbar:SnackbarHostState?,onComputers:()->Unit) {
     val thread=model.selected?:return;val focus=LocalFocusManager.current
     val snapshot=model.snapshot;val messages=snapshot?.optJSONArray("messages").objects();val list=rememberLazyListState()
-    val blocks=transcriptBlocks(messages,key={it.optString("turnId")+":"+it.optString("id")},turn={it.optString("turnId")},execution={it.optString("role") in listOf("tool","summary")})
+    val blockIdentity=remember{TranscriptBlockIdentity<JSONObject>()}
+    val blocks=blockIdentity.update(messages,key={it.optString("turnId")+":"+it.optString("id")},turn={it.optString("turnId")},execution={it.optString("role") in listOf("tool","summary")})
     var expandedGroups by rememberSaveable(model.profile?.optString("relay"),model.profile?.optString("hostId"),thread.optString("id")){mutableStateOf(emptyList<String>())}
-    // Keep failures visible even when the routine execution trace is folded.
-    val lastBlockByTurn=buildMap<String,Int>{blocks.forEachIndexed{index,block->block.records.forEach{put(it.optString("turnId"),index)}}}
-    val failuresByBlock=messages.filter(::failedExecution).groupBy{lastBlockByTurn[it.optString("turnId")]}
-
-    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}+failuresByBlock.values.sumOf{it.size}
+    val runtimeThread=snapshot?.optJSONObject("thread")?:thread
+    val taskFailed=snapshot!=null&&threadActivity(runtimeThread,snapshot.optJSONArray("requests"))==ThreadActivity.ERROR
+    val taskTurnId=runtimeThread.optString("lastTurnId").takeIf{it.isNotBlank()&&it!="null"}?:messages.lastOrNull{it.optString("type")!="queuedUserMessage"}?.optString("turnId")
+    val taskError=messages.lastOrNull{it.optString("type")=="turnError"&&it.optString("turnId")==taskTurnId}
+    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}+if(taskFailed)1 else 0
     val chatScope=rememberCoroutineScope()
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
     var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
@@ -332,19 +341,66 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     val requests=snapshot?.optJSONArray("requests").objects();val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=!activeId.isNullOrBlank()&&activeId!="null"
     val settings=snapshot?.optJSONObject("thread")?.optJSONObject("settings")?:JSONObject()
     val history=snapshot?.optJSONObject("history")
-    val historyNotice=history?.optBoolean("hasEarlier")==true||(snapshot!=null&&snapshot.optBoolean("historyComplete")!=true)||snapshot?.optString("source")=="desktop-history-summary"
+    val historyNotice=history!=null||history?.optBoolean("hasEarlier")==true||(snapshot!=null&&snapshot.optBoolean("historyComplete")!=true)||snapshot?.optString("source")=="desktop-history-summary"
     val lastText=messages.lastOrNull()?.optString("text")?.length?:0
+    val rowKeys=buildList<String>{
+        if(historyNotice)add("history-header")
+        if(messages.isEmpty())add("empty-chat")
+        blocks.forEach{block->
+            if(block.execution)add(block.key)
+            if(!block.execution||block.key in expandedGroups)block.records.forEach{add("message:"+it.optString("turnId")+":"+it.optString("id"))}
+        }
+        requests.forEach{add("approval:"+it.optString("id"))}
+        if(taskFailed)add("task-error")
+        if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())add("artifacts")
+    }
     var initialScroll by remember{mutableStateOf(false)}
     var followLatest by remember{mutableStateOf(true)}
+    var topGesture by remember{mutableStateOf(false)}
+    var pagingPending by remember{mutableStateOf(false)}
+    var historyAnchor by remember{mutableStateOf<Pair<String,Int>?>(null)}
+    fun loadHistory(){
+        if(model.loadingHistory||pagingPending)return
+        pagingPending=true
+        historyAnchor=list.layoutInfo.visibleItemsInfo.firstOrNull{it.key!="history-header"}?.let{it.key.toString() to it.offset}
+        topGesture=false;followLatest=false;model.loadEarlier()
+    }
+    LaunchedEffect(list){
+        snapshotFlow{if(model.loadingHistory&&pagingPending)list.layoutInfo.visibleItemsInfo.firstOrNull{it.key!="history-header"}?.let{it.key.toString() to it.offset}else null}.collect{anchor->
+            if(anchor!=null)historyAnchor=anchor
+        }
+    }
+    LaunchedEffect(model.loadingHistory,messages.firstOrNull()?.optString("key")){
+        if(!model.loadingHistory&&pagingPending){
+            historyAnchor?.let{(key,offset)->val index=rowKeys.indexOf(key);if(index>=0)list.scrollToItem(index,-offset)}
+            historyAnchor=null;topGesture=false;pagingPending=false
+        }
+    }
     var lastScrollRequest by remember{mutableIntStateOf(model.scrollRequest)}
     val scrollConnection=remember { object:NestedScrollConnection {
-        override fun onPreScroll(available:Offset,source:NestedScrollSource):Offset { if(source==NestedScrollSource.UserInput)followLatest=false;return Offset.Zero }
+        override fun onPreScroll(available:Offset,source:NestedScrollSource):Offset {
+            if(source==NestedScrollSource.UserInput){followLatest=false;if(available.y>0)topGesture=true}
+            return Offset.Zero
+        }
     } }
     val followBottom by remember { derivedStateOf { !list.canScrollForward } }
-    LaunchedEffect(list){snapshotFlow{list.canScrollForward}.collect{if(!it)followLatest=true}}
-    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind){
+    LaunchedEffect(list){
+        var wasScrolling=false
+        snapshotFlow{Triple(list.isScrollInProgress,!list.canScrollForward,model.loadingHistory)}.collect{(scrolling,bottom,loading)->
+            if(wasScrolling&&!scrolling&&bottom&&!loading)followLatest=true
+            wasScrolling=scrolling
+        }
+    }
+    LaunchedEffect(list){
+        snapshotFlow{initialScroll&&topGesture&&!pagingPending&&list.firstVisibleItemIndex<=2&&model.connected&&!model.loadingHistory&&model.historyError==null&&model.snapshot?.optJSONObject("history")?.optBoolean("hasEarlier")==true}.collect{load->
+            if(load)loadHistory()
+        }
+    }
+    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind,rowKeys.size){
         if(lastScrollRequest!=model.scrollRequest){lastScrollRequest=model.scrollRequest;followLatest=true}
-        if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){list.scrollToItem((transcriptRowCount+requests.size+(if(historyNotice)1 else 0)+(if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())1 else 0)-1).coerceAtLeast(0));initialScroll=true}
+        if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){
+            list.scrollToItem(rowKeys.lastIndex.coerceAtLeast(0));initialScroll=true
+        }
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding().navigationBarsPadding()) {
         var menu by remember{mutableStateOf(false)}
@@ -384,32 +440,32 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         }
         if(model.previewKind!=null)PreviewPane(model,if(previewCollapsed)Modifier.fillMaxWidth() else Modifier.fillMaxWidth().weight(if(previewExpanded)1f else 1.1f),previewExpanded,toggleExpand={focus.clearFocus();previewCollapsed=false;model.expandPreview(!model.previewExpanded)},onAddressFocusChange={addressFocused=it},minimized=previewCollapsed,onMinimize={focus.clearFocus();previewCollapsed=!previewCollapsed;model.expandPreview(false)})
         if(!(previewExpanded&&model.previewKind!=null))Box(Modifier.weight(1f).fillMaxWidth()){
-        LazyColumn(state=list,modifier=Modifier.fillMaxSize().nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+        LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("chat-history").nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
             if(historyNotice)item(key="history-header") {
-                Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally) {
-                    if(history?.optBoolean("hasEarlier")==true)OutlinedButton(onClick=model::loadEarlier,enabled=model.connected&&!model.loadingHistory){Text(if(model.loadingHistory)"正在加载历史…" else "加载更早记录")}
+                Column(Modifier.fillMaxWidth().heightIn(min=76.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center) {
+                    if(history?.optBoolean("hasEarlier")==true){
+                        if(model.loadingHistory)Row(verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(14.dp),strokeWidth=2.dp);Spacer(Modifier.width(8.dp));Text("正在加载历史…",fontSize=12.sp)}
+                        else TextButton(onClick={loadHistory()},enabled=model.connected){Text(if(model.historyError!=null)"加载失败，点击重试"else"向上滚动加载更早记录",fontSize=12.sp)}
+                        model.historyError?.let{Text(it,fontSize=11.sp,color=MaterialTheme.colorScheme.error)}
+                    }else if(messages.isNotEmpty())Text("已到最早记录",fontSize=11.sp,color=PocketPalette.muted)
                     if(history?.optBoolean("hasEarlier")==true)Text("已显示 ${messages.size} / ${history?.optInt("total")} 条记录",fontSize=11.sp,color=PocketPalette.muted)
                     if(snapshot?.optBoolean("historyComplete")!=true)Text("完整历史尚未同步，返回后重新进入可重试。",fontSize=11.sp,color=MaterialTheme.colorScheme.error)
                     if(snapshot?.optString("source")=="desktop-history-summary")Text("当前仅取得摘要，实时记录暂不可用。",fontSize=11.sp,color=MaterialTheme.colorScheme.error)
                 }
             }
-            if(messages.isEmpty())item{EmptyState(if(model.loadingThread)"正在读取对话" else "工作从这里继续",if(model.connected)"发送指令，交给电脑上的 Codex。" else "连接后会读取最新内容。")}
-            blocks.forEachIndexed{blockIndex,block->
+            if(messages.isEmpty())item(key="empty-chat"){EmptyState(if(model.loadingThread)"正在读取对话" else "工作从这里继续",if(model.connected)"发送指令，交给电脑上的 Codex。" else "连接后会读取最新内容。")}
+            blocks.forEach{block->
                 if(block.execution)item(key=block.key){ExecutionGroupHeader(block.records,block.key in expandedGroups){
                     followLatest=false
                     expandedGroups=if(block.key in expandedGroups)expandedGroups-block.key else expandedGroups+block.key
                 }}
                 // Expanded records remain independent lazy rows, including very long tool runs.
                 if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,computerName=model.profile?.computerName(),streaming=active&&message===messages.lastOrNull{it.optString("role")=="assistant"},images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
-                failuresByBlock[blockIndex]?.forEach{failure->
-                    item(key="failure:"+failure.optString("turnId")+":"+failure.optString("id")){
-                        ExecutionFailureCard(failure){model.showMessage(failure,if(failure.optBoolean("hasDetail"))"detail"else"text")}
-                    }
-                }
             }
             if(!browserFullscreen)items(requests,key={"approval:"+it.optString("id")}){ApprovalCard(it,model)}
+            if(taskFailed)item(key="task-error"){TaskErrorCard(taskError){message->model.showMessage(message,if(message.optBoolean("hasDetail"))"detail"else"text")}}
             val artifacts=snapshot?.optJSONArray("artifacts").objects()
-            if(artifacts.isNotEmpty())item{Surface(onClick={showResults=true},color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){
+            if(artifacts.isNotEmpty())item(key="artifacts"){Surface(onClick={showResults=true},color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){
                 Row(Modifier.padding(horizontal=14.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){PocketIcon("文件",Modifier.size(17.dp));Spacer(Modifier.width(9.dp));Text("查看 ${artifacts.size} 个交付文件",Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);PocketIcon("展开",Modifier.size(14.dp))}
             }}
         }
@@ -510,7 +566,11 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
         override fun configureConfiguration(builder:MarkwonConfiguration.Builder){builder.linkResolver{_,link->linkCallback(link)}}
         override fun configureTheme(builder:io.noties.markwon.core.MarkwonTheme.Builder){builder.linkColor(argb(colors.primary)).codeBackgroundColor(0x01FFFFFF).codeBlockBackgroundColor(argb(colors.surfaceVariant))
             .blockQuoteColor(argb(bubbleBorder)).blockQuoteWidth((2*context.resources.displayMetrics.density).toInt()).blockMargin((12*context.resources.displayMetrics.density).toInt())}
+        override fun configureParser(builder:org.commonmark.parser.Parser.Builder){builder.extensions(listOf(org.commonmark.ext.gfm.tables.TablesExtension.create()))}
         override fun configureVisitor(builder:io.noties.markwon.MarkwonVisitor.Builder){
+            // The stock table drawing plugin consumes cell text. Our table has
+            // separate native cells, so render only each cell's inline children.
+            builder.on(org.commonmark.ext.gfm.tables.TableCell::class.java){visitor,node->visitor.visitChildren(node)}
             builder.blockHandler(object:io.noties.markwon.BlockHandlerDef(){
                 override fun blockEnd(visitor:io.noties.markwon.MarkwonVisitor,node:org.commonmark.node.Node){
                     if(visitor.hasNext(node)){
@@ -525,7 +585,13 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
             builder.appendFactory(org.commonmark.node.BlockQuote::class.java){_,_->arrayOf<Any>(android.text.style.RelativeSizeSpan(.87f),android.text.style.ForegroundColorSpan(argb(colors.onSurfaceVariant)),android.text.style.LineHeightSpan.Standard(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,20f,context.resources.displayMetrics).toInt()))}
         }
     }).build()}
-    AndroidView(modifier=modifier,factory={TextView(it).apply{textSize=15.5f;includeFontPadding=false;setFallbackLineSpacing(false);setTextIsSelectable(true);movementMethod=android.text.method.LinkMovementMethod.getInstance();setLineHeight(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,25f,resources.displayMetrics).toInt())}},update={it.setTextColor(argb(colors.onSurface));it.setLinkTextColor(argb(colors.primary));markwon.setMarkdown(it,text)})
+    val parts=remember(markwon,text){markdownParts(markwon,text)}
+    Column(modifier,verticalArrangement=Arrangement.spacedBy(8.dp)){
+        parts.forEach{part->when(part){
+            is MarkdownPart.Prose->MarkdownSpanned(part.content,argb(colors.onSurface),argb(colors.primary))
+            is MarkdownPart.Grid->MarkdownTable(part.table,argb(colors.onSurface),argb(colors.primary))
+        }}
+    }
 }
 
 @Composable fun ApprovalCard(request:JSONObject,model:PocketModel) {

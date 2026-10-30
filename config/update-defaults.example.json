@@ -1,0 +1,7 @@
+{
+  "manifestUrl": "https://updates.example.com/updates/stable.json",
+  "pin": "SHA256_OF_THE_TRUSTED_TLS_CERTIFICATE",
+  "caCert": "TRUSTED_PUBLIC_TLS_CERTIFICATE_PEM",
+  "keyId": "FIRST_16_HEX_OF_SHA256_SPKI_PUBLIC_KEY",
+  "publicKey": "TRUSTED_ED25519_PUBLIC_KEY_PEM"
+}

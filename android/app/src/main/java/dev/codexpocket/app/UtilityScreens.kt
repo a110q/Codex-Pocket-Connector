@@ -113,6 +113,8 @@ import androidx.compose.ui.window.DialogProperties
             }
         }
         OutlinedButton(onClick={forget=true},modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(11.dp)){Text("移除当前电脑和缓存",color=MaterialTheme.colorScheme.error)}
+        ContactEntry(account)
+        UpdateEntry()
         Text("Codex Pocket  ${BuildConfig.VERSION_NAME}",Modifier.fillMaxWidth().padding(top=12.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,textAlign=TextAlign.Center)
     }
     if(forget)AlertDialog(onDismissRequest={forget=false},title={Text("移除本机连接？")},text={Text("清除手机保存的配对信息、草稿和缓存，电脑上的对话仍然保留。")},confirmButton={TextButton(onClick={model.forget();forget=false}){Text("移除")}},dismissButton={TextButton(onClick={forget=false}){Text("取消")}})

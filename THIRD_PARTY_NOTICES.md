@@ -5,6 +5,7 @@
 - Windows WebView2 头文件保留在 `desktop/windows/webview2/`，遵循其中 Microsoft 原始许可证。
 - Node 依赖由 `package-lock.json` 锁定，包括 ws、qrcode 及传递依赖，遵循各自软件包许可证。
 - 安卓使用 AndroidX / Compose、Kotlin Coroutines、OkHttp、ZXing Android Embedded、Markwon 等组件，遵循各自许可证，版本见 Gradle 配置。
+- 安卓更新清单使用 Bouncy Castle 轻量密码 API 验证 Ed25519 签名，遵循 Bouncy Castle License，版本见 Gradle 配置。
 - 品牌图由维护者提供；文档示意图使用虚构项目、对话和设备名称。
 
 再分发时请保留相关组件版权和许可证声明。

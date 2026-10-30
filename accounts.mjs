@@ -1,5 +1,6 @@
 import { randomUUID, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { defaultContacts, validateContacts } from './contacts.mjs';
 import { checkSecret, digest, equalHash, secret } from './protocol.mjs';
 
 const scrypt = promisify(derive);
@@ -21,10 +22,12 @@ function password(value) {
 // Password work is asynchronous and bounded: do not block routing or let many
 // concurrent KDFs exhaust the small relay container's memory.
 export class Accounts {
-  constructor(db, { clock = Date.now, administrator, disconnect = () => {}, androidCertificate = '' } = {}) {
+  constructor(db, { clock = Date.now, administrator, disconnect = () => {}, androidCertificate = '', computerOnline = () => null } = {}) {
     this.db = db; this.clock = clock; this.administrator = administrator; this.disconnect = disconnect;
+    this.computerOnline = computerOnline;
     this.androidCertificate = androidCertificate.toLowerCase().replaceAll(':', ''); this.hashing = 0; this.attempts = new Map();
-    db.exec(`CREATE TABLE IF NOT EXISTS accounts (
+    db.exec(`CREATE TABLE IF NOT EXISTS contact_settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL,
       password_hash TEXT NOT NULL, role TEXT NOT NULL, status TEXT NOT NULL,
       reason TEXT NOT NULL, rejection_reason TEXT NOT NULL DEFAULT '', expires_at INTEGER,
@@ -150,6 +153,7 @@ export class Accounts {
   }
   days(value = 30) { if (!Number.isInteger(value) || value < 1 || value > 3650) throw fail(400, '有效期需要 1–3650 天'); return value * 86400_000; }
   async handle(req, path, body) {
+    if (path === '/api/account/contacts') return { contacts: JSON.parse(this.db.prepare('SELECT value FROM contact_settings WHERE id=1').get()?.value ?? JSON.stringify(defaultContacts)) };
     if (path === '/api/admin/bootstrap') {
       this.administrator(req);
       if (this.db.prepare("SELECT 1 FROM accounts WHERE role='admin'").get()) throw fail(409, '超级管理员已初始化');
@@ -220,7 +224,17 @@ export class Accounts {
     }
     if (!path.startsWith('/api/admin/')) return null;
     const { user: actor } = this.session(req, { admin: true });
-    if (path === '/api/admin/users') return { users: this.db.prepare('SELECT * FROM accounts ORDER BY created_at DESC LIMIT 500').all().map(row=>{const computers=this.computers(row.id);return{ ...this.public(row), phone: this.db.prepare('SELECT name FROM account_phones WHERE user_id=?').get(row.id)?.name ?? null, computer: computers[0] ?? null, computers };}) };
+    if (path === '/api/admin/contacts') {
+      const contacts = { ...validateContacts(body), updatedAt:this.clock() };
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.prepare('INSERT OR REPLACE INTO contact_settings(id,value) VALUES(1,?)').run(JSON.stringify(contacts));
+        this.event(null,actor.id,'contacts.updated','info','管理员更新了联系方式');
+        this.db.exec('COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      return { contacts };
+    }
+    if (path === '/api/admin/users') return { users: this.db.prepare('SELECT * FROM accounts ORDER BY created_at DESC LIMIT 500').all().map(row=>{const computers=this.computers(row.id).map(computer=>({...computer,online:this.state(row)==='active'?this.computerOnline(computer.id):false}));return{ ...this.public(row), phone: this.db.prepare('SELECT name FROM account_phones WHERE user_id=?').get(row.id)?.name ?? null, computer: computers[0] ?? null, computers };}) };
     if (path === '/api/admin/users/computers') {
       const target=this.row(body.userId),limit=body.limit;
       if(!target)throw fail(404,'账号不存在');

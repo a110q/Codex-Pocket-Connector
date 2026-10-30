@@ -1,5 +1,7 @@
 # Codex Pocket 项目约定
 
+- 面向用户的页面、按钮、提示、错误说明和交付说明使用中文；品牌名、微信号、代码及必要的技术标识保留原文。系统安装器的语言跟随设备系统，验收截图使用中文系统环境。
+
 - 当前源码根目录固定为本目录。代码、开发临时文件、日志和交付文件均保存在本项目内，不再写入原 Documents 会话目录。
 - 用户要求的安装包布局为 `releases/mac`（带版本号的 `.app`）、`releases/windows`（可直接运行的 EXE 和免安装 ZIP）、`releases/android`（APK）。每个平台最多保留最近两个版本，同版本 EXE 和 ZIP 算一个版本，按语义版本号排序。
 - 使用 `npm run package:mac`、`npm run package:windows` 和 `./scripts/build-android.sh release` 生成产物。签名、复制和完整性检查成功后，才清理该平台多余的旧版本。

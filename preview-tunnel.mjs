@@ -2,6 +2,7 @@ import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { ArtifactWebServer } from './artifact-web-server.mjs';
 
 const LIMIT = 512 * 1024;
 function privateAddress(address) {
@@ -23,9 +24,23 @@ export class PreviewTunnel {
     const target = new URL(url);
     if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('预览地址必须是 HTTP 或 HTTPS');
     if (Number(target.port) === 43785) throw new Error('配对管理端口不能通过网页预览访问');
+    const fileServer = this.fileServer?.owns(target) ? this.fileServer : null;
+    if (fileServer) this.fileServer = null;
     this.close();
+    this.fileServer = fileServer;
     this.session = { id: randomUUID(), host: target.hostname.replace(/^\[|\]$/g, ''), port: Number(target.port || (target.protocol === 'https:' ? 443 : 80)), touched: Date.now() };
     return { previewId: this.session.id, url: target.href };
+  }
+  async openFile(file) {
+    this.close();
+    const generation = this.generation;
+    const server = new ArtifactWebServer();
+    try {
+      const url = await server.start(file);
+      if (generation !== this.generation) throw new Error('文件预览已取消');
+      this.fileServer = server;
+      return { url };
+    } catch (error) { server.close(); throw error; }
   }
   check(args) {
     if (!this.session || args.previewId !== this.session.id || Date.now() - this.session.touched > 30 * 60_000) throw new Error('网页预览已断开，请重新打开');
@@ -90,7 +105,7 @@ export class PreviewTunnel {
     return { data: (compressed ? zipped : out).toString('base64'), ...(compressed ? { encoding: 'gzip' } : {}), done, error: state.error };
   }
   closeSocket(args) { const state = this.state(args); state.socket.destroy(); state.waiting?.(); this.sockets.delete(args.socketId); return { closed: true }; }
-  close() { for (const state of this.sockets.values()) { state.socket.destroy(); state.waiting?.(); } this.sockets.clear(); this.session = null; return { closed: true }; }
+  close() { this.generation = (this.generation ?? 0) + 1; this.fileServer?.close(); this.fileServer = null; for (const state of this.sockets.values()) { state.socket.destroy(); state.waiting?.(); } this.sockets.clear(); this.session = null; return { closed: true }; }
   async call(action, args) {
     if (action === 'preview.open') return this.open(args);
     if (action === 'preview.close') { this.check(args); return this.close(); }

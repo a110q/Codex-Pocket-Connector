@@ -13,6 +13,7 @@ import { ImageUploads } from './image-uploads.mjs';
 import { FileUploads } from './file-uploads.mjs';
 import { PocketScheduler } from './pocket-scheduler.mjs';
 import { HistoryStore } from './history.mjs';
+import { linkedFilePaths, localFilePath } from './file-links.mjs';
 import { RelayConnection } from './relay-connection.mjs';
 import { startLanRelay } from './lan.mjs';
 import { CipherChannel, secret, digest, equalHash, validateCommand, MUTATIONS, MAX_FRAME } from './protocol.mjs';
@@ -29,7 +30,7 @@ export function relayRequest(config, path, body, token = config.desktopToken) {
     const request = https.request(new URL(path, config.mode==='lan'?`https://127.0.0.1:${config.lanPort}`:config.relay), { method: 'POST', ca: config.caCert, ...(config.mode==='lan'?{agent:false}:{}),
       headers: { 'Content-Type': 'application/json', 'Content-Length': data.length, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, timeout: 15000 }, response => {
       let text = '';
-      response.on('data', chunk => { text += chunk; if (text.length > 100000) request.destroy(new Error('Relay response too large')); });
+      response.on('data', chunk => { text += chunk; if (text.length > (['/api/account/contacts','/api/admin/contacts'].includes(path) ? 1450000 : 100000)) request.destroy(new Error('Relay response too large')); });
       response.on('end', () => { try { const json = JSON.parse(text); if (response.statusCode !== 200) reject(Object.assign(new Error(json.error ?? `Relay HTTP ${response.statusCode}`), { statusCode: response.statusCode })); else resolve(json); } catch (e) { reject(e); } });
     });
     request.on('timeout', () => request.destroy(new Error('中继请求超时')));
@@ -128,7 +129,7 @@ export class FileAccess {
     const root = thread.cwd && existsSync(thread.cwd) ? realpathSync(thread.cwd) : null;
     // A project root of '/' or the user's entire home never grants file access.
     const projectAllowed = root && root !== '/' && root !== process.env.HOME;
-    const paths = new Set((snapshot.artifacts ?? []).map(item => item.path).filter(value => typeof value === 'string'));
+    const paths = new Set((snapshot.artifacts ?? []).map(item => localFilePath(item.path, root)).filter(Boolean));
     const attached = new Set(), uploaded = new Set();
     for (const message of snapshot.messages ?? []) if (message.role === 'user') {
       for (const ref of uploadedReferences(message).files) {
@@ -137,7 +138,7 @@ export class FileAccess {
       for (const attachment of message.attachments ?? []) if (attachment.type === 'image' && typeof attachment.path === 'string') { attached.add(attachment.path); paths.add(attachment.path); }
     }
     for (const message of snapshot.messages ?? []) if (message.role === 'assistant') {
-      for (const match of message.text.matchAll(/!?\[[^\]]*\]\(<?(\/[^\n)]+?)>?\)/g)) paths.add(match[1].replace(/:\d+$/, ''));
+      for (const path of linkedFilePaths(message.text, root)) paths.add(path);
     }
     const artifacts = [], byPath = new Map();
     for (let path of paths) {
@@ -151,7 +152,7 @@ export class FileAccess {
         const stat = statSync(path); if (!stat.isFile() || stat.size > 100 * 1024 * 1024) continue;
         const id = digest(`${thread.id}|${path}|${stat.size}|${stat.mtimeMs}`).slice(0, 32);
         const extension = extname(path).toLowerCase();
-        const mime = ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp':'image/webp', '.gif':'image/gif', '.bmp':'image/bmp', '.heic':'image/heic', '.heif':'image/heif', '.pdf':'application/pdf', '.md':'text/markdown', '.txt':'text/plain', '.json':'application/json', '.html':'text/html', '.css':'text/css', '.js':'text/javascript', '.ts':'text/plain', '.kt':'text/plain', '.py':'text/plain', '.yaml':'text/plain', '.yml':'text/plain', '.xml':'text/plain', '.csv':'text/plain', '.svg':'image/svg+xml' })[extension] ?? 'application/octet-stream';
+        const mime = ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp':'image/webp', '.gif':'image/gif', '.bmp':'image/bmp', '.heic':'image/heic', '.heif':'image/heif', '.pdf':'application/pdf', '.md':'text/markdown', '.txt':'text/plain', '.json':'application/json', '.html':'text/html', '.htm':'text/html', '.css':'text/css', '.js':'text/javascript', '.ts':'text/plain', '.kt':'text/plain', '.py':'text/plain', '.yaml':'text/plain', '.yml':'text/plain', '.xml':'text/plain', '.csv':'text/plain', '.svg':'image/svg+xml' })[extension] ?? 'application/octet-stream';
         this.files.set(`${thread.id}:${id}`, { path, sourcePath, root: explicitImage || explicitFile ? dirname(path) : root, size: stat.size, modified: stat.mtimeMs });
         const artifact = { id, name: basename(path), size: stat.size, mime, path };
         artifacts.push(artifact); byPath.set(sourcePath, artifact);
@@ -166,7 +167,15 @@ export class FileAccess {
     });
     return { ...snapshot, messages, artifacts };
   }
-  read(args) {
+  resolve(snapshot, args) {
+    const decorated = this.decorate(snapshot);
+    const path = localFilePath(args.link, snapshot.thread?.cwd);
+    if (!path) throw new Error('不支持此文件链接，请打开 HTTP 网页或当前项目的文件');
+    const artifact = decorated.artifacts.find(item => item.path === path);
+    if (artifact) return { artifact };
+    throw new Error('文件不存在、已移动，或不在当前项目授权的交付文件中');
+  }
+  authorized(args) {
     const file = this.files.get(`${args.threadId}:${args.artifactId}`);
     if (!file) throw new Error('文件不在当前会话授权的交付文件中，请刷新会话');
     const current = realpathSync(file.path), inside = relative(file.root, current);
@@ -174,6 +183,10 @@ export class FileAccess {
     if (current !== file.path || inside.startsWith('..') || isAbsolute(inside)) throw new Error('文件路径已变化');
     const stat = statSync(current);
     if (stat.size !== file.size || stat.mtimeMs !== file.modified) throw new Error('文件内容已变化，请刷新后重试');
+    return file;
+  }
+  read(args) {
+    const file = this.authorized(args), current = file.path, stat = statSync(current);
     const offset = args.offset ?? 0;
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > stat.size) throw new Error('Invalid file offset');
     const data = Buffer.alloc(Math.min(192 * 1024, stat.size - offset));
@@ -265,7 +278,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           }
           preview.close(); channel = payload.channel;
           // Transport readiness must not wait for a slow or restarting Codex.
-          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true, 'command.status': true, 'connection.ping': true }, desktopReady: adapter.ready, error: lastError });
+          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'file.resolve': true, 'preview.file.open': true, 'automations.list': true, 'command.status': true, 'connection.ping': true }, desktopReady: adapter.ready, error: lastError });
           connectionLog('hello.sent', { desktopReady: adapter.ready });
           void connectDesktop(); return;
         }
@@ -294,7 +307,18 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
             if (payload.action==='automations.list'||payload.action.startsWith('automation.')) return scheduler.call(payload.action,payload.args);
             if (payload.action.startsWith('file.upload.')) return fileUploads.call(payload.action, payload.args);
             if (payload.action.startsWith('image.upload.')) return uploads.call(payload.action, payload.args);
+            if (payload.action === 'preview.workspace.open') {
+              if (!adapter.workspace?.previewFile) throw new Error('电脑连接器不支持项目文件预览，请更新电脑端');
+              return preview.openFile(await adapter.workspace.previewFile(payload.args));
+            }
+            if (payload.action === 'preview.file.open') return preview.openFile(files.authorized(payload.args));
             if (payload.action.startsWith('preview.')) return preview.call(payload.action, payload.args);
+            if (payload.action === 'file.resolve') {
+              try { return files.resolve(history.get(payload.args), payload.args); } catch { /* Refresh newly generated files once. */ }
+              const current = await adapter.call('thread.read', { threadId: payload.args.threadId, hostId: payload.args.hostId ?? 'local' });
+              history.put(files.decorate(current));
+              return files.resolve(current, payload.args);
+            }
             if (payload.action === 'file.read') return files.read(payload.args);
             if (payload.action === 'thread.history') return history.page(payload.args);
             if (payload.action === 'message.read') return history.read(payload.args);

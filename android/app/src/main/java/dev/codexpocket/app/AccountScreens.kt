@@ -3,10 +3,13 @@ package dev.codexpocket.app
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,6 +50,8 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
     var register by rememberSaveable{mutableStateOf(false)}
     var username by rememberSaveable{mutableStateOf("")};var password by remember{mutableStateOf("")}
     var displayName by rememberSaveable{mutableStateOf("")};var reason by rememberSaveable{mutableStateOf("")}
+    var submitted by remember{mutableStateOf(false)}
+    val passwordError=if(register&&(password.isNotEmpty()||submitted))accountPasswordError(password)else null
     val isBuiltin=AccountApi.same(account.api.defaults,AccountApi.bundled(LocalContext.current))
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
         onBack?.let{ConnectionSetupHeader(if(isBuiltin)"公网使用"else"自建中继账号",it)}
@@ -70,16 +75,18 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
             TextButton(onClick=account::logout,enabled=!account.busy){Text("退出账号")}
         }else{
             Text(if(register)"申请使用"else"欢迎回来",fontSize=22.sp,fontWeight=FontWeight.SemiBold)
-            OutlinedTextField(username,{username=it.take(32)},label={Text("登录账号")},supportingText={Text("3–32 位英文字母、数字或下划线")},singleLine=true,modifier=Modifier.fillMaxWidth())
-            OutlinedTextField(password,{password=it.take(128)},label={Text("密码")},supportingText={Text("至少 10 个字符")},visualTransformation=PasswordVisualTransformation(),singleLine=true,modifier=Modifier.fillMaxWidth())
+            OutlinedTextField(username,{username=it.take(32)},label={Text("登录账号")},supportingText={Text("3–32 位字母、数字、点、短横线或下划线，以字母或数字开头")},singleLine=true,modifier=Modifier.fillMaxWidth())
+            OutlinedTextField(password,{password=it},label={Text("密码")},isError=passwordError!=null,supportingText={Text(passwordError?:"密码需要 10–128 个字符，无需强制组合大小写、数字或符号",modifier=Modifier.testTag("account-password-hint"))},visualTransformation=PasswordVisualTransformation(),singleLine=true,modifier=Modifier.fillMaxWidth())
             if(register){
                 OutlinedTextField(displayName,{displayName=it.take(60)},label={Text("你的称呼")},singleLine=true,modifier=Modifier.fillMaxWidth())
                 OutlinedTextField(reason,{reason=it.take(500)},label={Text("申请说明")},placeholder={Text("告诉管理员你希望如何使用")},minLines=3,modifier=Modifier.fillMaxWidth())
             }
-            Button(onClick={if(register)account.register(username,password,displayName,reason)else account.login(username,password)},enabled=!account.busy&&username.length>=3&&password.length>=10&&(!register||(displayName.isNotBlank()&&reason.isNotBlank())),modifier=Modifier.fillMaxWidth().height(52.dp),shape=RoundedCornerShape(12.dp)){Text(if(account.busy)"正在处理…"else if(register)"提交申请"else"登录")}
-            TextButton(onClick={register=!register;account.error=null;account.notice=null},modifier=Modifier.fillMaxWidth()){Text(if(register)"已有账号，前往登录"else"没有账号，申请使用")}
+            Button(onClick={if(register){submitted=true;account.register(username,password,displayName,reason)}else account.login(username,password)},enabled=!account.busy&&(register||(username.length>=3&&password.length in 10..128)),modifier=Modifier.fillMaxWidth().height(52.dp),shape=RoundedCornerShape(12.dp)){Text(if(account.busy)"正在处理…"else if(register)"提交申请"else"登录")}
+            TextButton(onClick={register=!register;submitted=false;account.error=null;account.notice=null},modifier=Modifier.fillMaxWidth()){Text(if(register)"已有账号，前往登录"else"没有账号，申请使用")}
             Text("首次申请由当前服务的管理员批准。",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        ContactEntry(account)
+        UpdateEntry()
         Spacer(Modifier.height(20.dp));Text("Codex Pocket  ${BuildConfig.VERSION_NAME}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -98,6 +105,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
     if(account.isAdmin){
         UtilityRow("用户中心","${account.users.size} 个账号 · 查看用户列表与设备额度","会话",onUsers)
         UtilityRow("管理中心","${account.pending} 个待审批申请 · ${account.alerts} 条未处理提醒","任务",onAdmin)
+        ContactEntry(account,admin=true)
         UtilityRow("管理提醒通知","前台检查，后台由系统定期调度","任务"){
             context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,context.packageName))
         }
@@ -148,6 +156,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
                             Row(Modifier.fillMaxWidth().padding(vertical=2.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
                                 PocketIcon("电脑",Modifier.size(18.dp))
                                 Text(computer.optString("name").ifBlank{"未命名电脑"},Modifier.weight(1f),fontSize=13.sp,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                ComputerOnlineIndicator(computer,account.usersVerified)
                                 if(user.optString("role")!="admin"||user.optString("id")==account.user?.optString("id"))TextButton(onClick={removing=user to computer},enabled=!account.busy,modifier=Modifier.testTag("remove-computer-${computer.getString("id")}").semantics{contentDescription="移除 ${user.optString("username")} 的电脑：${computer.optString("name")}"}){Text("移除",fontSize=12.sp)}
                             }
                         }
@@ -204,6 +213,13 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
         }},confirmButton={TextButton(onClick={account.removeComputer(user.getString("id"),computer.getString("id"));removing=null},enabled=!account.busy){Text("确认移除",color=MaterialTheme.colorScheme.error)}},dismissButton={TextButton(onClick={removing=null}){Text("取消")}})
     }
     if(create)CreateAccountDialog({create=false}){name,pass,display,days->account.create(name,pass,display,days);create=false}
+}
+
+@Composable fun ComputerOnlineIndicator(computer:JSONObject,fresh:Boolean=true){
+    val online=if(fresh)computer.opt("online") as? Boolean else null
+    val label=when(online){true->"电脑在线";false->"电脑离线";else->"电脑在线状态未知"}
+    val color=if(online==true)pocketSuccess()else MaterialTheme.colorScheme.outline
+    Box(Modifier.size(9.dp).background(if(online==null)androidx.compose.ui.graphics.Color.Transparent else color,CircleShape).border(1.dp,color,CircleShape).testTag("computer-presence-${computer.optString("id")}").semantics{contentDescription=label})
 }
 
 @Composable fun DeleteAccountDialog(user:JSONObject,busy:Boolean,onDismiss:()->Unit,submit:()->Unit){

@@ -10,9 +10,10 @@ import { checkHost, checkSecret, digest, equalHash, secret, MAX_FRAME } from './
 import { Accounts } from './accounts.mjs';
 
 function error(status, message) { return Object.assign(new Error(message), { status }); }
-async function jsonBody(req) {
-  let body = '';
-  for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 8192) throw error(413, 'Request too large'); }
+async function jsonBody(req, limit = 8192) {
+  const chunks = []; let size = 0;
+  for await (const chunk of req) { size += chunk.length; if (size > limit) throw error(413, 'Request too large'); chunks.push(chunk); }
+  const body = Buffer.concat(chunks).toString('utf8');
   try { return JSON.parse(body); } catch { throw error(400, 'Invalid JSON'); }
 }
 
@@ -44,7 +45,7 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
     return current;
   }
   const getHost = id => db.prepare('SELECT * FROM hosts WHERE id=?').get(id);
-  const accounts = new Accounts(db, { clock, administrator: admin, androidCertificate, disconnect(userId, hostIds) {
+  const accounts = new Accounts(db, { clock, administrator: admin, androidCertificate, computerOnline: hostId => routes.get(hostId)?.desktop?.readyState === WebSocket.OPEN, disconnect(userId, hostIds) {
     for (const [hostId, peers] of routes) if (hostIds ? hostIds.includes(hostId) : accounts.owner(hostId) === userId) for (const ws of Object.values(peers)) ws.close(4003, 'Account authorization changed');
   } });
   function admin(req) {
@@ -96,7 +97,8 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
       const path = new URL(req.url, 'http://relay').pathname;
       if (req.method === 'GET' && path === '/healthz') return res.end(JSON.stringify({ ok: true, protocol: 1, service: 'codex-pocket', enrollment: 'invite-v1', accounts: 'approval-v1', desktopEnrollment: 'mobile-claim-v1', computers:'multi-v1', deviceRemoval:'selected-v1', accountDeletion:'confirmed-v1' }));
       if (req.method !== 'POST') throw error(404, 'Not found');
-      const body = await jsonBody(req);
+      if (path === '/api/admin/contacts') accounts.session(req, { admin:true });
+      const body = await jsonBody(req, path === '/api/admin/contacts' ? 1450000 : 8192);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw error(400, 'Invalid JSON object');
       if (path.startsWith('/api/account/') || path.startsWith('/api/admin/')) {
         const result = await accounts.handle(req, path, body);

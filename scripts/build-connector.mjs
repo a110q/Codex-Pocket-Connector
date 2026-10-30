@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateDefaults } from '../connector-core.mjs';
+import { validateUpdateConfig } from '../updates.mjs';
 import { releaseDirectory, releaseName, prunePlatformReleases } from './release-layout.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,7 +19,7 @@ try {
   if (process.platform !== 'darwin') throw new Error('电脑安装包需要在 macOS 构建');
   const defaults = validateDefaults(JSON.parse(readFileSync(arg('--config', resolve(root, '.private/companion.json')), 'utf8')));
   mkdirSync(bundle, { recursive: true }); mkdirSync(resolve(app, 'Contents/MacOS'), { recursive: true }); mkdirSync(out, { recursive: true });
-  const files = ['version.mjs', 'pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
+  const files = ['updates.mjs', 'file-links.mjs', 'artifact-web-server.mjs', 'version.mjs', 'pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'contacts.mjs', 'contact-defaults.json', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
   for (const file of files) cpSync(resolve(root, file), resolve(bundle, file));
   for (const file of ['desktop-service.mjs', 'find-codex-node.sh', 'connect-installed.command']) {
     mkdirSync(resolve(bundle, 'scripts'), { recursive: true }); cpSync(resolve(root, 'scripts', file), resolve(bundle, 'scripts', file)); chmodSync(resolve(bundle, 'scripts', file), 0o755);
@@ -32,6 +33,8 @@ try {
     cpSync(resolve(root, path), resolve(bundle, path), { recursive: true, filter: source => !source.includes('/.bin/') });
   }
   writeFileSync(resolve(bundle, 'connector-defaults.json'), JSON.stringify(defaults, null, 2));
+  const updates = validateUpdateConfig(JSON.parse(readFileSync(resolve(root, 'update-defaults.json'), 'utf8')));
+  writeFileSync(resolve(bundle, 'update-defaults.json'), JSON.stringify(updates, null, 2));
   // A real AppKit event loop is required by LaunchServices. A long-running
   // shell executable can open a browser yet still be reported as unresponsive.
   const nativeSource = resolve(root, 'desktop/mac/Connector.swift');

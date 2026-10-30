@@ -51,6 +51,9 @@ export class CipherChannel {
 
 export const ACTIONS = new Set(['command.status','thread.rename', 'workspace.list','workspace.search','workspace.read','git.status','git.diff','git.commit','git.push','git.pr.create','review.start','extensions.list','skill.read','skill.save','skill.delete','skill.set','plugin.list','plugin.install','plugin.uninstall','plugin.set','automations.list','automation.save','automation.delete','automation.run','account.usage','mcp.list','mcp.login','file.upload.start', 'file.upload.chunk', 'file.upload.finish', 'file.upload.cancel', 'image.upload.start', 'image.upload.chunk', 'image.upload.finish', 'image.upload.cancel', 'threads.list', 'projects.list', 'models.list', 'thread.read', 'thread.history', 'message.read', 'thread.create', 'message.send', 'turn.stop', 'approval.respond', 'file.read', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete', 'preview.open', 'preview.close', 'preview.connect', 'preview.write', 'preview.read', 'preview.disconnect']);
 export const MUTATIONS = new Set(['thread.rename','git.commit','git.push','git.pr.create','review.start','skill.save','skill.delete','skill.set','plugin.install','plugin.uninstall','plugin.set','automation.save','automation.delete','automation.run','mcp.login','thread.create', 'message.send', 'turn.stop', 'approval.respond', 'thread.settings.update', 'thread.archive', 'thread.unarchive', 'thread.delete']);
+ACTIONS.add('file.resolve');
+ACTIONS.add('preview.file.open');
+ACTIONS.add('preview.workspace.open');
 export function validateCommand(command) {
   if (!command || !/^[a-f0-9-]{36}$/i.test(command.id ?? '') || !ACTIONS.has(command.action)) throw new Error('Unsupported request');
   if (!Number.isFinite(command.sentAt) || Math.abs(Date.now() - command.sentAt) > 5 * 60_000) throw new Error('请求已过期，请重新操作');
@@ -64,7 +67,10 @@ export function validateCommand(command) {
   }
   if (command.args.imageUploadIds !== undefined && (!Array.isArray(command.args.imageUploadIds) || command.args.imageUploadIds.length > 4 || command.args.imageUploadIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)))) throw new Error('图片上传标识无效');
   if (command.args.fileUploadIds !== undefined && (!Array.isArray(command.args.fileUploadIds) || command.args.fileUploadIds.length > 4 || command.args.fileUploadIds.some(id => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)))) throw new Error('文件上传标识无效');
-  if (['thread.read','thread.history','message.read','message.send','turn.stop','approval.respond','file.read','thread.settings.update','thread.archive','thread.unarchive','thread.delete'].includes(command.action) && typeof command.args.threadId !== 'string') throw new Error('Missing thread');
+  if (['thread.read','thread.history','message.read','message.send','turn.stop','approval.respond','file.read','file.resolve','preview.file.open','thread.settings.update','thread.archive','thread.unarchive','thread.delete'].includes(command.action) && typeof command.args.threadId !== 'string') throw new Error('Missing thread');
+  if (command.action === 'file.resolve' && (typeof command.args.link !== 'string' || !command.args.link.length || command.args.link.length > 8192)) throw new Error('无效的文件链接');
+  if (command.action === 'preview.workspace.open' && (typeof command.args.path !== 'string' || !command.args.path.length || command.args.path.length > 4096)) throw new Error('无效的项目文件');
+  if (command.action === 'preview.file.open' && (typeof command.args.artifactId !== 'string' || !/^[a-f0-9]{32}$/.test(command.args.artifactId))) throw new Error('无效的文件标识');
   if (command.args.fileReferences !== undefined && (!Array.isArray(command.args.fileReferences) || command.args.fileReferences.length>20 || command.args.fileReferences.some(p=>typeof p!=='string'||p.length>4096))) throw new Error('项目文件引用无效');
   return command;
 }

@@ -1,0 +1,32 @@
+// Isolated full relay + companion fixture for local HTML and history QA.
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fixture } from './connector-fixture.mjs';
+import { digest, secret } from '../../protocol.mjs';
+import { WorkspaceTools } from '../../workspace-tools.mjs';
+const base=resolve('.private/fix-history-html-0.9.9.2');mkdirSync(base,{recursive:true,mode:0o700});
+const f=await fixture();const {config,paths}=await f.enroll('HTML 历史验收');
+const mobileToken=secret();await f.call('/api/pair',{hostId:config.hostId,pairCode:config.pairCode,mobileToken});
+await f.call('/api/pair/decision',{hostId:config.hostId,fingerprint:digest(mobileToken).slice(0,12),accept:true},config.desktopToken);
+const root=resolve(f.directory,'project');mkdirSync(resolve(root,'pages'),{recursive:true});mkdirSync(resolve(root,'assets'));
+writeFileSync(resolve(root,'pages','review page.html'),`<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="../assets/style.css"><title>审核验收页</title><body><main><span class="badge">Codex Pocket · 验收</span><h1>审核页面</h1><p id="state">等待脚本</p><img id="cover" src="../assets/cover.svg"><button id="approve">确认审核</button><output id="result"></output></main><script type="module" src="../assets/app.js"></script></body></html>`);
+writeFileSync(resolve(root,'assets','style.css'),`:root{font-family:system-ui;background:#f4f5fa;color:#172132}body{margin:0;padding:22px}main{background:white;border:1px solid #e0e4ee;border-radius:20px;padding:22px}.badge{font-size:12px;color:#6266cf}h1{font-size:28px;margin:18px 0}p{color:#5f6b80;font-size:14px;line-height:1.8}img{width:100%;border-radius:12px;margin:12px 0}button{display:block;width:100%;border:0;border-radius:12px;background:#5757db;color:white;padding:16px;font-size:16px}output{display:block;margin-top:16px;color:#168363}body{--fixture-css:ready}`);
+writeFileSync(resolve(root,'assets','app.js'),`const data=await fetch('/assets/data.json').then(r=>r.json());document.querySelector('#state').textContent=data.message;document.body.dataset.ready='yes';document.querySelector('#approve').onclick=()=>{document.querySelector('#result').textContent='审核操作成功';document.body.dataset.approved='yes'};`);
+writeFileSync(resolve(root,'assets','data.json'),JSON.stringify({message:'HTML、CSS、JavaScript、图片和根路径资源已全部加载。'}));
+writeFileSync(resolve(root,'assets','cover.svg'),'<svg xmlns="http://www.w3.org/2000/svg" width="600" height="220"><rect width="600" height="220" fill="#ececff"/><text x="40" y="120" font-size="32" fill="#5356b6">HTML PREVIEW READY</text></svg>');
+const thread={id:'qa-html',hostId:'local',title:'历史与 HTML 预览验收',cwd:root,status:'idle',projectId:'qa-project'};
+const snapshot={thread,source:'desktop-live',streamId:'qa-history-html',revision:1,historyComplete:true,messages:Array.from({length:120},(_,i)=>({id:'m'+i,key:'t:m'+i,turnId:'t',order:i,role:'assistant',type:'agentMessage',text:i===119?'审核完成，请打开 [审核页面](./pages/review%20page.html)。\n\n| 验收项目 | 状态 | 说明 |\n|:--|:--:|:--|\n| 页面 | 完成 | 样式、脚本、图片 |\n| 历史 | 完成 | 自动补载 |':`历史消息 ${i}：这是一条用于分页定位的测试记录。`})),requests:[],artifacts:[]};
+const {adapter}=await f.companion(config,paths);
+adapter.listProjects=async()=>({projects:[{projectId:'qa-project',hostId:'local',title:'HTML 审核项目',path:root}]});adapter.storedState=async()=>({cwd:root});adapter.workspace=new WorkspaceTools(adapter);
+adapter.call=async(action,args)=>{
+  if(action==='thread.read')return snapshot;
+  if(action==='threads.list')return{threads:[thread]};
+  if(action==='projects.list')return adapter.listProjects();
+  if(action==='models.list')return{models:[]};
+  if(action.startsWith('workspace.'))return adapter.workspace.call(action,args);
+  throw Error('Unsupported QA action '+action);
+};
+const profile={relay:config.relay,hostId:config.hostId,key:config.key,pin:config.pin,mobileToken,approved:true,name:'HTML 验收电脑'};
+writeFileSync(resolve(base,'fixture.json'),JSON.stringify({profile,relayPort:new URL(profile.relay).port,threadId:thread.id,htmlLink:'./pages/review%20page.html',root}),{mode:0o600});
+console.log('HISTORY_HTML_FIXTURE_READY');
+for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{await f.close();process.exit(0)});

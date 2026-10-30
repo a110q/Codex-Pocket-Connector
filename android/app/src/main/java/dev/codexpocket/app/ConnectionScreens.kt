@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.sp
             CompositionLocalProvider(LocalContentColor provides colors.onSurfaceVariant){PocketIcon("电脑",Modifier.padding(top=2.dp).size(16.dp))}
             Text("电脑需保持开机，Codex 与电脑连接器持续运行。",fontSize=12.sp,lineHeight=19.sp,color=colors.onSurfaceVariant)
         }
+        UpdateEntry()
         Text("Codex Pocket  /  ${BuildConfig.VERSION_NAME}",fontSize=11.sp,color=colors.onSurfaceVariant)
     }}
 }

@@ -27,6 +27,35 @@ async function setup(t) {
   return Object.assign(f,{post,root,register,approve,desktop,host});
 }
 
+test('admin computer presence follows each desktop socket, never mobile-only pairing or stored bindings',async t=>{
+  const f=await setup(t),alice=await f.register('presence');await f.approve(alice.user);
+  await f.call('/api/account/me',{},alice.phone.token);
+  await f.call('/api/admin/users/computers',{userId:alice.user.id,limit:2},f.root.token);
+  const desktop=await f.desktop('presence'),a=f.host(),b={...f.host(),name:'Other computer'};
+  for(const host of [a,b])await f.call('/api/account/hosts/enroll',host,desktop.token);
+  const computers=async()=>(await f.call('/api/admin/users',{},f.root.token)).users.find(u=>u.id===alice.user.id).computers;
+  const online=async host=>(await computers()).find(c=>c.id===host.hostId)?.online;
+  const waitOnline=async(host,expected)=>{const deadline=Date.now()+3000;while(await online(host)!==expected){assert(Date.now()<deadline,'Presence did not follow socket state');await delay(10)}};
+  assert.equal(await online(a),false);assert.equal(await online(b),false);
+  const mobileToken=secret();await f.call('/api/pair',{hostId:a.hostId,pairCode:a.pairCode,mobileToken},alice.phone.token);
+  await f.call('/api/pair/decision',{hostId:a.hostId,fingerprint:digest(mobileToken).slice(0,12),accept:true},a.desktopToken);
+  const connect=async(host,role='desktop',token=host.desktopToken)=>{
+    const ws=new WebSocket(f.defaults.relay.replace('https:','wss:')+'/relay',{ca:f.defaults.caCert,headers:{Authorization:`Bearer ${token}`,'X-Pocket-Host':host.hostId,'X-Pocket-Role':role,...(role==='mobile'?{'X-Pocket-Session':alice.phone.token}:{})}});
+    f.sockets.push(ws);await once(ws,'open');return ws;
+  };
+  await connect(a,'mobile',mobileToken);assert.equal(await online(a),false,'A connected phone does not mean the desktop is online');
+  const first=await connect(a);await waitOnline(a,true);assert.equal(await online(b),false);
+  const replaced=once(first,'close'),second=await connect(a);await replaced;
+  assert.equal(await online(a),true,'Closing a replaced socket must not clear the current connection');
+  const disconnected=once(second,'close');second.terminate();await disconnected;await waitOnline(a,false);
+  await connect(b);await waitOnline(b,true);assert.equal(await online(a),false);
+  await f.restartRelay();assert.equal(await online(b),false,'Restart must not reuse persisted online flags');
+  await connect(a);await waitOnline(a,true);
+  await f.call('/api/admin/users/decision',{userId:alice.user.id,action:'enable',days:1},f.root.token);
+  await connect(a);await waitOnline(a,true);
+  f.advance(2*86400_000);assert.equal(await online(a),false,'An expired account must not retain an online indication');
+});
+
 test('accounts require server-side approval, protect admin routes, survive restart and never expose passwords',async t=>{
   const f=await setup(t),alice=await f.register('alice');
   assert.equal(alice.user.role,'user');assert.equal(alice.user.accessState,'pending');

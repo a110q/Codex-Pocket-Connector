@@ -254,6 +254,7 @@ class ConnectionRecoveryTest {
         Assert.assertNull(model!!.error)
     }
     internal class Peer(testHost:String="network-test-host-abcdefghijklmnop",lan:Boolean=false) {
+        var requestError:((String,JSONObject)->String?)?=null
         val server=MockWebServer()
         val opens=AtomicInteger();val hellos=AtomicInteger()
         val actions=CopyOnWriteArrayList<String>();val auth=CopyOnWriteArrayList<String?>()
@@ -320,6 +321,9 @@ class ConnectionRecoveryTest {
                         val action=payload.getString("action");actions.add(action)
                         if(action=="message.send"){messages.add(payload.getJSONObject("args"));if(ignoreMessages)return}
                         val args=payload.getJSONObject("args");commands.add(payload)
+                        requestError?.invoke(action,args)?.let{problem->
+                            webSocket.send(codec.encode(JSONObject().put("type","response").put("channel",channel).put("id",payload.getString("id")).put("error",problem)));return
+                        }
                         val result=extra?.invoke(action,args)?:when(action){
                             "image.upload.start"->JSONObject().put("nextOffset",imageBytes.size())
                             "image.upload.chunk"->{Assert.assertEquals(imageBytes.size(),args.getInt("offset"));imageBytes.write(android.util.Base64.decode(args.getString("data"),android.util.Base64.DEFAULT));JSONObject().put("nextOffset",imageBytes.size())}

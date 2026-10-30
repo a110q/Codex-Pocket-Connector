@@ -5,6 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 val pocketSigning = Properties()
+val pocketPackage = groovy.json.JsonSlurper().parse(rootProject.file("../package.json")) as Map<*, *>
 val pocketSigningFile = rootProject.file("../.private/android-signing.properties")
 if (pocketSigningFile.exists()) pocketSigningFile.inputStream().use { pocketSigning.load(it) }
 android {
@@ -14,8 +15,8 @@ android {
         applicationId = "dev.codexpocket.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.9.9.1"
+        versionCode = (pocketPackage["pocketBuild"] as Number).toInt()
+        versionName = pocketPackage["pocketVersion"] as String
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
@@ -54,6 +55,8 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("io.noties.markwon:core:4.6.2")
     implementation("io.noties.markwon:linkify:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

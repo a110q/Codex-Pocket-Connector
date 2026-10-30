@@ -1,6 +1,8 @@
 .private/
 releases/
 connector-defaults.json
+update-defaults.json
+android/app/src/main/assets/updates.json
 android/app/src/main/assets/server.json
 node_modules/
 .DS_Store
