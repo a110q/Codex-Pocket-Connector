@@ -123,8 +123,14 @@ fun verifyApk(context:Context,file:File,release:AppRelease){
     check(!expected.isNullOrEmpty()&&expected==actual){"安装包签名与当前应用不一致，请联系维护者。"}
 }
 
-class AppUpdateModel(private val context:Context,private val source:UpdateClient?=null,val currentVersion:String=BuildConfig.VERSION_NAME,val currentBuild:Int=BuildConfig.VERSION_CODE){
+class AppUpdateModel(private val context:Context,private val source:UpdateClient?=null,val currentVersion:String=BuildConfig.VERSION_NAME,val currentBuild:Int=BuildConfig.VERSION_CODE,private val clock:()->Long=System::currentTimeMillis,preferencesName:String="app-updates"){
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
+    private val preferences=context.getSharedPreferences(preferencesName,Context.MODE_PRIVATE)
+    private var automaticJob:Job?=null
+    var prompt by mutableStateOf(false);private set
+    private var handledVersion:String?=null
+    private var lastAutomatic:Long?=null
+    private var automaticInterval=0L
     private var job:Job?=null;private var client:UpdateClient?=source
     var status by mutableStateOf("idle");private set
     var release by mutableStateOf<AppRelease?>(null);private set
@@ -135,12 +141,34 @@ class AppUpdateModel(private val context:Context,private val source:UpdateClient
     private var file:File?=null
     val busy get()=status=="checking"||download=="downloading"
     private fun service()=client?:UpdateClient(UpdateConfig.bundled(context)).also{client=it}
-    fun check(){
+    fun startAutomaticChecks(){
+        if(automaticJob?.isActive==true)return
+        automaticJob=scope.launch{while(isActive){checkAutomatically();delay(60_000)}}
+    }
+    fun stopAutomaticChecks(){automaticJob?.cancel();automaticJob=null}
+    fun checkAutomatically(){
+        if(busy||download=="ready"||prompt)return
+        val now=clock();val last=lastAutomatic
+        if(last!=null&&now>=last&&now-last<automaticInterval)return
+        lastAutomatic=now;automaticInterval=15*60_000L
+        check(automatic=true)
+    }
+    fun dismissPrompt(){
+        val version=release?.version?:return
+        preferences.edit().putString("deferred-version",version).putLong("deferred-until",clock()+24*60*60_000L).apply()
+        handledVersion=version;prompt=false
+    }
+    fun acceptPrompt(){dismissPrompt();download()}
+    fun check(automatic:Boolean=false){
         if(busy)return
-        status="checking";release=null;error=null;download="idle";file=null;received=0;installMessage=null
+        prompt=false;status="checking";release=null;error=null;download="idle";file=null;received=0;installMessage=null
         job=scope.launch{try{
             val result=withContext(Dispatchers.IO){service().check()};release=result
             status=if(UpdateVersion.compare(result.version,currentVersion)>0){check(result.build>currentBuild){"更新安装包的构建号无效，请联系维护者。"};"available"}else"current"
+            automaticInterval=6*60*60_000L
+            if(automatic&&status=="available"&&handledVersion!=result.version){
+                prompt=preferences.getString("deferred-version",null)!=result.version||clock()>=preferences.getLong("deferred-until",0)
+            }
         }catch(e:CancellationException){throw e}catch(e:Exception){status="error";release=null;error=message(e)}}
     }
     fun download(){

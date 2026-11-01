@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-@Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},computerName:String?=null,streaming:Boolean=false,images:@Composable ()->Unit={}){
+@Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},images:@Composable ()->Unit={}){
     val role=message.optString("role");val text=message.optString("text")
     val clipboard=LocalClipboard.current;val scope=rememberCoroutineScope()
     when(role){
@@ -40,9 +40,6 @@ import org.json.JSONObject
                         if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容")}
                     }
                 }
-                if(message.optString("type")!="queuedUserMessage"&&computerName!=null){
-                    Text("已同步至$computerName",Modifier.padding(top=4.dp,end=2.dp),fontSize=12.sp,lineHeight=12.sp,color=PocketPalette.muted)
-                }
                 if(message.optString("type")=="queuedUserMessage"){
                     val queuedLabel=when(message.optString("status")){
                         "sending"->"正在发送"
@@ -57,17 +54,14 @@ import org.json.JSONObject
                 }
             }
         }
-        else->Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(12.dp)){
-            Row(Modifier.fillMaxWidth().padding(top=2.dp),verticalAlignment=Alignment.CenterVertically){
+        else->Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(4.dp)){
+            Row(Modifier.fillMaxWidth().heightIn(min=32.dp),verticalAlignment=Alignment.CenterVertically){
                 Surface(Modifier.size(20.dp),shape=RoundedCornerShape(6.dp),color=MaterialTheme.colorScheme.primary.copy(alpha=.10f),contentColor=MaterialTheme.colorScheme.primary,border=BorderStroke(1.dp,MaterialTheme.colorScheme.primary.copy(alpha=.20f))){
                     Box(contentAlignment=Alignment.Center){PocketIcon("终端",Modifier.size(13.dp))}
                 }
                 Spacer(Modifier.width(8.dp));Text("Codex",fontSize=13.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                if(streaming){
-                    Text(" · 远程工作区同步中",Modifier.weight(1f),fontSize=12.sp,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
-                    Text("流式输出",fontSize=12.sp,fontFamily=FontFamily.Monospace,color=MaterialTheme.colorScheme.primary)
-                }else Spacer(Modifier.weight(1f))
-                IconButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Codex",text)))}},modifier=Modifier.size(24.dp).semantics{contentDescription="复制回复"}){
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick={scope.launch{clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Codex",text)))}},modifier=Modifier.size(48.dp).semantics{contentDescription="复制回复"}){
                     CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon("复制",Modifier.size(14.dp))}
                 }
             }
@@ -106,32 +100,22 @@ private fun executionState(message:JSONObject):ExecutionState {
     val states=records.map(::executionState)
     val running=states.count{it==ExecutionState.RUNNING};val failed=states.count{it==ExecutionState.FAILED}
     val complete=states.all{it==ExecutionState.COMPLETED}
-    val summary=listOfNotNull(if(failed>0)"$failed 条未成功记录"else null,if(running>0)"$running 运行中"else null).joinToString(" · ")
     val status=when{running>0->"运行中";complete->"已完成";failed>0&&states.none{it==ExecutionState.UNKNOWN}->"已结束";else->"查看记录"}
-    Surface(onClick=onToggle,color=PocketPalette.subtle,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth().semantics{
+    Surface(onClick=onToggle,color=Color.Transparent,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().semantics{
         contentDescription=if(expanded)"收起执行过程" else "展开执行过程"
         stateDescription=if(expanded)"已展开" else "已折叠"
     }){
-        Row(Modifier.heightIn(min=48.dp).padding(horizontal=14.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
-            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant){PocketIcon(if(expanded)"下拉"else"展开",Modifier.size(14.dp))}
+        Row(Modifier.heightIn(min=48.dp).padding(horizontal=4.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+            if(running>0)CircularProgressIndicator(Modifier.size(17.dp),strokeWidth=1.8.dp)
+            else CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon(if(complete)"检查"else"时钟",Modifier.size(17.dp))}
             Spacer(Modifier.width(10.dp))
-            if(LocalDensity.current.fontScale>1.2f)Column(Modifier.weight(1f)){
-                Text("执行过程 · ${records.size} 项",fontSize=14.sp,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(summary.isNotBlank())Text(summary,fontSize=11.sp,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
-            }else{
-                Text("执行过程 · ${records.size} 项",fontSize=14.sp,fontWeight=FontWeight.Medium,maxLines=1)
-                Spacer(Modifier.width(8.dp))
-                Text(summary,Modifier.weight(1f),fontSize=11.sp,fontFamily=FontFamily.Monospace,color=PocketPalette.muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(2.dp)){
+                Text("执行过程 · ${records.size} 项",fontSize=13.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(failed>0)Text("$failed 条未成功记录",fontSize=11.sp,color=PocketPalette.muted)
             }
-            Spacer(Modifier.width(6.dp))
-            Surface(color=if(running>0)PocketPalette.lavender else MaterialTheme.colorScheme.surface,
-                contentColor=MaterialTheme.colorScheme.primary,
-                shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,PocketPalette.lavenderBorder)){
-                Row(Modifier.padding(horizontal=8.dp,vertical=4.dp),verticalAlignment=Alignment.CenterVertically){
-                    if(running>0){Box(Modifier.size(6.dp).background(MaterialTheme.colorScheme.primary,RoundedCornerShape(50)));Spacer(Modifier.width(5.dp))}
-                    Text(status,fontSize=12.sp,lineHeight=17.sp)
-                }
-            }
+            Text(status,fontSize=12.sp,color=if(running>0)MaterialTheme.colorScheme.primary else PocketPalette.muted)
+            Spacer(Modifier.width(10.dp))
+            CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon(if(expanded)"上拉"else"下拉",Modifier.size(14.dp))}
         }
     }
 }

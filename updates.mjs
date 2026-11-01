@@ -1,7 +1,7 @@
 import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, createPublicKey, verify, X509Certificate } from 'node:crypto';
-import { readFileSync, existsSync, mkdirSync, createWriteStream, renameSync, rmSync, openSync, readSync, closeSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, createWriteStream, renameSync, rmSync, openSync, readSync, closeSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -73,15 +73,35 @@ export function updateRequest(url, config, { signal, timeout = 15000 } = {}) {
   });
 }
 export class UpdateManager {
-  constructor({ config, directory, platform = process.platform, version = PRODUCT_VERSION, build = BUILD_NUMBER, reveal = revealUpdate } = {}) {
-    Object.assign(this, { config, directory, platform:updatePlatform(platform), version, build, reveal });
+  constructor({ config, directory, platform = process.platform, version = PRODUCT_VERSION, build = BUILD_NUMBER, reveal = revealUpdate, now = Date.now } = {}) {
+    Object.assign(this, { config, directory, platform:updatePlatform(platform), version, build, reveal, now });
+    this.preferencesFile=resolve(directory,'preferences.json');
+    try { this.preferences=JSON.parse(readFileSync(this.preferencesFile,'utf8')); } catch { this.preferences={}; }
+    this.lastAutomatic=null;this.automaticInterval=0;this.handledVersion=null;
     this.controller = null; this.file = null; this.job = null;
-    this.value = { status:'idle', currentVersion:version, currentBuild:build, platform:this.platform, release:null, asset:null, download:'idle', received:0, error:'' };
+    this.value = { status:'idle', currentVersion:version, currentBuild:build, platform:this.platform, release:null, asset:null, download:'idle', received:0, error:'', prompt:false };
   }
   state() { return structuredClone(this.value); }
-  async check() {
+  async checkAutomatically() {
+    if(this.controller||this.value.download==='ready'||this.value.prompt)return this.state();
+    const now=this.now();
+    if(this.lastAutomatic!==null&&now>=this.lastAutomatic&&now-this.lastAutomatic<this.automaticInterval)return this.state();
+    this.lastAutomatic=now;this.automaticInterval=15*60*1000;
+    return this.check({automatic:true});
+  }
+  decide(accept) {
+    if(!this.value.prompt||this.value.status!=='available')return this.state();
+    const version=this.value.release.version;
+    mkdirSync(this.directory,{recursive:true,mode:0o700});
+    const preferences={version,until:this.now()+24*60*60*1000};
+    const temporary=this.preferencesFile+'.next';
+    writeFileSync(temporary,JSON.stringify(preferences),{mode:0o600});renameSync(temporary,this.preferencesFile);
+    this.preferences=preferences;this.handledVersion=version;this.value.prompt=false;
+    return accept?this.download():this.state();
+  }
+  async check({automatic=false}={}) {
     if (this.controller) return this.state();
-    this.value = { ...this.value, status:'checking', release:null, asset:null, download:'idle', received:0, error:'' }; this.file = null;
+    this.value = { ...this.value, prompt:false, status:'checking', release:null, asset:null, download:'idle', received:0, error:'', prompt:false }; this.file = null;
     this.controller = new AbortController();
     const timeout = setTimeout(() => this.controller?.abort(), 12000);
     try {
@@ -96,6 +116,8 @@ export class UpdateManager {
       const comparison = compareVersions(release.version, this.version);
       if (comparison > 0 && release.build <= this.build) throw Error('更新安装包的构建号无效，请联系维护者。');
       this.value = { ...this.value, status:comparison > 0 ? 'available':'current', release, asset, ahead:comparison < 0 };
+      this.automaticInterval=6*60*60*1000;
+      this.value.prompt=automatic&&comparison>0&&this.handledVersion!==release.version&&(this.preferences.version!==release.version||this.now()>=this.preferences.until);
     } catch (error) { this.value.status = 'error'; this.value.error = updateError(error); }
     finally { clearTimeout(timeout); this.controller = null; }
     return this.state();

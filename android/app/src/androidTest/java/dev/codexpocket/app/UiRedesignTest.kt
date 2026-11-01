@@ -64,6 +64,66 @@ class UiRedesignTest {
         context.contentResolver.openOutputStream(uri)!!.use{instrumentation.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it)}
         context.contentResolver.update(uri,ContentValues().apply{put(MediaStore.Images.Media.IS_PENDING,0)},null,null)
     }
+    @Test fun workspaceFiltersFollowUpdatesWithoutOpeningConversations(){
+        peer.threads.getJSONObject(1).put("status","waitingForApproval")
+        peer.threads.getJSONObject(2).put("status","waitingForUserInput")
+        compose.runOnUiThread{model.refresh()}
+        until{model.threads.any{it.optString("id")=="ui-1"&&threadActivity(it)==ThreadActivity.APPROVAL}}
+        compose.onNodeWithContentDescription("筛选运行中对话").performClick()
+        compose.onNodeWithText("修复自动重连").assertIsDisplayed()
+        compose.onNodeWithText("重新设计手机界面").assertDoesNotExist()
+        compose.onNodeWithText("个人网站").assertDoesNotExist()
+        shot("redesign-running-filter")
+        peer.threads.getJSONObject(0).put("status","idle");peer.publish()
+        until{model.threads.any{it.optString("id")=="ui-0"&&threadActivity(it)==ThreadActivity.IDLE}}
+        compose.onNodeWithText("暂无运行中的对话").assertIsDisplayed()
+        Assert.assertNull(model.selected)
+        compose.onNodeWithContentDescription("筛选待审批对话").performClick()
+        compose.onNodeWithText("重新设计手机界面").assertIsDisplayed()
+        compose.onNodeWithText("图片预览优化").assertDoesNotExist()
+        shot("redesign-approval-filter")
+        compose.onNodeWithContentDescription("展开搜索").performClick()
+        compose.onNodeWithContentDescription("搜索项目或对话").performTextInput("没有匹配")
+        compose.onNodeWithText("没有找到相关对话").assertIsDisplayed()
+        compose.onNodeWithContentDescription("清空搜索").performClick()
+        compose.onNodeWithContentDescription("收起搜索").performClick()
+        compose.onNodeWithContentDescription("筛选全部对话").performClick()
+        compose.onNodeWithText("图片预览优化").assertIsDisplayed()
+        compose.runOnUiThread{model.updateAppearance("dark")}
+        shot("redesign-workspace-dark")
+    }
+    @Test fun deliverablesShowRealFilesAndChangesAndPreviewFromChat(){
+        executionTranscript(listOf(execution("verify","检查连接")))
+        val patch="diff --git a/app/login.kt b/app/login.kt\n--- a/app/login.kt\n+++ b/app/login.kt\n@@ -1 +1,2 @@\n-old\n+new\n+guard\n"
+        peer.messages.put(execution("diff","文件修改").put("type","turnDiff").put("text",patch))
+        peer.threads.getJSONObject(0).put("status","idle")
+        chat()
+        compose.onNodeWithText("交付与修改").assertIsDisplayed()
+        compose.onNodeWithText("最近一轮 · 修改 1 个文件").assertIsDisplayed()
+        compose.onNodeWithText("app/login.kt").assertIsDisplayed()
+        compose.onNodeWithText("+2").assertIsDisplayed();compose.onNodeWithText("−1").assertIsDisplayed()
+        compose.onNodeWithText("Markdown 文档",substring=true).assertIsDisplayed()
+        shot("redesign-chat-results")
+        compose.onNodeWithContentDescription("查看最近一轮代码修改").performClick()
+        compose.onNodeWithContentDescription("关闭交付文件").assertIsDisplayed()
+        compose.onNodeWithContentDescription("关闭交付文件").performClick()
+        compose.onNodeWithContentDescription("预览文件 验收说明.md").performClick()
+        until{model.previewFile!=null&&!model.previewLoading}
+        Assert.assertTrue(model.previewFile!!.readText().contains("隔离环境"))
+        Assert.assertTrue(peer.calls.any{it.optString("action")=="file.read"&&it.getJSONObject("args").optString("artifactId")=="b".repeat(32)})
+        shot("redesign-inline-preview")
+        compose.onNodeWithContentDescription("关闭预览").performClick()
+        compose.runOnUiThread{model.updateAppearance("dark")}
+        shot("redesign-results-dark")
+    }
+    @Test fun modificationSummaryUsesTransportedPathsAndDoesNotDoubleCountTurnDiff(){
+        val snapshot=JSONObject().put("messages",JSONArray().put(JSONObject().put("type","fileChange").put("turnId","one").put("text","src/a.kt\n@@ -1 +1,2 @@\n-old\n+new\n+guard")))
+        Assert.assertEquals(listOf(PatchFile("src/a.kt",2,1)),recentChanges(snapshot)!!.files)
+        snapshot.getJSONArray("messages").put(JSONObject().put("type","turnDiff").put("turnId","one").put("text","--- a/src/a.kt\n+++ b/src/a.kt\n@@ -1 +1,2 @@\n-old\n+new\n+guard"))
+        Assert.assertEquals(listOf(PatchFile("src/a.kt",2,1)),recentChanges(snapshot)!!.files)
+        snapshot.getJSONArray("messages").getJSONObject(1).put("textComplete",false)
+        Assert.assertFalse(recentChanges(snapshot)!!.complete)
+    }
     @Test fun connectionDiagnosticsRemainAvailableAfterRecoveryAndContainNoPairingSecrets(){
         chat()
         compose.onNodeWithContentDescription("对话更多操作").performClick()
@@ -96,6 +156,7 @@ class UiRedesignTest {
     }
     @Test fun compactWorkspaceKeepsSearchAndNavigationAccessible(){
         compose.onNodeWithContentDescription("搜索项目或对话").assertDoesNotExist()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("移动端适配问题"))
         compose.onNodeWithText("移动端适配问题").assertIsDisplayed()
         compose.onNodeWithContentDescription("新建对话").assertIsDisplayed().assertIsEnabled().performClick()
         compose.onNodeWithContentDescription("新对话指令").assertIsDisplayed()
@@ -282,7 +343,7 @@ class UiRedesignTest {
         executionTranscript(listOf(running,execution("read","读取状态")),reply=false)
         chat()
         compose.onNodeWithText("执行过程 · 2 项").assertIsDisplayed()
-        compose.onNodeWithText("1 运行中").assertIsDisplayed()
+        compose.onNodeWithText("运行中",substring=false).assertIsDisplayed()
         val tail=execution("next","重新检查","inProgress")
         peer.messages.put(tail);peer.publish()
         until{model.snapshot!!.getJSONArray("messages").length()==4}
@@ -419,7 +480,7 @@ class UiRedesignTest {
         until{peer.calls.any{it.optString("action")=="approval.respond"}&&!model.busy}
         Assert.assertEquals("accept",peer.calls.first{it.optString("action")=="approval.respond"}.getJSONObject("args").getString("decision"))
         compose.onNodeWithContentDescription("对话更多操作").performClick();compose.onNodeWithText("查看交付文件",substring=false).performClick()
-        compose.onNodeWithText("验收说明.md").performScrollTo().performClick()
+        compose.onNode(hasText("验收说明.md") and hasAnyAncestor(isDialog())).performScrollTo().performClick()
         until{model.previewFile!=null&&!model.previewLoading}
         Assert.assertTrue(model.previewFile!!.readText().contains("隔离环境"));shot("07-file-preview")
         compose.onNodeWithContentDescription("关闭预览").performClick()
@@ -431,7 +492,7 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("展开搜索").performClick()
         compose.onNodeWithContentDescription("搜索项目或对话").performTextInput("没有这样的项目或对话")
         compose.runOnUiThread{model.error="网络暂时不可用。已缓存的对话仍可查看，连接恢复后会重新同步。"}
-        compose.onNodeWithText("没有找到相关项目或对话").assertIsDisplayed();shot("08-empty-error")
+        compose.onNodeWithText("没有找到相关对话").assertIsDisplayed();shot("08-empty-error")
     }
 
     private inner class UiPeer {

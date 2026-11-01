@@ -65,3 +65,39 @@ test('connector update actions require local authentication and do not stop its 
   assert.equal((await fetch(base+'/api/updates',{headers}).then(r=>r.json())).status,'available');
   const response=await fetch(base+'/api/updates/download',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);await u.job;assert.equal(u.state().download,'ready');assert.equal(app.runtime.busy,false);
 });
+
+test('automatic checks prompt only for verified newer releases and wait for user consent',async t=>{
+  const f=await updateFixture();t.after(()=>f.close());let time=1000000000;
+  const options={config:f.config,directory:resolve(f.directory,'automatic'),platform:'darwin',version:'0.9.9.3',build:35,now:()=>time};
+  const u=new UpdateManager(options);t.after(()=>u.close());
+  assert.equal((await u.checkAutomatically()).prompt,true);assert.equal(u.state().download,'idle');assert.equal(f.requests.length,1);
+  await u.checkAutomatically();assert.equal(f.requests.length,1);
+  assert.equal(u.decide(false).prompt,false);assert.equal(u.state().download,'idle');
+  const reopened=new UpdateManager(options);t.after(()=>reopened.close());assert.equal((await reopened.checkAutomatically()).prompt,false);
+  await reopened.checkAutomatically();assert.equal(f.requests.length,2);
+  time+=25*60*60*1000;
+  const next=new UpdateManager(options);t.after(()=>next.close());assert.equal((await next.checkAutomatically()).prompt,true);
+  next.decide(true);await next.job;assert.equal(next.state().download,'ready');assert.equal(next.state().prompt,false);
+  const count=f.requests.length;time+=7*60*60*1000;await next.checkAutomatically();assert.equal(f.requests.length,count);assert.equal(next.state().download,'ready');
+});
+test('automatic failures retry after a short interval; current or invalid releases never prompt',async t=>{
+  const f=await updateFixture();t.after(()=>f.close());let time=1000000000;
+  const u=new UpdateManager({config:f.config,directory:f.directory,platform:'darwin',version:'0.9.9.3',build:35,now:()=>time});t.after(()=>u.close());
+  f.mode='tampered';assert.equal((await u.checkAutomatically()).prompt,false);assert.equal(u.state().status,'error');
+  f.mode='normal';await u.checkAutomatically();assert.equal(f.requests.length,1);
+  time+=16*60*1000;assert.equal((await u.checkAutomatically()).prompt,true);
+  u.decide(false);f.version='0.9.11';time+=7*60*60*1000;assert.equal((await u.checkAutomatically()).prompt,true);
+  const current=new UpdateManager({config:f.config,directory:resolve(f.directory,'current'),platform:'win32',version:'0.9.11',build:36});t.after(()=>current.close());
+  assert.equal((await current.checkAutomatically()).prompt,false);assert.equal(current.state().status,'current');
+});
+test('automatic update API requires authentication and explicit acceptance before downloading',async t=>{
+  const f=await updateFixture();t.after(()=>f.close());const relay=await fixture();t.after(()=>relay.close());
+  const u=new UpdateManager({config:f.config,directory:resolve(f.directory,'consent'),platform:'win32',version:'0.9.9.3',build:35});
+  const app=await startConnector({paths:relay.paths('consent'),defaults:relay.defaults,port:0,updates:u});t.after(()=>app.close());
+  const base=`http://127.0.0.1:${app.server.address().port}`,headers={Authorization:`Bearer ${app.token}`,'Content-Type':'application/json'};
+  assert.equal((await fetch(base+'/api/updates/automatic',{method:'POST',body:'{}'})).status,401);
+  const request=(path,body)=>fetch(base+'/api/updates/'+path,{method:'POST',headers,body:JSON.stringify(body)});
+  assert.equal((await(await request('automatic',{})).json()).prompt,true);assert.equal(u.state().download,'idle');
+  assert.equal((await request('decision',{})).status,400);assert.equal(u.state().download,'idle');
+  await request('decision',{accept:true});await u.job;assert.equal(u.state().download,'ready');assert.equal(app.runtime.busy,false);
+});

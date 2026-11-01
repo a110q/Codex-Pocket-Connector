@@ -73,6 +73,8 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
       let text = ''; for await (const part of req) { text += part; if (Buffer.byteLength(text) > 32768) throw new Error('输入内容过长'); }
       const body = JSON.parse(text || '{}');
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('输入内容无效');
+      if (url.pathname === '/api/updates/automatic') return res.end(JSON.stringify(await updates.checkAutomatically()));
+      if (url.pathname === '/api/updates/decision') { if(typeof body.accept!=='boolean')throw Error('请选择是否更新'); return res.end(JSON.stringify(updates.decide(body.accept))); }
       if (url.pathname === '/api/updates/check') return res.end(JSON.stringify(await updates.check()));
       if (url.pathname === '/api/updates/download') return res.end(JSON.stringify(updates.download()));
       if (url.pathname === '/api/updates/open') return res.end(JSON.stringify(updates.open()));

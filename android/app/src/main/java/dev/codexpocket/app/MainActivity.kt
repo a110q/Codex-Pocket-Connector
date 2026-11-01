@@ -183,6 +183,7 @@ class MainActivity : ComponentActivity() {
                     Text("仅连接你信任的电脑所提供的服务。切换后需登录该服务的账号，原服务的登录信息不会发送过去。",fontSize=14.sp)
                 }},confirmButton={TextButton(onClick={pendingService=null;changeService(server,raw)}){Text("切换并登录")}},dismissButton={TextButton(onClick={pendingService=null}){Text("取消")}})
             }
+            AutomaticUpdateHost(updates)
             taskError?.let{message->AlertDialog(onDismissRequest={taskError=null},title={Text("暂时无法打开提醒")},text={Text(message)},confirmButton={TextButton(onClick={taskError=null}){Text("知道了")}})}
             scanError?.let{message->AlertDialog(onDismissRequest={scanError=null},title={Text("无法读取配对码")},text={Text(message)},confirmButton={TextButton(onClick={scanError=null}){Text("知道了")}})}
 
@@ -190,8 +191,8 @@ class MainActivity : ComponentActivity() {
     }
     override fun onSaveInstanceState(outState:Bundle){super.onSaveInstanceState(outState);outState.putString("filePickKey",filePickKey);outState.putBoolean("filePickLan",filePickLan);outState.putString("imagePickKey",imagePickKey);outState.putBoolean("imagePickLan",imagePickLan);outState.putString("connectionPage",connectionPage)}
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent);receiveTaskIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin){connectionPage=null;if(lanMode)switchMode(false)}; intent.data = null; setIntent(intent) }
-    override fun onStart() { super.onStart();TaskMonitorService.foreground(this); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
-    override fun onStop() { if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop();TaskMonitorService.background(this); super.onStop() }
+    override fun onStart() { super.onStart();updates.startAutomaticChecks();TaskMonitorService.foreground(this); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
+    override fun onStop() { updates.stopAutomaticChecks();if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop();TaskMonitorService.background(this); super.onStop() }
     override fun onDestroy(){updates.close();super.onDestroy()}
 }
 
@@ -322,10 +323,13 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     val blocks=blockIdentity.update(messages,key={it.optString("turnId")+":"+it.optString("id")},turn={it.optString("turnId")},execution={it.optString("role") in listOf("tool","summary")})
     var expandedGroups by rememberSaveable(model.profile?.optString("relay"),model.profile?.optString("hostId"),thread.optString("id")){mutableStateOf(emptyList<String>())}
     val runtimeThread=snapshot?.optJSONObject("thread")?:thread
+    val activity=threadActivity(runtimeThread,snapshot?.optJSONArray("requests"))
+    val artifacts=snapshot?.optJSONArray("artifacts").objects()
+    val changes=recentChanges(snapshot)
     val taskFailed=snapshot!=null&&threadActivity(runtimeThread,snapshot.optJSONArray("requests"))==ThreadActivity.ERROR
     val taskTurnId=runtimeThread.optString("lastTurnId").takeIf{it.isNotBlank()&&it!="null"}?:messages.lastOrNull{it.optString("type")!="queuedUserMessage"}?.optString("turnId")
     val taskError=messages.lastOrNull{it.optString("type")=="turnError"&&it.optString("turnId")==taskTurnId}
-    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}+if(taskFailed)1 else 0
+    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}+(if(taskFailed)1 else 0)+(if(artifacts.isNotEmpty()||changes!=null)1 else 0)
     val chatScope=rememberCoroutineScope()
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
     var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
@@ -350,9 +354,9 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
             if(block.execution)add(block.key)
             if(!block.execution||block.key in expandedGroups)block.records.forEach{add("message:"+it.optString("turnId")+":"+it.optString("id"))}
         }
+        if(artifacts.isNotEmpty()||changes!=null)add("artifacts")
         requests.forEach{add("approval:"+it.optString("id"))}
         if(taskFailed)add("task-error")
-        if(snapshot?.optJSONArray("artifacts").objects().isNotEmpty())add("artifacts")
     }
     var initialScroll by remember{mutableStateOf(false)}
     var followLatest by remember{mutableStateOf(true)}
@@ -408,11 +412,15 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         if(!browserFullscreen)Row(Modifier.fillMaxWidth().heightIn(min=60.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
             PocketAction("返回","返回项目"){model.back()}
             Column(Modifier.weight(1f)){
-                Text(thread.label(),fontSize=16.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(thread.label(),fontSize=17.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
                 val project=model.projects.find{it.optString("projectId")==thread.optString("projectId")}
                 Row(verticalAlignment=Alignment.CenterVertically){
                     CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("文件夹",Modifier.size(12.dp))}
-                    Spacer(Modifier.width(5.dp));Text(project?.label()?:snapshot?.optJSONObject("thread")?.optString("cwd")?.takeIf{it.isNotBlank()&&it!="null"}?.substringAfterLast('/')?:"独立对话",fontSize=12.sp,fontFamily=FontFamily.Monospace,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    Spacer(Modifier.width(5.dp));Text(project?.label()?:snapshot?.optJSONObject("thread")?.optString("cwd")?.takeIf{it.isNotBlank()&&it!="null"}?.substringAfterLast('/')?:"独立对话",Modifier.weight(1f,false),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    if(snapshot!=null){
+                        val stateColor=when{!model.connected->PocketPalette.muted;activity.waiting->MaterialTheme.colorScheme.tertiary;activity==ThreadActivity.ERROR->MaterialTheme.colorScheme.error;else->MaterialTheme.colorScheme.primary}
+                        Text(" · "+(if(!model.connected)"上次："else"")+activity.label,fontSize=12.sp,color=stateColor,maxLines=1)
+                    }
                 }
             }
             Spacer(Modifier.width(6.dp));ConnectionBadge(model,onComputers)
@@ -442,7 +450,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         if(!(previewExpanded&&model.previewKind!=null))Box(Modifier.weight(1f).fillMaxWidth()){
         LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("chat-history").nestedScroll(scrollConnection),contentPadding=PaddingValues(horizontal=16.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
             if(historyNotice)item(key="history-header") {
-                Column(Modifier.fillMaxWidth().heightIn(min=76.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center) {
+                Column(Modifier.fillMaxWidth().heightIn(min=32.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center) {
                     if(history?.optBoolean("hasEarlier")==true){
                         if(model.loadingHistory)Row(verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(14.dp),strokeWidth=2.dp);Spacer(Modifier.width(8.dp));Text("正在加载历史…",fontSize=12.sp)}
                         else TextButton(onClick={loadHistory()},enabled=model.connected){Text(if(model.historyError!=null)"加载失败，点击重试"else"向上滚动加载更早记录",fontSize=12.sp)}
@@ -460,14 +468,14 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
                     expandedGroups=if(block.key in expandedGroups)expandedGroups-block.key else expandedGroups+block.key
                 }}
                 // Expanded records remain independent lazy rows, including very long tool runs.
-                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,computerName=model.profile?.computerName(),streaming=active&&message===messages.lastOrNull{it.optString("role")=="assistant"},images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+            }
+            if(artifacts.isNotEmpty()||changes!=null)item(key="artifacts"){
+                ChatDeliverables(artifacts,changes,model.connected,onPreview={file->focus.clearFocus();model.preview(file)},onAll={focus.clearFocus();showResults=true})
             }
             if(!browserFullscreen)items(requests,key={"approval:"+it.optString("id")}){ApprovalCard(it,model)}
             if(taskFailed)item(key="task-error"){TaskErrorCard(taskError){message->model.showMessage(message,if(message.optBoolean("hasDetail"))"detail"else"text")}}
-            val artifacts=snapshot?.optJSONArray("artifacts").objects()
-            if(artifacts.isNotEmpty())item(key="artifacts"){Surface(onClick={showResults=true},color=MaterialTheme.colorScheme.surfaceContainerLow,shape=RoundedCornerShape(10.dp),modifier=Modifier.fillMaxWidth()){
-                Row(Modifier.padding(horizontal=14.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){PocketIcon("文件",Modifier.size(17.dp));Spacer(Modifier.width(9.dp));Text("查看 ${artifacts.size} 个交付文件",Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);PocketIcon("展开",Modifier.size(14.dp))}
-            }}
+
         }
             if(messages.isNotEmpty()&&requests.isEmpty()&&!followLatest&&!followBottom)SmallFloatingActionButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}},modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp).size(48.dp).semantics{contentDescription="跳到最新"},containerColor=PocketPalette.lavender,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(14.dp)){
                 PocketIcon("下拉",Modifier.size(20.dp))
@@ -530,9 +538,19 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     }
 }
 
-@Composable fun ArtifactRow(file:JSONObject,onClick:()->Unit) {
-    Surface(onClick=onClick,color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(14.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
-        Row(Modifier.fillMaxWidth().padding(14.dp),verticalAlignment=Alignment.CenterVertically){Surface(color=MaterialTheme.colorScheme.surfaceVariant,shape=RoundedCornerShape(10.dp),modifier=Modifier.size(36.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(if(file.optString("mime").startsWith("image/"))"图片" else "文件",Modifier.size(18.dp))}};Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(file.optString("name"),fontSize=13.sp,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${file.optLong("size")/1024} KB · 点击预览",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)};PocketIcon("展开",Modifier.size(14.dp))}
+@Composable fun ArtifactRow(file:JSONObject,enabled:Boolean=true,onClick:()->Unit) {
+    val available=enabled&&file.optBoolean("available",true)
+    val kind=artifactType(file)
+    Surface(onClick=onClick,enabled=available,color=PocketPalette.subtle,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().semantics{contentDescription="预览文件 ${file.optString("name")}"}) {
+        Row(Modifier.heightIn(min=64.dp).padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
+            Surface(color=MaterialTheme.colorScheme.surface,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(10.dp),modifier=Modifier.size(36.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(if(kind=="图片")"图片"else if(kind=="网页")"网页"else"文件",Modifier.size(19.dp))}}
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(3.dp)){
+                Text(file.optString("name").ifBlank{file.optString("path").substringAfterLast('/').ifBlank{"未命名文件"}},fontSize=13.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
+                Text(listOfNotNull(kind,artifactSize(file),if(!file.optBoolean("available",true))"文件不可用"else if(!enabled)"连接电脑后预览"else null).joinToString(" · "),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.width(8.dp));Text(if(available)"预览"else if(!enabled)"待连接"else"不可用",fontSize=12.sp,color=if(available)MaterialTheme.colorScheme.primary else PocketPalette.muted)
+        }
     }
 }
 
@@ -678,7 +696,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
                     if(artifacts.isEmpty())item{EmptyState("暂无交付文件","当前对话可访问的文件和图片会显示在这里。")}
                     items(artifacts){file->
                         Column{
-                            ArtifactRow(file){onDismiss();model.preview(file)}
+                            ArtifactRow(file,enabled=model.connected){onDismiss();model.preview(file)}
                             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){TextButton(onClick={model.download(file)},enabled=model.connected&&model.downloadStatus==null){Text("保存到手机",fontSize=12.sp)}}
                         }
                     }

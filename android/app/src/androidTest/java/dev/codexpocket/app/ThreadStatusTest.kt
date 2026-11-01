@@ -101,7 +101,8 @@ class ThreadStatusTest {
         compose.onNodeWithContentDescription("重构手机工作空间，运行中").assertIsDisplayed()
         compose.onNodeWithContentDescription("检查目录访问权限，等待审批").assertIsDisplayed()
         compose.onNodeWithContentDescription("确认发布说明，等待输入").assertIsDisplayed()
-        compose.onNodeWithText("2 个运行中 · 2 个待处理").assertIsDisplayed()
+        compose.onNodeWithContentDescription("筛选运行中对话").assertTextContains("2")
+        compose.onNodeWithContentDescription("筛选待审批对话").assertTextContains("1")
         screenshot("task-status-light")
         compose.onNodeWithText("codex_android").performClick()
         compose.onNodeWithContentDescription("codex_android：1 个运行中").assertIsDisplayed()
@@ -114,20 +115,22 @@ class ThreadStatusTest {
         // No chat has been opened. An update for another chat must still repaint.
         push("run", "idle", 2); push("approval", "idle", 2)
         until { activity("run") == ThreadActivity.IDLE && activity("approval") == ThreadActivity.IDLE }
-        compose.onNodeWithText("1 个运行中 · 1 个待处理").assertIsDisplayed()
+        compose.onNodeWithContentDescription("筛选运行中对话").assertTextContains("1")
+        compose.onNodeWithContentDescription("筛选待审批对话").assertTextContains("0")
         compose.onNodeWithContentDescription("重构手机工作空间，可继续").assertIsDisplayed()
         compose.onNodeWithContentDescription("重构手机工作空间，运行中").assertDoesNotExist()
         compose.onNodeWithContentDescription("codex_android：1 个运行中").assertDoesNotExist()
         compose.runOnUiThread { appearance.value = "light" }
-        compose.onNodeWithContentDescription("查看运行中与待处理任务").performClick()
-        compose.onNodeWithText("运行中与待处理").assertIsDisplayed()
+        compose.onNodeWithContentDescription("工作空间选项").performClick()
+        compose.onNodeWithText("任务动态").performClick()
+        compose.onNodeWithText("运行、审批与出错的对话").assertIsDisplayed()
         compose.onNodeWithText("整理安装说明").assertDoesNotExist()
         compose.onNodeWithContentDescription("构建项目预览页面，运行中").assertIsDisplayed()
         screenshot("task-status-active-filter")
         peer.status(false)
         until { !model.connected }
         compose.onNodeWithContentDescription("构建项目预览页面，上次状态：运行中").assertIsDisplayed()
-        compose.onNodeWithText("上次状态 · 1 个运行中 · 1 个待处理").assertIsDisplayed()
+        compose.onNodeWithText("当前显示上次状态，连接后自动更新").assertIsDisplayed()
         screenshot("task-status-offline")
         peer.status(true)
         until { model.connected }

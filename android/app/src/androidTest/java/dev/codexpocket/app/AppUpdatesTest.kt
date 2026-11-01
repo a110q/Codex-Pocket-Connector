@@ -29,6 +29,8 @@ class AppUpdatesTest{
     private lateinit var model:AppUpdateModel
     private lateinit var config:UpdateConfig
     private lateinit var signing:Ed25519PrivateKeyParameters
+    private var now=1_000_000_000L
+    private val preferencesName="update-test-"+System.nanoTime()
     private var dark=androidx.compose.runtime.mutableStateOf(false)
     private fun ByteArray.hash()=MessageDigest.getInstance("SHA-256").digest(this).joinToString(""){"%02x".format(it)}
     private val apk get()=File(context.applicationInfo.sourceDir).readBytes()
@@ -40,10 +42,10 @@ class AppUpdatesTest{
         val prefix=byteArrayOf(0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x03,0x21,0x00)
         val spki=prefix+signing.generatePublicKey().encoded
         config=UpdateConfig.parse(JSONObject().put("manifestUrl",server.url("/updates/stable.json").toString()).put("pin",cert.certificate.encoded.hash()).put("keyId",spki.hash().take(16)).put("publicKey","-----BEGIN PUBLIC KEY-----\n"+Base64.encodeToString(spki,Base64.NO_WRAP)+"\n-----END PUBLIC KEY-----"))
-        model=AppUpdateModel(context,UpdateClient(config),"0.9.9.3",35)
-        compose.setContent{PocketTheme(if(dark.value)"dark"else"light"){UpdateScreen(model){}}}
+        model=AppUpdateModel(context,UpdateClient(config),"0.9.9.3",35,{now},preferencesName)
+        compose.setContent{PocketTheme(if(dark.value)"dark"else"light"){UpdateScreen(model){};AutomaticUpdateHost(model)}}
     }
-    @After fun cleanup(){compose.runOnUiThread{model.close()};server.shutdown();File(context.cacheDir,"updates/0.9.10").deleteRecursively()}
+    @After fun cleanup(){compose.runOnUiThread{model.close()};server.shutdown();context.getSharedPreferences(preferencesName,0).edit().clear().commit();File(context.cacheDir,"updates/0.9.10").deleteRecursively();File(context.cacheDir,"updates/"+BuildConfig.VERSION_NAME).deleteRecursively()}
     private fun payload(version:String="0.9.10",bytes:ByteArray=byteArrayOf(1,2,3),build:Int=36)=JSONObject().put("schema",1).put("channel","stable").put("version",version).put("build",build).put("publishedAt","2026-10-30T00:00:00Z").put("notes","新增检测更新。\n下载后保留原账号和配对信息。").put("assets",JSONArray().put(JSONObject().put("platform","android").put("kind","apk").put("name","Codex-Pocket-$version.apk").put("url",server.url("/packages/$version/Codex-Pocket-$version.apk").toString()).put("size",bytes.size).put("sha256",bytes.hash())))
     private fun envelope(payload:JSONObject):JSONObject{
         val data=payload.toString().toByteArray();val signer=Ed25519Signer();signer.init(true,signing);signer.update(data,0,data.size)
@@ -77,7 +79,7 @@ class AppUpdatesTest{
         enqueue();click("检测更新");until{model.status=="available"};Assert.assertNull(model.error)
     }
     @Test fun verifiedApkDownloadProducesARestrictedContentUriForTheSystemInstaller(){
-        val bytes=apk;enqueue(payload(bytes=bytes));server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        val bytes=apk;enqueue(payload(BuildConfig.VERSION_NAME,bytes,BuildConfig.VERSION_CODE));server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
         click("检测更新");until{model.status=="available"};click("下载安卓更新");until(60000){model.download=="ready"||model.download=="error"}
         Assert.assertEquals(model.error,"ready",model.download);compose.onNodeWithText("安装更新").performScrollTo().assertIsDisplayed()
         val intent=model.installIntent();Assert.assertEquals(Intent.ACTION_VIEW,intent.action);Assert.assertEquals("content",intent.data!!.scheme);Assert.assertEquals(context.packageName+".updates",intent.data!!.authority);Assert.assertTrue(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION!=0)
@@ -85,7 +87,7 @@ class AppUpdatesTest{
         screenshot("update-android-install-ready")
     }
     @Test fun corruptDownloadIsRemovedAndAValidRetryCanSucceed(){
-        val bytes=apk;enqueue(payload(bytes=bytes));server.enqueue(MockResponse().setBody("broken"))
+        val bytes=apk;enqueue(payload(BuildConfig.VERSION_NAME,bytes,BuildConfig.VERSION_CODE));server.enqueue(MockResponse().setBody("broken"))
         click("检测更新");until{model.status=="available"};click("下载安卓更新");until{model.download=="error"}
         Assert.assertFalse(File(context.cacheDir,"updates/0.9.10/Codex-Pocket-0.9.10.apk.partial").exists());compose.onNodeWithText("安装更新").assertDoesNotExist()
         server.enqueue(MockResponse().setBody(Buffer().write(bytes)));click("重新下载");until(60000){model.download=="ready"||model.download=="error"};Assert.assertEquals(model.error,"ready",model.download)
@@ -100,4 +102,31 @@ class AppUpdatesTest{
         server.shutdown();click("检测更新");until{model.status=="error"}
         compose.onNodeWithText("当前已是最新版本。").assertDoesNotExist();compose.onNodeWithTag("update-error").assertExists();compose.onNodeWithText("检测更新").assertIsEnabled()
     }
+    @Test fun automaticPromptDefersAcrossRestartsWithoutDownloading(){
+        enqueue();compose.runOnUiThread{model.checkAutomatically()};until{model.prompt}
+        compose.onNodeWithText("立即更新").assertIsDisplayed();screenshot("update-auto-prompt-light")
+        compose.runOnUiThread{dark.value=true};screenshot("update-auto-prompt-dark")
+        compose.onNodeWithText("稍后").performClick();Assert.assertEquals("idle",model.download)
+        compose.runOnUiThread{model.checkAutomatically()};Assert.assertEquals(1,server.requestCount)
+        val reopened=AppUpdateModel(context,UpdateClient(config),"0.9.9.3",35,{now},preferencesName)
+        enqueue();compose.runOnUiThread{reopened.checkAutomatically()};until{reopened.status=="available"};Assert.assertFalse(reopened.prompt);Assert.assertEquals("idle",reopened.download)
+        compose.runOnUiThread{reopened.close()}
+        now+=25*60*60_000L
+        val later=AppUpdateModel(context,UpdateClient(config),"0.9.9.3",35,{now},preferencesName)
+        enqueue();compose.runOnUiThread{later.checkAutomatically()};until{later.prompt};compose.runOnUiThread{later.close()}
+    }
+    @Test fun automaticAcceptanceDownloadsOnlyAfterChoiceAndPreservesReadyFile(){
+        val bytes=apk;enqueue(payload(BuildConfig.VERSION_NAME,bytes,BuildConfig.VERSION_CODE));compose.runOnUiThread{model.checkAutomatically()};until{model.prompt}
+        Assert.assertEquals(1,server.requestCount);Assert.assertEquals("idle",model.download)
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)));compose.onNodeWithText("立即更新").performClick()
+        until(60000){model.download=="ready"||model.download=="error"};Assert.assertEquals(model.error,"ready",model.download)
+        now+=7*60*60_000L;compose.runOnUiThread{model.checkAutomatically()};Assert.assertEquals(2,server.requestCount);Assert.assertNotNull(model.installIntent());Assert.assertFalse(model.prompt)
+    }
+    @Test fun automaticFailureRetriesWithoutPromptAndCurrentVersionDoesNotPrompt(){
+        server.enqueue(MockResponse().setResponseCode(503));compose.runOnUiThread{model.checkAutomatically()};until{model.status=="error"};Assert.assertFalse(model.prompt)
+        compose.runOnUiThread{model.checkAutomatically()};Assert.assertEquals(1,server.requestCount)
+        now+=16*60_000L;enqueue(payload("0.9.9.3",build=35));compose.runOnUiThread{model.checkAutomatically()};until{model.status=="current"};Assert.assertFalse(model.prompt)
+        now+=7*60*60_000L;enqueue();compose.runOnUiThread{model.startAutomaticChecks();model.startAutomaticChecks()};until{model.prompt};Assert.assertEquals(3,server.requestCount);compose.runOnUiThread{model.stopAutomaticChecks()}
+    }
+
 }

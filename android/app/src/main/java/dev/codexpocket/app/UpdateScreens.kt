@@ -53,7 +53,7 @@ val LocalAppUpdateModel=staticCompositionLocalOf<AppUpdateModel?>{null}
                             Text("正在下载 $percent%",fontSize=12.sp)
                         }
                     }
-                    Button(onClick=model::check,enabled=!model.busy,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){Text(if(model.status=="checking")"正在检测…"else"检测更新")}
+                    Button(onClick={model.check()},enabled=!model.busy,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){Text(if(model.status=="checking")"正在检测…"else"检测更新")}
                     if(model.status=="available"&&model.download!="ready")OutlinedButton(onClick=model::download,enabled=!model.busy,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){Text(if(model.download=="downloading")"正在下载…"else if(model.download=="error")"重新下载"else"下载安卓更新")}
                     if(model.download=="ready"){
                         Text("安装包已下载并通过校验。",fontSize=13.sp,color=colors.onSurfaceVariant)
@@ -65,4 +65,19 @@ val LocalAppUpdateModel=staticCompositionLocalOf<AppUpdateModel?>{null}
             Text("安装新版本会保留原账号和电脑配对信息。",fontSize=12.sp,color=colors.onSurfaceVariant)
         }
     }}
+}
+
+@Composable fun AutomaticUpdateHost(model:AppUpdateModel){
+    var open by androidx.compose.runtime.saveable.rememberSaveable{mutableStateOf(false)}
+    if(model.prompt&&!open)AlertDialog(
+        onDismissRequest=model::dismissPrompt,
+        title={Text("发现新版本 ${model.release?.version}")},
+        text={Column(Modifier.heightIn(max=360.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            Text(model.release?.notes?.ifBlank{"本次包含稳定性改进。"}?:"")
+            Text("是否下载更新？选择稍后可继续使用，24 小时内不再提醒此版本。安装前仍需你确认。",fontSize=13.sp)
+        }},
+        confirmButton={TextButton(onClick={model.acceptPrompt();open=true}){Text("立即更新")}},
+        dismissButton={TextButton(onClick=model::dismissPrompt){Text("稍后")}}
+    )
+    if(open)Dialog(onDismissRequest={open=false},properties=DialogProperties(usePlatformDefaultWidth=false)){UpdateScreen(model){open=false}}
 }

@@ -46,13 +46,13 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.12.1（构建号 39）。** 修复申请账号时密码不合规却没有明确提示的问题，新增联系方式、电脑在线状态与应用内更新。请同时更新手机与电脑连接器，退出旧电脑连接器后打开新版；自建服务需同步升级中继以提供联系方式管理和在线状态接口。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.14（构建号 41）。** 新增自动更新提醒，由用户选择“稍后”或“立即更新”，优化对话列表、执行过程和交付文件展示。请同时更新手机与电脑连接器；0.9.12.1 可通过手动检测安装本版，安装后启用自动提醒。中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.12.1/Codex-Pocket-0.9.12.1.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.12.1/Codex-Pocket-Connector-0.9.12.1-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.12.1/Codex-Pocket-Connector-0.9.12.1-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.12.1/Codex-Pocket-Connector-0.9.12.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-0.9.14.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-Connector-0.9.14-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-Connector-0.9.14-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-Connector-0.9.14-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -93,6 +93,10 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.14** 新增用户自选的自动更新提示，包含手机界面、运行状态筛选、执行摘要和交付文件展示改进。详见 [更新说明](docs/patch-0.9.14.md) 与 [验证记录](docs/verification-0.9.14.md)。
+
+![发现新版本后由用户决定更新](design/review/0.9.14/desktop-update-prompt.png)
 
 **0.9.12.1** 申请账号时实时提示密码需要 10–128 个字符及当前长度，提交时明确说明原因；保留超长输入供修改，不发送无效申请。包含联系方式、在线绿点、检测更新，以及历史分页、本地 HTML 和 Markdown 表格修复。198 项 Node、26 项 Android 单元测试及相关界面回归通过；Windows 仍待实机连接验收。详见 [更新说明](docs/patch-0.9.12.1.md) 与 [验证记录](docs/verification-0.9.12.1.md)。
 
