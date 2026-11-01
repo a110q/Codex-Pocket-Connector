@@ -26,7 +26,10 @@ class AppUpdatesTest{
     @get:Rule val compose=createAndroidComposeRule<ComponentActivity>()
     private val context get()=InstrumentationRegistry.getInstrumentation().targetContext
     private lateinit var server:MockWebServer
-    private lateinit var model:AppUpdateModel
+    private val modelState=androidx.compose.runtime.mutableStateOf<AppUpdateModel?>(null)
+    private var model:AppUpdateModel
+        get()=modelState.value!!
+        set(value){modelState.value=value}
     private lateinit var config:UpdateConfig
     private lateinit var signing:Ed25519PrivateKeyParameters
     private var now=1_000_000_000L
@@ -35,6 +38,7 @@ class AppUpdatesTest{
     private fun ByteArray.hash()=MessageDigest.getInstance("SHA-256").digest(this).joinToString(""){"%02x".format(it)}
     private val apk get()=File(context.applicationInfo.sourceDir).readBytes()
     @Before fun setup(){
+        File(context.filesDir,"updates/"+BuildConfig.VERSION_NAME).deleteRecursively()
         val cert=HeldCertificate.Builder().addSubjectAlternativeName("localhost").addSubjectAlternativeName("127.0.0.1").build()
         val tls=HandshakeCertificates.Builder().heldCertificate(cert).build()
         server=MockWebServer();server.useHttps(tls.sslSocketFactory(),false);server.start()
@@ -45,7 +49,7 @@ class AppUpdatesTest{
         model=AppUpdateModel(context,UpdateClient(config),"0.9.9.3",35,{now},preferencesName)
         compose.setContent{PocketTheme(if(dark.value)"dark"else"light"){UpdateScreen(model){};AutomaticUpdateHost(model)}}
     }
-    @After fun cleanup(){compose.runOnUiThread{model.close()};server.shutdown();context.getSharedPreferences(preferencesName,0).edit().clear().commit();File(context.cacheDir,"updates/0.9.10").deleteRecursively();File(context.cacheDir,"updates/"+BuildConfig.VERSION_NAME).deleteRecursively()}
+    @After fun cleanup(){compose.runOnUiThread{model.close()};server.shutdown();context.getSharedPreferences(preferencesName,0).edit().clear().commit();File(context.filesDir,"updates/"+BuildConfig.VERSION_NAME).deleteRecursively()}
     private fun payload(version:String="0.9.10",bytes:ByteArray=byteArrayOf(1,2,3),build:Int=36)=JSONObject().put("schema",1).put("channel","stable").put("version",version).put("build",build).put("publishedAt","2026-10-30T00:00:00Z").put("notes","新增检测更新。\n下载后保留原账号和配对信息。").put("assets",JSONArray().put(JSONObject().put("platform","android").put("kind","apk").put("name","Codex-Pocket-$version.apk").put("url",server.url("/packages/$version/Codex-Pocket-$version.apk").toString()).put("size",bytes.size).put("sha256",bytes.hash())))
     private fun envelope(payload:JSONObject):JSONObject{
         val data=payload.toString().toByteArray();val signer=Ed25519Signer();signer.init(true,signing);signer.update(data,0,data.size)
@@ -89,7 +93,7 @@ class AppUpdatesTest{
     @Test fun corruptDownloadIsRemovedAndAValidRetryCanSucceed(){
         val bytes=apk;enqueue(payload(BuildConfig.VERSION_NAME,bytes,BuildConfig.VERSION_CODE));server.enqueue(MockResponse().setBody("broken"))
         click("检测更新");until{model.status=="available"};click("下载安卓更新");until{model.download=="error"}
-        Assert.assertFalse(File(context.cacheDir,"updates/0.9.10/Codex-Pocket-0.9.10.apk.partial").exists());compose.onNodeWithText("安装更新").assertDoesNotExist()
+        Assert.assertFalse(File(context.filesDir,"updates/${BuildConfig.VERSION_NAME}/Codex-Pocket-${BuildConfig.VERSION_NAME}.apk.partial").exists());compose.onNodeWithText("安装更新").assertDoesNotExist()
         server.enqueue(MockResponse().setBody(Buffer().write(bytes)));click("重新下载");until(60000){model.download=="ready"||model.download=="error"};Assert.assertEquals(model.error,"ready",model.download)
     }
     @Test fun foreignUrlOrWrongApkMetadataAreRejected(){
@@ -128,5 +132,68 @@ class AppUpdatesTest{
         now+=16*60_000L;enqueue(payload("0.9.9.3",build=35));compose.runOnUiThread{model.checkAutomatically()};until{model.status=="current"};Assert.assertFalse(model.prompt)
         now+=7*60*60_000L;enqueue();compose.runOnUiThread{model.startAutomaticChecks();model.startAutomaticChecks()};until{model.prompt};Assert.assertEquals(3,server.requestCount);compose.runOnUiThread{model.stopAutomaticChecks()}
     }
+
+    @Test fun downloadedApkSurvivesModelRecreationWithoutAnyNetworkRequest(){
+        val bytes=apk;enqueue(payload(BuildConfig.VERSION_NAME,bytes,BuildConfig.VERSION_CODE));server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        click("检测更新");until{model.status=="available"};click("下载安卓更新");until(60000){model.download=="ready"||model.download=="error"}
+        Assert.assertEquals(model.error,"ready",model.download)
+        compose.runOnUiThread{model.close();model=AppUpdateModel(context,UpdateClient(config),"0.9.9.3",35,{now},preferencesName)}
+        until{!model.busy}
+        Assert.assertEquals("ready",model.download)
+        Assert.assertEquals(bytes.size.toLong(),model.received)
+        Assert.assertNotNull(model.installIntent())
+        compose.runOnUiThread{model.checkAutomatically()}
+        Assert.assertEquals(2,server.requestCount)
+        compose.onNodeWithText("安装更新").performScrollTo().assertIsDisplayed()
+        screenshot("update-restored-ready")
+    }
+
+    private fun readyDownload(){
+        val bytes=apk;enqueue(payload(BuildConfig.VERSION_NAME,bytes,BuildConfig.VERSION_CODE));server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        click("检测更新");until{model.status=="available"};click("下载安卓更新");until(60000){model.download=="ready"||model.download=="error"}
+        Assert.assertEquals(model.error,"ready",model.download)
+    }
+    private fun reopen(version:String="0.9.9.3",build:Int=35){
+        compose.runOnUiThread{model.close();model=AppUpdateModel(context,UpdateClient(config),version,build,{now},preferencesName)}
+        until{!model.busy}
+    }
+    @Test fun manualRecheckReusesVerifiedApkAndFailedCheckStillAllowsInstallation(){
+        readyDownload();enqueue(payload(BuildConfig.VERSION_NAME,apk,BuildConfig.VERSION_CODE));click("检测更新");until{!model.busy}
+        Assert.assertEquals("ready",model.download);Assert.assertEquals(3,server.requestCount);Assert.assertNotNull(model.installIntent())
+        server.enqueue(MockResponse().setResponseCode(503));click("检测更新");until{!model.busy}
+        Assert.assertEquals("available",model.status);Assert.assertEquals("ready",model.download);Assert.assertNotNull(model.error);Assert.assertNotNull(model.installIntent())
+        reopen();Assert.assertEquals("ready",model.download);Assert.assertEquals(4,server.requestCount)
+    }
+    @Test fun missingApkIsNotRestoredAndCanBeDownloadedAgain(){
+        readyDownload();File(context.filesDir,"updates/${BuildConfig.VERSION_NAME}/Codex-Pocket-${BuildConfig.VERSION_NAME}.apk").delete()
+        reopen();Assert.assertEquals("error",model.status);Assert.assertEquals("idle",model.download)
+        compose.onNodeWithText("安装更新").assertDoesNotExist();Assert.assertEquals(2,server.requestCount)
+        readyDownload();Assert.assertNotNull(model.installIntent())
+    }
+    @Test fun sameSizeCorruptApkFailsHashOnRestore(){
+        readyDownload();val target=File(context.filesDir,"updates/${BuildConfig.VERSION_NAME}/Codex-Pocket-${BuildConfig.VERSION_NAME}.apk")
+        val bytes=target.readBytes();bytes[100]=(bytes[100].toInt() xor 1).toByte();target.writeBytes(bytes)
+        reopen();Assert.assertEquals("error",model.status);Assert.assertFalse(target.exists());Assert.assertEquals("idle",model.download)
+        Assert.assertFalse(context.getSharedPreferences(preferencesName,0).contains("downloaded-manifest"))
+    }
+    @Test fun tamperedPersistedManifestCannotRestoreAnInstallation(){
+        readyDownload();val prefs=context.getSharedPreferences(preferencesName,0)
+        val saved=JSONObject(prefs.getString("downloaded-manifest",null)!!).put("signature",Base64.encodeToString(ByteArray(64),Base64.NO_WRAP))
+        prefs.edit().putString("downloaded-manifest",saved.toString()).commit()
+        reopen();Assert.assertEquals("error",model.status);Assert.assertTrue(model.error!!.contains("验签失败"));Assert.assertEquals("idle",model.download)
+        Assert.assertThrows(IllegalStateException::class.java){model.installIntent()};Assert.assertEquals(2,server.requestCount)
+    }
+    @Test fun completedUpdateClearsPendingRecordAndDownloadedApk(){
+        readyDownload();reopen(BuildConfig.VERSION_NAME,BuildConfig.VERSION_CODE)
+        Assert.assertEquals("idle",model.status);Assert.assertEquals("idle",model.download);Assert.assertFalse(model.prompt)
+        Assert.assertFalse(context.getSharedPreferences(preferencesName,0).contains("downloaded-manifest"))
+        Assert.assertFalse(File(context.filesDir,"updates/${BuildConfig.VERSION_NAME}").exists());Assert.assertEquals(2,server.requestCount)
+    }
+    @Test fun changedSignedAssetCannotReuseThePreviousDownload(){
+        readyDownload();enqueue(payload(BuildConfig.VERSION_NAME,byteArrayOf(9,8,7),BuildConfig.VERSION_CODE));click("检测更新");until{!model.busy}
+        Assert.assertEquals("available",model.status);Assert.assertEquals("idle",model.download)
+        Assert.assertFalse(context.getSharedPreferences(preferencesName,0).contains("downloaded-manifest"));compose.onNodeWithText("安装更新").assertDoesNotExist()
+    }
+
 
 }

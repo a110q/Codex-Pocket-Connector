@@ -22,7 +22,7 @@ val LocalAppUpdateModel=staticCompositionLocalOf<AppUpdateModel?>{null}
     val provided=LocalAppUpdateModel.current;val context=LocalContext.current.applicationContext
     val model=remember(provided){provided?:AppUpdateModel(context)}
     DisposableEffect(model){onDispose{if(provided==null)model.close()}}
-    var open by remember{mutableStateOf(false)}
+    var open by androidx.compose.runtime.saveable.rememberSaveable{mutableStateOf(false)}
     UtilityRow("检测更新","当前版本 ${model.currentVersion}","刷新"){open=true}
     if(open)Dialog(onDismissRequest={open=false},properties=DialogProperties(usePlatformDefaultWidth=false)){UpdateScreen(model){open=false}}
 }
@@ -41,7 +41,7 @@ val LocalAppUpdateModel=staticCompositionLocalOf<AppUpdateModel?>{null}
                         Column(Modifier.weight(1f)){Text("最新版本",fontSize=12.sp,color=colors.onSurfaceVariant);Text(model.release?.version?:"尚未检测",fontSize=21.sp,fontWeight=FontWeight.SemiBold,modifier=Modifier.testTag("update-latest"))}
                     }
                     HorizontalDivider(color=colors.outlineVariant)
-                    if(model.status=="checking")Row(verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(10.dp));Text("正在检测更新…",fontSize=14.sp)}
+                    if(model.status=="checking"||model.status=="restoring")Row(verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=2.dp);Spacer(Modifier.width(10.dp));Text(if(model.status=="restoring")"正在恢复已下载的安装包…"else"正在检测更新…",fontSize=14.sp)}
                     else Text(when(model.status){"current"->if(model.release?.let{UpdateVersion.compare(model.currentVersion,it.version)>0}==true)"当前版本高于已发布版本。"else"当前已是最新版本。";"available"->"发现新版本 ${model.release?.version}";"error"->"检测未完成，可重新尝试。";else->"点击下方按钮检测更新。"},fontSize=14.sp)
                     model.error?.let{Text(it,fontSize=13.sp,color=colors.error,modifier=Modifier.testTag("update-error"))}
                     model.release?.let{release->
@@ -57,7 +57,7 @@ val LocalAppUpdateModel=staticCompositionLocalOf<AppUpdateModel?>{null}
                     if(model.status=="available"&&model.download!="ready")OutlinedButton(onClick=model::download,enabled=!model.busy,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){Text(if(model.download=="downloading")"正在下载…"else if(model.download=="error")"重新下载"else"下载安卓更新")}
                     if(model.download=="ready"){
                         Text("安装包已下载并通过校验。",fontSize=13.sp,color=colors.onSurfaceVariant)
-                        Button(onClick=model::install,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){Text("安装更新")}
+                        Button(onClick=model::install,enabled=!model.busy,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(12.dp)){Text("安装更新")}
                     }
                     model.installMessage?.let{Text(it,fontSize=12.sp,lineHeight=21.sp,color=colors.onSurfaceVariant)}
                 }

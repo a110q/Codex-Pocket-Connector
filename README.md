@@ -46,13 +46,13 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.14（构建号 41）。** 新增自动更新提醒，由用户选择“稍后”或“立即更新”，优化对话列表、执行过程和交付文件展示。请同时更新手机与电脑连接器；0.9.12.1 可通过手动检测安装本版，安装后启用自动提醒。中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.14.1（构建号 42）。** 修复安卓首次安装授权后返回需要重复下载的问题，支持已下载安装包在进程重启后离线恢复。保留用户自选的自动更新提醒和手机界面改进。请同时更新手机与电脑连接器；0.9.12.1 可通过手动检测安装本版，安装后启用自动提醒。中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，每个 Release 仅存放其对应版本的安装包，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-0.9.14.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-Connector-0.9.14-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-Connector-0.9.14-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14/Codex-Pocket-Connector-0.9.14-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14.1/Codex-Pocket-0.9.14.1.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14.1/Codex-Pocket-Connector-0.9.14.1-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14.1/Codex-Pocket-Connector-0.9.14.1-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.14.1/Codex-Pocket-Connector-0.9.14.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -93,6 +93,8 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.14.1** 修复安卓首次安装来源授权导致进程结束后重复下载的问题，已下载安装包可离线恢复。详见 [更新说明](docs/patch-0.9.14.1.md) 与 [验证记录](docs/verification-0.9.14.1.md)。
 
 **0.9.14** 新增用户自选的自动更新提示，包含手机界面、运行状态筛选、执行摘要和交付文件展示改进。详见 [更新说明](docs/patch-0.9.14.md) 与 [验证记录](docs/verification-0.9.14.md)。
 

@@ -40,7 +40,7 @@ data class UpdateConfig(val manifestUrl:String,val pin:String,val keyId:String,v
     }
 }
 data class UpdateAsset(val name:String,val url:String,val size:Long,val sha256:String)
-data class AppRelease(val version:String,val build:Int,val notes:String,val publishedAt:String,val asset:UpdateAsset)
+data class AppRelease(val version:String,val build:Int,val notes:String,val publishedAt:String,val asset:UpdateAsset,val signedManifest:String="")
 
 class UpdateClient(val config:UpdateConfig){
     @Volatile private var call:Call?=null
@@ -85,11 +85,12 @@ class UpdateClient(val config:UpdateConfig){
                 require(url.encodedPath=="/packages/$version/$name"&&size in 1..1024L*1024*1024&&hash.matches(Regex("[a-f0-9]{64}")))
                 if(asset.optString("platform")=="android"&&asset.optString("kind")=="apk"&&name=="Codex-Pocket-$version.apk")selected=UpdateAsset(name,url.toString(),size,hash)
             }
-            return AppRelease(version,build.toInt(),notes,publishedAt,selected?:error("这个版本暂无安卓安装包。"))
+            return AppRelease(version,build.toInt(),notes,publishedAt,selected?:error("这个版本暂无安卓安装包。"),String(bytes,Charsets.UTF_8))
         }catch(e:Exception){if(e.message=="这个版本暂无安卓安装包。")throw e;error("更新清单格式无效，请稍后重试。")}
     }
     fun download(context:Context,release:AppRelease,progress:(Long)->Unit):File{
-        val asset=release.asset;val directory=File(context.cacheDir,"updates/${release.version}").apply{mkdirs()}
+        cachedDownload(context,release)?.let{return it}
+        val asset=release.asset;val directory=File(context.filesDir,"updates/${release.version}").apply{mkdirs()}
         val target=File(directory,asset.name);val partial=File(directory,asset.name+".partial")
         val next=client(600).newCall(Request.Builder().url(asset.url).header("Accept-Encoding","identity").build());call=next
         try{
@@ -109,7 +110,17 @@ class UpdateClient(val config:UpdateConfig){
             check(partial.renameTo(target)){"无法保存安装包，请重试。"};return target
         }finally{partial.delete();call=null}
     }
+    fun cachedDownload(context:Context,release:AppRelease):File?{
+        val target=File(context.filesDir,"updates/${release.version}/${release.asset.name}")
+        if(!target.exists())return null
+        try{verifyDownload(context,target,release);return target}catch(_:Exception){target.delete();return null}
+    }
     fun cancel(){call?.cancel()}
+}
+
+private fun verifyDownload(context:Context,file:File,release:AppRelease){
+    check(file.isFile&&file.length()==release.asset.size&&file.sha256()==release.asset.sha256){"安装包已改变，请重新下载。"}
+    verifyApk(context,file,release)
 }
 
 @Suppress("DEPRECATION")
@@ -139,8 +150,40 @@ class AppUpdateModel(private val context:Context,private val source:UpdateClient
     var received by mutableLongStateOf(0);private set
     var installMessage by mutableStateOf<String?>(null);private set
     private var file:File?=null
-    val busy get()=status=="checking"||download=="downloading"
+    val busy get()=status=="checking"||status=="restoring"||download=="downloading"
     private fun service()=client?:UpdateClient(UpdateConfig.bundled(context)).also{client=it}
+    init{
+        // Keep the signed manifest as well as the APK. Permission settings can destroy
+        // the activity or process, and restoration must also work without a network.
+        val saved=preferences.getString("downloaded-manifest",null)
+        if(saved!=null){
+            status="restoring"
+            job=scope.launch{try{
+                val restored=withContext(Dispatchers.IO){
+                    val info=service().parse(saved.toByteArray(Charsets.UTF_8))
+                    if(UpdateVersion.compare(info.version,currentVersion)<=0||info.build<=currentBuild){
+                        preferences.edit().remove("downloaded-manifest").commit()
+                        File(context.filesDir,"updates/${info.version}").deleteRecursively()
+                        null
+                    }else{
+                        val cached=service().cachedDownload(context,info)
+                        if(cached==null){preferences.edit().remove("downloaded-manifest").commit();error("安装包已丢失或损坏，请重新检测并下载。")}
+                        info to cached
+                    }
+                }
+                if(restored==null)status="idle" else{
+                    release=restored.first;file=restored.second;received=restored.first.asset.size;download="ready";status="available"
+                    installMessage="已恢复下载的安装包，可继续安装更新。"
+                }
+            }catch(e:CancellationException){throw e}catch(e:Exception){
+                withContext(Dispatchers.IO){preferences.edit().remove("downloaded-manifest").commit()}
+                status="error";error=message(e)
+            }}
+        }
+    }
+    private fun rememberDownload(info:AppRelease){
+        check(info.signedManifest.isNotEmpty()&&preferences.edit().putString("downloaded-manifest",info.signedManifest).commit()){"无法保存更新安装包记录，请重试。"}
+    }
     fun startAutomaticChecks(){
         if(automaticJob?.isActive==true)return
         automaticJob=scope.launch{while(isActive){checkAutomatically();delay(60_000)}}
@@ -161,27 +204,35 @@ class AppUpdateModel(private val context:Context,private val source:UpdateClient
     fun acceptPrompt(){dismissPrompt();download()}
     fun check(automatic:Boolean=false){
         if(busy)return
-        prompt=false;status="checking";release=null;error=null;download="idle";file=null;received=0;installMessage=null
+        val hadDownload=download=="ready"
+        prompt=false;status="checking";error=null
         job=scope.launch{try{
-            val result=withContext(Dispatchers.IO){service().check()};release=result
-            status=if(UpdateVersion.compare(result.version,currentVersion)>0){check(result.build>currentBuild){"更新安装包的构建号无效，请联系维护者。"};"available"}else"current"
+            val (result,cached)=withContext(Dispatchers.IO){
+                val info=service().check()
+                val available=UpdateVersion.compare(info.version,currentVersion)>0
+                if(available)check(info.build>currentBuild){"更新安装包的构建号无效，请联系维护者。"}
+                val existing=if(available)service().cachedDownload(context,info)else null
+                if(existing!=null)rememberDownload(info)else preferences.edit().remove("downloaded-manifest").commit()
+                info to existing
+            }
+            release=result;file=cached;download=if(cached!=null)"ready"else"idle";received=if(cached!=null)result.asset.size else 0;installMessage=null
+            status=if(UpdateVersion.compare(result.version,currentVersion)>0)"available"else"current"
             automaticInterval=6*60*60_000L
-            if(automatic&&status=="available"&&handledVersion!=result.version){
+            if(automatic&&status=="available"&&download!="ready"&&handledVersion!=result.version){
                 prompt=preferences.getString("deferred-version",null)!=result.version||clock()>=preferences.getLong("deferred-until",0)
             }
-        }catch(e:CancellationException){throw e}catch(e:Exception){status="error";release=null;error=message(e)}}
+        }catch(e:CancellationException){throw e}catch(e:Exception){status=if(hadDownload)"available"else"error";error=message(e)}}
     }
     fun download(){
         val target=release?:return;if(busy||status!="available"||download=="ready")return
         error=null;download="downloading";received=0
         job=scope.launch{try{
-            file=withContext(Dispatchers.IO){service().download(context,target){count->scope.launch{received=count}}};download="ready"
+            file=withContext(Dispatchers.IO){service().download(context,target){count->scope.launch{received=count}}.also{rememberDownload(target)}};received=target.asset.size;download="ready"
         }catch(e:CancellationException){throw e}catch(e:Exception){download="error";error=message(e)}}
     }
     fun installIntent():Intent{
         val target=file?:error("请先完成下载。" );val info=release?:error("请先检测更新。")
-        check(download=="ready"&&target.exists()&&target.length()==info.asset.size&&target.sha256()==info.asset.sha256){"安装包已改变，请重新下载。"}
-        verifyApk(context,target,info)
+        check(download=="ready"){"请先完成下载。"};verifyDownload(context,target,info)
         val uri=FileProvider.getUriForFile(context,context.packageName+".updates",target)
         return Intent(Intent.ACTION_VIEW).setDataAndType(uri,"application/vnd.android.package-archive").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
     }
