@@ -23,9 +23,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import org.json.JSONArray
+
+internal data class QuestionReply(val question:String,val answer:String)
+internal fun questionReplies(message:JSONObject):List<QuestionReply> {
+    val values=message.optJSONArray("questionReplies")?:run {
+        val match=Regex("^\\s*<send_user_message_question_reply>\\s*([\\s\\S]*?)\\s*</send_user_message_question_reply>\\s*$").matchEntire(message.optString("text"))?:return emptyList()
+        try { JSONArray(match.groupValues[1]) } catch(_:Exception){return emptyList()}
+    }
+    if(values.length()==0)return emptyList()
+    return (0 until values.length()).map { index->
+        val value=values.optJSONObject(index)?:return emptyList()
+        if(value.opt("question") !is String||value.opt("answer") !is String)return emptyList()
+        QuestionReply(value.getString("question"),value.getString("answer"))
+    }
+}
 
 @Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},imageSupport:MarkdownImageSupport?=null,images:@Composable ()->Unit={}){
     val role=message.optString("role");val text=message.optString("text")
+    val replies=remember(message){questionReplies(message)}
     val clipboard=LocalClipboard.current;val scope=rememberCoroutineScope()
     when(role){
         "tool","summary"->ToolRecord(message,onDetail,onRelated)
@@ -36,7 +52,12 @@ import org.json.JSONObject
                     shape=RoundedCornerShape(16.dp,6.dp,16.dp,16.dp),border=BorderStroke(1.dp,PocketPalette.bubbleBorder),modifier=Modifier.widthIn(max=bubbleWidth)){
                     Column(Modifier.padding(horizontal=14.dp,vertical=10.dp)){
                         images()
-                        if(text.isNotBlank())SelectionContainer{Text(text,fontSize=15.5.sp,lineHeight=23.5.sp)}
+                        if(replies.isNotEmpty())Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
+                            replies.forEach { reply->Column(verticalArrangement=Arrangement.spacedBy(5.dp)){
+                                Text(reply.question,fontSize=12.5.sp,lineHeight=19.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                SelectionContainer{Text(reply.answer,fontSize=15.5.sp,lineHeight=23.5.sp,fontWeight=FontWeight.Medium)}
+                            } }
+                        }else if(text.isNotBlank())SelectionContainer{Text(text,fontSize=15.5.sp,lineHeight=23.5.sp)}
                         if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容")}
                     }
                 }

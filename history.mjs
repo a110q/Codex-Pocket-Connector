@@ -6,13 +6,13 @@ const storeKey = args => JSON.stringify([args.hostId ?? 'local', args.threadId])
 function compact(message) {
   const text = String(message.text ?? ''), detail = message.detail ?? text;
   return { id: message.id, key: keyOf(message), turnId: message.turnId, order: message.order, role: message.role, type: message.type, status: message.status, title: message.title, tool: message.tool,
-    text: text.slice(0, 4000), attachments: message.attachments, textComplete: text.length <= 4000, textLength: text.length, sourceTruncated: message.sourceTruncated === true, contentVersion: digest(text), detailVersion: digest(detail), hasDetail: message.detail != null, relatedThreads: message.relatedThreads, command: message.command?.slice(0, 500), exitCode: message.exitCode };
+    text: text.slice(0, 4000), attachments: message.attachments, questionReplies: text.length <= 4000 ? message.questionReplies : undefined, textComplete: text.length <= 4000, textLength: text.length, sourceTruncated: message.sourceTruncated === true, contentVersion: digest(text), detailVersion: digest(detail), hasDetail: message.detail != null, relatedThreads: message.relatedThreads, command: message.command?.slice(0, 500), exitCode: message.exitCode };
 }
 
 // Keep complete desktop snapshots locally; only bounded, explicitly paged
 // records cross the relay. No text or tool result is silently discarded.
 export class HistoryStore {
-  constructor() { this.snapshots = new Map(); }
+  constructor() { this.snapshots = new Map(); this.loading = new Map(); }
   put(snapshot) {
     const key = storeKey({ hostId: snapshot.thread.hostId, threadId: snapshot.thread.id });
     const current = this.snapshots.get(key);
@@ -26,8 +26,26 @@ export class HistoryStore {
     if (!snapshot) throw new Error('会话缓存已更新，请重新打开对话');
     return snapshot;
   }
-  page(args) {
-    const snapshot = this.get(args), all = snapshot.messages ?? [];
+  async access(action, args, load) {
+    const key = storeKey(args);
+    let snapshot = this.snapshots.get(key);
+    if (!snapshot) {
+      let pending = this.loading.get(key);
+      if (!pending) {
+        pending = Promise.resolve().then(load).then(value => {
+          if (storeKey({ threadId: value.thread.id, hostId: value.thread.hostId }) !== key) throw new Error('会话身份不匹配，请重试');
+          this.put(value); return this.get(args);
+        });
+        this.loading.set(key, pending);
+      }
+      try { snapshot = await pending; } finally { if (this.loading.get(key) === pending) this.loading.delete(key); }
+    }
+    // Use the retained reference: another background notification may evict
+    // this entry while a concurrent recovery is completing.
+    return action === 'thread.history' ? this.page(args, snapshot) : this.read(args, snapshot);
+  }
+  page(args, snapshot = this.get(args)) {
+    const all = snapshot.messages ?? [];
     let end = all.length;
     if (args.before != null) {
       end = all.findIndex(message => keyOf(message) === args.before);
@@ -42,8 +60,8 @@ export class HistoryStore {
     // Diffs are part of the timeline; their full form is read via message.read.
     return { ...snapshot, messages, diffs: [], history: { total: all.length, hasEarlier: start > 0, before: messages[0]?.key ?? null, complete: snapshot.historyComplete === true }, truncated: false };
   }
-  read(args) {
-    const message = this.get(args).messages.find(message => keyOf(message) === args.messageKey);
+  read(args, snapshot = this.get(args)) {
+    const message = snapshot.messages.find(message => keyOf(message) === args.messageKey);
     if (!message) throw new Error('记录已变化，请刷新会话');
     const mode = args.mode ?? 'text';
     if (!['text', 'detail'].includes(mode)) throw new Error('Invalid content mode');

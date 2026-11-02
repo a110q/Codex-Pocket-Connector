@@ -30,10 +30,22 @@ test('Unix discovery rejects ambiguous, stale, foreign and symbolic socket candi
     if (candidate.endsWith('/stale.sock')) throw new Error('ENOENT');
     return { uid: candidate.endsWith('/foreign.sock') ? 202 : 101, isSocket: () => !candidate.endsWith('/symbolic.sock') };
   };
-  const options = { platform: 'darwin', env: {}, codexHome: '/private/test-codex', uid: 101, statPath };
+  const options = { platform: 'darwin', env: {}, codexHome: '/private/test-codex', uid: 101, statPath, probeSocket: async () => true };
   const found = await findDesktopEndpoints({ ...options, readDirectory: async () => ['own.sock', 'foreign.sock', 'stale.sock', 'symbolic.sock', '../escape.sock'] });
   assert.equal(found.ipcPath, '/private/test-codex/ipc/ipc.sock'); assert.equal(found.toolsPath, '/tmp/codex-app-tools/own.sock');
   await assert.rejects(findDesktopEndpoints({ ...options, readDirectory: async () => ['one.sock', 'two.sock'] }), /CODEX_APP_TOOLS_PIPE_PATH/);
+});
+
+test('desktop upgrades may leave owned socket files; only listening candidates participate in discovery', async () => {
+  const probed=[];
+  const options={platform:'darwin',env:{},uid:101,readDirectory:async()=>['old.sock','active.sock','foreign.sock','symbolic.sock'],
+    statPath:async candidate=>({uid:candidate.endsWith('/foreign.sock')?202:101,isSocket:()=>!candidate.endsWith('/symbolic.sock')}),
+    probeSocket:async candidate=>{probed.push(candidate);return candidate.endsWith('/active.sock')}};
+  const found=await findDesktopEndpoints(options);
+  assert.equal(found.toolsPath,'/tmp/codex-app-tools/active.sock');
+  assert.deepEqual(probed,['/tmp/codex-app-tools/old.sock','/tmp/codex-app-tools/active.sock']);
+  await assert.rejects(findDesktopEndpoints({...options,probeSocket:async()=>false}),/CODEX_APP_TOOLS_PIPE_PATH/);
+  await assert.rejects(findDesktopEndpoints({...options,probeSocket:async()=>true}),/CODEX_APP_TOOLS_PIPE_PATH/);
 });
 
 test('Windows browser opening encodes a literal URL and fails on OS errors', () => {

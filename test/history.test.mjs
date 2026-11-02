@@ -44,6 +44,40 @@ test('history cursors and content access fail explicitly after eviction or missi
   assert.throws(()=>store.read({threadId:'4',messageKey:'unknown'}),/记录/);
 });
 
+test('evicted long histories and full message details recover automatically while other chats refresh', async () => {
+  const store = new HistoryStore();
+  const snapshot = { thread: { id: 'reading', hostId: 'local' }, historyComplete: true,
+    messages: Array.from({ length: 2842 }, (_, order) => ({ id: String(order), key: `turn:${order}`, turnId: 'turn', order, text: order === 2841 ? '中文🦊'.repeat(2000) : `消息 ${order}` })) };
+  const tail = store.put(snapshot), detail = tail.messages.at(-1);
+  const evict = () => { for (let i=0;i<8;i++) store.put({ thread: { id: 'background-'+i }, messages: [] }); };
+  evict(); let loads=0;
+  const load = async () => { loads++; await Promise.resolve(); return snapshot; };
+  const [page, chunk] = await Promise.all([
+    store.access('thread.history', { threadId: 'reading', before: tail.history.before }, load),
+    store.access('message.read', { threadId: 'reading', messageKey: detail.key, version: detail.contentVersion }, load),
+  ]);
+  assert.equal(loads,1); assert.equal(page.messages.at(-1).order,2801); assert.equal(page.messages.length,40);
+  assert.equal(chunk.text,snapshot.messages.at(-1).text);
+  const collected=[...page.messages,...tail.messages]; let older=page;
+  while(older.history.hasEarlier){evict();older=await store.access('thread.history',{threadId:'reading',before:older.history.before},load);collected.unshift(...older.messages);}
+  assert.equal(collected.length,2842); assert.equal(new Set(collected.map(m=>m.key)).size,2842);
+  assert.deepEqual(collected.map(m=>m.order),snapshot.messages.map(m=>m.order));
+  assert.equal(store.loading.size,0);
+});
+
+test('desktop question replies render human questions and answers without internal XML or IDs', () => {
+  const replies=[{questionItemId:'private-call-id',question:'请完成登录',answer:'已登录'},{question:'更新方式',answer:'由我决定\n暂不更新'}];
+  const text='<send_user_message_question_reply>\n'+JSON.stringify(replies)+'\n</send_user_message_question_reply>';
+  const snapshot=normalizeSnapshot({id:'qa',turns:[{id:'t',items:[{id:'u',type:'userMessage',content:[{type:'text',text}]}]}]});
+  const message=new HistoryStore().put(snapshot).messages[0];
+  assert.equal(message.text,'请完成登录\n已登录\n\n更新方式\n由我决定\n暂不更新');
+  assert.deepEqual(message.questionReplies,replies.map(({question,answer})=>({question,answer})));
+  assert(!message.text.includes('private-call-id')); assert(!message.text.includes('<send_'));
+  for(const literal of ['普通消息','代码示例：'+text,'<send_user_message_question_reply>invalid</send_user_message_question_reply>']) {
+    assert.equal(normalizeSnapshot({id:'qa',turns:[{id:'t',items:[{id:'u',type:'userMessage',content:[{type:'text',text:literal}]}]}]}).messages[0].text,literal);
+  }
+});
+
 test('summary fallback keeps chronological turn order and marks already shortened desktop output',async()=>{
   const adapter=new DesktopAdapter();adapter.owner=async()=>{throw Error('no-client-found')};
   adapter.tool=async()=>({thread:{id:'qa'},page:{order:'newest_first',hasMore:false},turns:[{id:'new',items:[{id:'a',type:'agentMessage',text:'newer'}]},{id:'old',items:[{id:'c',type:'commandExecution',output:{text:'earlier output',truncated:true}}]}]});

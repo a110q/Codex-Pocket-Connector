@@ -217,6 +217,8 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
     if (stopping) return;
     if (event.type === 'desktop.ready') { desktopReadyReported = true; lastError = ''; }
     if (event.type === 'desktop.disconnected') desktopReadyReported = false;
+    if (event.type === 'runtime.unavailable') connectionLog('runtime.unavailable');
+    if (event.type === 'threads.status') connectionLog('runtime.updated', { threads: event.threads.length, active: event.threads.filter(thread => thread.status === 'active').length });
     if (event.type === 'thread.updated') {
       latestEvents.set(`${event.data.thread.hostId ?? 'local'}:${event.threadId}`, event);
       if (!eventTimer) eventTimer = setTimeout(() => {
@@ -278,7 +280,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
           }
           preview.close(); channel = payload.channel;
           // Transport readiness must not wait for a slow or restarting Codex.
-          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'file.resolve': true, 'preview.file.open': true, 'automations.list': true, 'command.status': true, 'connection.ping': true }, desktopReady: adapter.ready, error: lastError });
+          send({ type: 'hello', host: { id: config.hostId, name: config.name }, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'file.resolve': true, 'preview.file.open': true, 'automations.list': true, 'command.status': true, 'connection.ping': true }, desktopReady: adapter.ready, error: lastError, threadStatuses: adapter.runtimeSnapshot?.() ?? null });
           connectionLog('hello.sent', { desktopReady: adapter.ready });
           void connectDesktop(); return;
         }
@@ -320,8 +322,8 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
               return files.resolve(current, payload.args);
             }
             if (payload.action === 'file.read') return files.read(payload.args);
-            if (payload.action === 'thread.history') return history.page(payload.args);
-            if (payload.action === 'message.read') return history.read(payload.args);
+            if (payload.action === 'thread.history' || payload.action === 'message.read') return history.access(payload.action, payload.args, async () =>
+              files.decorate(await adapter.call('thread.read', { threadId: payload.args.threadId, hostId: payload.args.hostId ?? 'local' })));
             let args = payload.args;
             if (['message.send', 'thread.create'].includes(payload.action)) {
               try { args = { ...args, files: fileUploads.resolve(args.fileUploadIds, payload.action === 'thread.create' ? '__new__' : args.threadId), imagePaths: uploads.resolve(args.imageUploadIds, payload.action === 'thread.create' ? '__new__' : args.threadId), clientUserMessageId: payload.id }; }

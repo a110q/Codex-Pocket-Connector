@@ -40,6 +40,24 @@ async function phone(f, config, helloTime = () => Date.now()) {
   return { messages, send, channel };
 }
 
+test('encrypted first hello carries warm statuses and paging survives eight background conversation updates', async t => {
+  const f=await fixture();t.after(()=>f.close());
+  const {config,paths}=await f.enroll('history-runtime-recovery'),{adapter}=await f.companion(config,paths);
+  adapter.runtimeSnapshot=()=>({type:'threads.status',streamId:'qa-runtime',revision:1,threads:[{id:'reading',hostId:'local',status:'active'},{id:'another',hostId:'local',status:'active'}]});
+  const snapshot={thread:{id:'reading',hostId:'local'},source:'desktop-live',streamId:'reading-stream',revision:1,historyComplete:true,
+    messages:Array.from({length:2842},(_,order)=>({id:String(order),key:`t:${order}`,turnId:'t',order,role:'assistant',text:`消息 ${order}`}))};
+  adapter.call=async(action,args)=>{adapter.calls.push(action);assert.equal(action,'thread.read');assert.equal(args.threadId,'reading');return snapshot};
+  const p=await phone(f,config);await until(()=>p.messages.some(m=>m.type==='hello'));
+  assert.equal(p.messages.find(m=>m.type==='hello').threadStatuses.threads.length,2);assert.equal(adapter.calls.length,0);
+  const rpc=async(action,args)=>{const id=randomUUID();p.send({type:'request',id,action,args,sentAt:Date.now()});await until(()=>p.messages.some(m=>m.id===id));const response=p.messages.find(m=>m.id===id);assert(!response.error,response.error);return response.result};
+  const tail=await rpc('thread.read',{threadId:'reading'});
+  for(let i=0;i<8;i++)adapter.emit('event',{type:'thread.updated',threadId:'background-'+i,data:{thread:{id:'background-'+i,hostId:'local'},messages:[]}});
+  await until(()=>p.messages.filter(m=>m.event?.threadId?.startsWith('background-')).length===8);
+  const earlier=await rpc('thread.history',{threadId:'reading',before:tail.history.before});
+  assert.equal(earlier.messages.at(-1).order,2801);assert.equal(earlier.history.total,2842);assert.equal(earlier.streamId,tail.streamId);
+  assert.equal(adapter.calls.filter(a=>a==='thread.read').length,2,'cache recovery reads once and does not resend a message or acquire a writer');
+});
+
 test('clock mismatch is explicitly rejected without silently timing out or executing a command', async t => {
   const f=await fixture();t.after(()=>f.close());
   const {config,paths}=await f.enroll('clock-mismatch');const {adapter}=await f.companion(config,paths);
@@ -59,10 +77,10 @@ test('standalone reconnection emits readiness and an expired initialization cann
     async request() { return {}; }
     close() {}
   }
-  const server = new Server(), adapter = new StandaloneAdapter({ server, connectTimeoutMs: 50 });
+  const server = new Server(), adapter = new StandaloneAdapter({ server, connectTimeoutMs: 50, catalog: false, runtimeCatalog: false });
   t.after(() => adapter.close());
   adapter.ensureDesktopIpc = async () => {};
-  const events = []; adapter.on('event', event => events.push(event.type));
+  const events = []; adapter.on('event', event => { if (event.type.startsWith('desktop.')) events.push(event.type); });
   await adapter.connect();
   server.emit('disconnect', Error('fixture process exited'));
   await adapter.connect();

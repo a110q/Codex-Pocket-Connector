@@ -3,6 +3,7 @@ import os from 'node:os';
 import { readdir, lstat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import net from 'node:net';
 
 const platformPath = platform => platform === 'win32' ? path.win32 : path.posix;
 const psQuote = value => `'${String(value).replaceAll("'", "''")}'`;
@@ -60,7 +61,16 @@ function localPipe(value, label) {
   return value;
 }
 
-export async function findDesktopEndpoints({ platform = process.platform, env = process.env, codexHome, home = os.homedir(), readDirectory = readdir, statPath = lstat, uid = process.getuid?.() } = {}) {
+async function probeLocalSocket(candidate) {
+  return new Promise(resolve => {
+    const socket = net.createConnection(candidate);
+    const finish = alive => { clearTimeout(timer); socket.destroy(); resolve(alive); };
+    const timer = setTimeout(() => finish(false), 350);
+    socket.once('connect', () => finish(true)); socket.once('error', () => finish(false));
+  });
+}
+
+export async function findDesktopEndpoints({ platform = process.platform, env = process.env, codexHome, home = os.homedir(), readDirectory = readdir, statPath = lstat, probeSocket = probeLocalSocket, uid = process.getuid?.() } = {}) {
   const paths = platformPath(platform);
   if (platform === 'win32') {
     // Static evidence from the inspected desktop package: Fc() uses this exact
@@ -86,7 +96,12 @@ export async function findDesktopEndpoints({ platform = process.platform, env = 
   for (const name of names) {
     if (!name.endsWith('.sock') || paths.basename(name) !== name) continue;
     const candidate = paths.join(directory, name);
-    try { const stat = await statPath(candidate); if (stat.isSocket() && uid != null && stat.uid === uid) sockets.push(candidate); } catch { /* A stale socket may disappear during discovery. */ }
+    try {
+      const stat = await statPath(candidate);
+      // A crashed or upgraded desktop can leave a same-user socket file.
+      // Existence is not evidence that another desktop is still listening.
+      if (stat.isSocket() && uid != null && stat.uid === uid && await probeSocket(candidate)) sockets.push(candidate);
+    } catch { /* A stale socket may disappear during discovery. */ }
   }
   if (sockets.length !== 1) throw new Error('Set CODEX_APP_TOOLS_PIPE_PATH to the running desktop socket');
   return { ipcPath, toolsPath: sockets[0], source: 'owned-socket' };

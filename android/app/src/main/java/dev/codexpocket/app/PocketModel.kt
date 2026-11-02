@@ -294,9 +294,10 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } }, { event -> handler.post {
             if (connection !== candidate || !foreground) return@post
             when (event.optString("type")) {
-                "hello" -> { resetSummaryConnection();resetHistoryRequest();supportsFileLinks=event.optJSONObject("capabilities")?.optBoolean("file.resolve")==true;supportsHtmlPreview=event.optJSONObject("capabilities")?.optBoolean("preview.file.open")==true;if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; if(connected){refresh(); selected?.let { openThread(it) };watchPendingReceipt(0)} }
+                "hello" -> { resetSummaryConnection();resetHistoryRequest();event.optJSONObject("threadStatuses")?.let(::applyRuntimeStatuses);supportsFileLinks=event.optJSONObject("capabilities")?.optBoolean("file.resolve")==true;supportsHtmlPreview=event.optJSONObject("capabilities")?.optBoolean("preview.file.open")==true;if(event.has("capabilities")){supportsFiles=event.optJSONObject("capabilities")?.optBoolean("file.upload")==true;supportsReceipts=event.optJSONObject("capabilities")?.optBoolean("command.status")==true};previewRevision++; error = event.optString("error").takeIf { it.isNotBlank() }; if(connected){refresh(); selected?.let { openThread(it) };watchPendingReceipt(0)} }
                 "event" -> {
                     val change = event.optJSONObject("event") ?: return@post
+                    if(change.optString("type")=="threads.status")applyRuntimeStatuses(change)
                     if(change.optString("type") in listOf("mcp.updated","automation.updated","catalog.updated")){toolRevision++;if(change.optString("type")=="catalog.updated")refresh()}
                     if(change.optString("type")=="thread.updated")change.optJSONObject("data")?.let{data->
                         if(data.optJSONObject("thread")?.let(::threadIdentity)==selected?.let(::threadIdentity)){
@@ -495,6 +496,14 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private fun resetSummaryConnection(){
         projectListRequest=null;projectListQueued=false
         threadListRequest=null;threadListQueued=false;summaryUpdates.clear();summaryRuntime.clear()
+    }
+    private fun applyRuntimeStatuses(event:JSONObject){
+        var changed=false
+        event.optJSONArray("threads").objects().filter{it.optString("hostId","local")=="local"}.forEach { thread->
+            changed=updateThreadSummary(JSONObject().put("thread",thread).put("source",event.optString("source","desktop-runtime"))
+                .put("streamId",event.optString("streamId")).put("revision",event.opt("revision")?:JSONObject.NULL))||changed
+        }
+        if(changed)persistSoon()
     }
     private fun mergeSummary(previous:JSONObject,metadata:JSONObject)=JSONObject(previous.toString()).also{merged->
         // Runtime fields form one observation. In particular an idle catalog

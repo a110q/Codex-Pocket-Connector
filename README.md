@@ -46,13 +46,14 @@
 
 ## 下载安装
 
-**Android、Windows、macOS 统一为 0.9.15.1（构建号 44）。** 手机回复支持正文、列表和表格内图片及点击预览；交付卡片默认折叠，筛选支持左右滑动；修复电脑移除项目后手机仍显示的问题。请同时更新手机与电脑连接器，保留账号和配对信息。已有版本可在“关于与更新”检测安装；自动提醒由用户决定是否更新。中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，校验值见同版 `SHA256SUMS.txt`。
+
+**Android、Windows、macOS 统一为 0.9.15.4（构建号 47）。** 修复手机列表运行任务显示延迟和遗漏、历史加载失败及确认问答显示混乱。保留图片展示、交付折叠、筛选滑动和项目移除同步。请同时更新手机与电脑连接器，保留账号和配对信息；下载与安装由用户决定。中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.1/Codex-Pocket-0.9.15.1.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.1/Codex-Pocket-Connector-0.9.15.1-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.1/Codex-Pocket-Connector-0.9.15.1-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.1/Codex-Pocket-Connector-0.9.15.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.4/Codex-Pocket-0.9.15.4.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.4/Codex-Pocket-Connector-0.9.15.4-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.4/Codex-Pocket-Connector-0.9.15.4-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.15.4/Codex-Pocket-Connector-0.9.15.4-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
 
@@ -93,6 +94,8 @@ Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来
 - 只同步可见事件与摘要，不读取隐藏推理。当前覆盖本机 Codex 项目与聊天；远程主机、ChatGPT Work 全量目录、完整终端及 OpenAI 专用身份验证/专用 MCP 控件尚未覆盖。Pocket 定时任务独立于官方任务，需连接器运行；用量取决于账号接口，缺失时显示原因。
 - 网页预览不共享电脑浏览器 Cookie、标签或扩展。文件下载上限 100 MB，预览上限 50 MB，文本预览上限 512 KB。
 - 断网后不自动重发结果不确定的操作。先恢复连接并核对任务，再决定是否重发。
+
+**0.9.15.4** 修复独立电脑连接器的运行状态同步、历史缓存缺失后的分页恢复及确认问答排版。217 项 Node、33 项 Android JVM、20 个 Android 交互测试通过；Windows 仍待实机验收。详见 [更新说明](docs/patch-0.9.15.4.md) 与 [验证记录](docs/verification-0.9.15.4.md)。
 
 **0.9.15.1** 新增手机回复图片、交付折叠和筛选滑动，按电脑可见项目清单同步移除结果。207 项 Node 测试通过，0.9.15 的 33 项 Android JVM 与 13 项相关交互回归通过；Windows 仍待实机验收。详见 [更新说明](docs/patch-0.9.15.1.md) 与 [验证记录](docs/verification-0.9.15.1.md)。
 

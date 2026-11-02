@@ -270,7 +270,16 @@ function userMessage(text, parts) {
     const residue = wrapper[1].replace(/^## ([^\n]+): ((?:\/|[A-Za-z]:[\\/])[^\n]+)\nImage attachment: true\s*$/gm, '').trim();
     if (!residue && files.length === attachments.length && files.every(file => attachments.some(attachment => attachment.path === file[2]))) displayText = wrapper[2].trim();
   }
-  return { text: displayText, ...(attachments.length ? { attachments } : {}), ...(displayText !== text ? { detail: text } : {}) };
+  const reply = /^\s*<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>\s*$/.exec(displayText);
+  let questionReplies;
+  if (reply) try {
+    const values = JSON.parse(reply[1]);
+    if (Array.isArray(values) && values.length && values.every(value => value && typeof value.question === 'string' && typeof value.answer === 'string')) {
+      questionReplies = values.map(({ question, answer }) => ({ question, answer }));
+      displayText = questionReplies.map(value => `${value.question}\n${value.answer}`).join('\n\n');
+    }
+  } catch { /* Ordinary user text and malformed wrappers stay intact. */ }
+  return { text: displayText, ...(questionReplies ? { questionReplies } : {}), ...(attachments.length ? { attachments } : {}), ...(displayText !== text ? { detail: text } : {}) };
 }
 
 function appToolUserText(output, trigger) {
@@ -380,6 +389,7 @@ export function normalizeSnapshot(state, { hostId = state?.hostId ?? 'local', re
   return {
     thread: { id: state.id, title: state.title || state.fallbackSearchTitle || 'Untitled', cwd: state.cwd, hostId,
       status: state.threadRuntimeStatus?.type ?? state.status ?? (activeTurn ? 'active' : 'idle'),
+      ...(state.threadRuntimeStatus ? { threadRuntimeStatus: state.threadRuntimeStatus } : {}),
       model: settings.model, reasoningEffort: settings.reasoningEffort, settings, currentPermissions: state.currentPermissions ?? null, updatedAt: state.updatedAt,
       lastTurnId: turns.at(-1)?.turnId ?? turns.at(-1)?.id ?? null, lastTurnStatus: turns.at(-1)?.status ?? null, activeTurnId: activeTurn?.turnId ?? activeTurn?.id ?? null },
     messages, requests: (state.requests ?? []).map(request => ({ id: request.id, method: request.method, params: request.params })),

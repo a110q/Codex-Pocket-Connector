@@ -267,6 +267,7 @@ class ConnectionRecoveryTest {
         val commands=CopyOnWriteArrayList<JSONObject>()
         var extra:((String,JSONObject)->JSONObject?)?=null
         var capabilities=JSONObject()
+        var threadStatuses:JSONObject?=null
         @Volatile var desktopReady=true
         @Volatile var ignoreProbes=false
         val probes=AtomicInteger()
@@ -311,7 +312,7 @@ class ConnectionRecoveryTest {
                         val payload=codec.decode(text);val channel=payload.getString("channel")
                         if(payload.optString("type")=="hello"){
                             channels[webSocket]=channel;val n=hellos.incrementAndGet();if(ignoreHellos||(dropFirstHello&&n==1))return
-                            webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",desktopReady).put("capabilities",capabilities)));return
+                            webSocket.send(codec.encode(JSONObject().put("type","hello").put("channel",channel).put("desktopReady",desktopReady).put("capabilities",capabilities).put("threadStatuses",threadStatuses)));return
                         }
                         if(payload.optString("type")=="ping"){
                             val n=probes.incrementAndGet()
@@ -345,6 +346,7 @@ class ConnectionRecoveryTest {
             profile=JSONObject().put("mode",if(lan)"lan"else"cloud").put("relay",relay).put("hostId",host).put("key",key).put("pin",pin).put("mobileToken",Encoding.secret()).put("approved",true)
         }
         fun snapshot(value:JSONObject){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type","thread.updated").put("threadId",value.getJSONObject("thread").getString("id")).put("data",value))))}}
+        fun event(value:JSONObject){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",value)))}}
         fun status(online:Boolean){sockets.last().send(JSONObject().put("type","status").put("peerOnline",online).toString())}
         fun desktopEvent(type:String){channels.forEach{(socket,channel)->socket.send(codec.encode(JSONObject().put("type","event").put("channel",channel).put("event",JSONObject().put("type",type))))}}
         fun closeLatest(code:Int,reason:String){sockets.last().close(code,reason)}

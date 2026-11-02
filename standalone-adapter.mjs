@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs';
 import { DesktopAdapter, FramedSocket, normalizeSnapshot, orderedTurns } from './desktop-adapter.mjs';
 import { AppServerClient } from './app-server-client.mjs';
 import { DesktopOwnerBridge } from './desktop-owner-bridge.mjs';
+import { DesktopRuntime } from './desktop-runtime.mjs';
 
 const modes = { 'read-only': { permissions: ':read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, auto: { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, 'full-access': { permissions: ':danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' } };
 const string = (value, label, length = 100000) => { if (typeof value !== 'string' || !value.trim() || value.length > length) throw new Error(`${label}无效`); return value; };
@@ -21,6 +22,8 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.models = []; this.ownedThreads = new Set(); this.createdThreads = new Set(); this.catalogRefreshTimers = new Map(); this.states = new Map(); this.approvals = new Map(); this.refreshTimers = new Map(); this.ipcAvailable = false;
     this.ipcConnecting = null; this.ownerErrors = new Map(); this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
     this.runtimeReader = options.runtimeReader ?? null; this.runtimeRetryAt = 0;
+    this.runtimeCache = new Map(); this.runtimeRefresh = null; this.runtimeTimer = null; this.runtimeMonitoring = false;
+    this.runtimeStream = randomUUID(); this.runtimeSequence = 0; this.runtimeGeneration = 0;
     this.projectReader = options.projectReader ?? null;
     this.ownerBridge = new DesktopOwnerBridge(this);
     this.workspace = new WorkspaceTools(this);
@@ -28,6 +31,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.server.on('notification', message => this.onServerEvent(message));
     this.server.on('request', message => this.onServerRequest(message));
     this.server.on('disconnect', error => {
+      this.stopRuntimeMonitor();
       for (const id of this.ownedThreads) if (!this.threadServers.has(id)) this.ownedThreads.delete(id);
       if (this.ready) { this.ready = false; this.emit('event', { type: 'desktop.disconnected', error: error.message }); }
     });
@@ -45,6 +49,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       try { await this.ensureDesktopIpc(); } catch { /* Stored history remains available while the desktop is closed. */ }
       current();
       this.ready = true;
+      this.startRuntimeMonitor();
       this.emit('event', { type: 'desktop.ready', capabilities: this.diagnostics().capabilities });
       return this.diagnostics();
     };
@@ -136,23 +141,94 @@ export class StandaloneAdapter extends DesktopAdapter {
     result.sort((a,b) => Number(!!b.isPinned) - Number(!!a.isPinned) || (Date.parse(b.recencyAt ?? b.updatedAt) || 0) - (Date.parse(a.recencyAt ?? a.updatedAt) || 0));
     return { threads: result, pinnedThreads: result.filter(t => t.isPinned), catalog: { localComplete: catalog.localComplete, remoteComplete: false, chatgptComplete: false, source: 'codex-app-server+desktop-membership' } };
   }
-  async desktopRuntime(catalog) {
-    const runtime = new Map();
-    // A separate App Server reports desktop-owned chats as notLoaded. Query
-    // the desktop's summary tool; opening/resuming each chat would acquire
-    // writers and download histories merely to paint the sidebar.
+  async desktopRuntime(catalog, { fresh = false } = {}) {
+    if (!fresh && this.runtimeMonitoring && this.runtimeSequence) return new Map(this.runtimeCache);
+    if (this.runtimeRefresh) return this.runtimeRefresh;
+    const generation = this.runtimeGeneration;
+    const operation = this.readDesktopRuntime(catalog).then(runtime => {
+      if (generation !== this.runtimeGeneration) return new Map();
+      const changed = JSON.stringify([...runtime]) !== JSON.stringify([...this.runtimeCache]);
+      this.runtimeCache = runtime;
+      if (changed || !this.runtimeSequence) {
+        this.runtimeSequence++;
+        this.emit('event', this.runtimeSnapshot());
+      }
+      return new Map(runtime);
+    });
+    this.runtimeRefresh = operation;
+    try { return await operation; } finally { if (this.runtimeRefresh === operation) this.runtimeRefresh = null; }
+  }
+  runtimeSnapshot() {
+    if (!this.runtimeSequence) return null;
+    return { type: 'threads.status', source: 'desktop-runtime', streamId: this.runtimeStream, revision: this.runtimeSequence,
+      threads: [...this.runtimeCache].map(([id, status]) => ({ id, hostId: 'local', ...status })) };
+  }
+  startRuntimeMonitor() {
+    if (this.runtimeMonitoring) return;
+    this.runtimeMonitoring = true;
+    const generation = this.runtimeGeneration;
+    const poll = async () => {
+      try {
+        const catalog = await this.localCatalog();
+        // The monitor must sample fresh evidence, while simultaneous phone
+        // queries join the same request instead of starting another scan.
+        if (generation !== this.runtimeGeneration) return;
+        await this.desktopRuntime(catalog, { fresh: true });
+      } catch (error) { if (generation === this.runtimeGeneration) this.emit('event', { type: 'runtime.unavailable', error: '运行状态暂未同步，正在自动重试' }); }
+      finally {
+        if (generation === this.runtimeGeneration && this.runtimeMonitoring) {
+          this.runtimeTimer = setTimeout(poll, this.options.runtimePollMs ?? 1000); this.runtimeTimer.unref?.();
+        }
+      }
+    };
+    void poll();
+  }
+  stopRuntimeMonitor() {
+    this.runtimeGeneration++; this.runtimeMonitoring = false; clearTimeout(this.runtimeTimer); this.runtimeTimer = null;
+    if (this.runtimeReader?.read) this.runtimeReader.close();
+    this.runtimeRefresh = null; this.runtimeCache.clear(); this.runtimeSequence = 0; this.runtimeStream = randomUUID();
+  }
+  async readDesktopRuntime(catalog) {
+    let runtime = new Map(this.runtimeCache);
+    // A separate App Server reports desktop-owned chats as notLoaded. Keep
+    // runtime projections from the desktop follower stream warm independently
+    // of phone navigation. No thread/resume or second writer is involved.
     if ((this.runtimeReader || (this.options.runtimeCatalog !== false && this.options.catalog !== false)) && Date.now() >= this.runtimeRetryAt) {
       try {
-        if (!this.runtimeReader) this.runtimeReader = new DesktopAdapter({ ...this.options, timeoutMs: 2000, callerThreadId: this.callerThreadId || catalog.threads[0]?.id });
+        if (!this.runtimeReader) {
+          this.runtimeReader = new DesktopRuntime(this.options);
+          this.runtimeReader.on('changed', statuses => {
+            if (!this.runtimeMonitoring) return;
+            for (const [id, status] of statuses) this.runtimeCache.set(id, status);
+            this.runtimeSequence++; this.emit('event', this.runtimeSnapshot());
+          });
+          this.runtimeReader.on('unavailable', () => this.emit('event', { type: 'runtime.unavailable', error: '桌面运行状态暂不可用，正在自动重试' }));
+        }
         await this.runtimeReader.connect();
-        const result = await this.runtimeReader.tool('list_threads', { limit: 50 });
+        if (this.runtimeReader.read) {
+          runtime = await this.runtimeReader.read(catalog);
+        } else {
+        const schema = this.runtimeReader.tools?.find(tool => tool.name === 'list_threads')?.inputSchema;
+        const supportsHistory = !schema || !!schema.properties?.mode;
+        const seen = new Set(); let cursor;
+        do {
+        const result = await this.runtimeReader.tool('list_threads', supportsHistory ? { mode: 'history', source: 'codex', hostId: 'local', archived: false, limit: 50, ...(cursor ? { cursor } : {}) } : { limit: 50 });
         for (const thread of [...(result.threads ?? []), ...(result.pinnedThreads ?? [])]) {
           if ((thread.kind ?? 'codex') !== 'codex' || (thread.hostId ?? 'local') !== 'local' || !thread.id) continue;
           if (['unknown', 'notLoaded', undefined, null].includes(thread.status)) continue;
           runtime.set(thread.id, { status: thread.status });
         }
-      } catch {
+        cursor = supportsHistory ? result.nextCursor : null;
+        if (cursor && seen.has(cursor)) throw new Error('桌面状态分页游标重复');
+        if (cursor) seen.add(cursor);
+        } while (cursor);
+        }
+      } catch (error) {
         this.runtimeReader?.close(); this.runtimeRetryAt = Date.now() + 5000;
+        // Retain evidence on a transient failure, and make the missing source
+        // observable instead of silently presenting an incomplete status list.
+        for (const [id, status] of this.runtimeCache) if (!runtime.has(id)) runtime.set(id, status);
+        this.emit('event', { type: 'runtime.unavailable', error: '桌面运行状态暂不可用，正在自动重试' });
       }
     }
     // Pocket-owned chats run in independent processes as well. Ask only for
@@ -569,6 +645,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   close() {
     this.initializationAttempt = null;
+    this.stopRuntimeMonitor();
     this.runtimeReader?.close(); this.runtimeRetryAt = 0;
     this.projectReader?.close();
     for (const timer of this.refreshTimers?.values() ?? []) clearTimeout(timer);

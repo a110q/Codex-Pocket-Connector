@@ -84,6 +84,29 @@ class ThreadStatusTest {
         compose.waitUntil(timeout) { var done = false; instrumentation.runOnMainSync { done = condition() }; done }
     }
     private fun activity(id: String) = threadActivity(model.threads.first { it.optString("id") == id })
+    private fun runtimeEvent(revision:Int,run:String="active",web:String="active")=JSONObject().put("type","threads.status")
+        .put("source","desktop-runtime").put("streamId","runtime-test").put("revision",revision)
+        .put("threads",JSONArray().put(JSONObject().put("id","run").put("hostId","local").put("status",run))
+            .put(JSONObject().put("id","web").put("hostId","local").put("status",web)))
+    @Test fun handshakeAndStatusPushShowAllRunningChatsWithoutOpeningThemOrWaitingForTheListPoll(){
+        catalog=catalog.map{JSONObject(it.toString()).put("status","notLoaded")}
+        peer.threadStatuses=runtimeEvent(1)
+        start()
+        until(2000){activity("run")==ThreadActivity.RUNNING&&activity("web")==ThreadActivity.RUNNING}
+        Assert.assertFalse(peer.actions.contains("thread.read"));Assert.assertNull(model.selected)
+        peer.event(runtimeEvent(3,"idle","waitingForApproval"))
+        until(2000){activity("run")==ThreadActivity.IDLE&&activity("web")==ThreadActivity.APPROVAL}
+        peer.event(runtimeEvent(2))
+        Thread.sleep(100);compose.waitForIdle()
+        Assert.assertEquals(ThreadActivity.IDLE,activity("run"));Assert.assertEquals(ThreadActivity.APPROVAL,activity("web"))
+        // Returning to the foreground must use the new handshake observation,
+        // even when thread/list still has no runtime evidence.
+        compose.runOnUiThread{model.stop()}
+        peer.threadStatuses=runtimeEvent(1,"active","idle")
+        compose.runOnUiThread{model.start()}
+        until(2000){model.connected&&activity("run")==ThreadActivity.RUNNING&&activity("web")==ThreadActivity.IDLE}
+        Assert.assertFalse(peer.actions.contains("thread.read"))
+    }
     private fun show() { compose.setContent { PocketTheme(appearance.value) { PocketApp(model, {}, null, {}) } } }
     private fun screenshot(name: String) {
         compose.waitForIdle(); Thread.sleep(400)
@@ -142,10 +165,10 @@ class ThreadStatusTest {
         start()
         Assert.assertFalse(TaskNotifications.enabled(context))
         catalog = catalog.map { JSONObject(it.toString()).put("status", "idle") }
-        until(12000) { model.threads.all { threadActivity(it) == ThreadActivity.IDLE } }
+        until(12000) { model.threads.all { threadActivity(it) == ThreadActivity.IDLE } && peer.actions.count { it == "projects.list" } >= 2 }
         Assert.assertTrue(peer.actions.count { it == "threads.list" } >= 2)
         Assert.assertFalse("List polling must never read histories", peer.actions.any { it in listOf("thread.read", "thread.history") })
-        Assert.assertEquals("Projects should not be repeatedly loaded by the status poll", 1, peer.actions.count { it == "projects.list" })
+        Assert.assertTrue("Project membership also refreshes, without extra polling loops",peer.actions.count { it == "projects.list" } <= peer.actions.count { it == "threads.list" } + 1)
         compose.runOnUiThread { model.stop() }
         val reads = peer.actions.size
         Thread.sleep(5500)
@@ -278,6 +301,8 @@ class ThreadStatusTest {
     }
 
     @Test fun runtimeShapesDistinguishApprovalsInputErrorsAndFinishedTurns() {
+        Assert.assertEquals(ThreadActivity.APPROVAL, threadActivity(JSONObject().put("status", JSONObject().put("type", "active").put("activeFlags", JSONArray().put("waitingOnApproval")))))
+        Assert.assertEquals(ThreadActivity.INPUT, threadActivity(JSONObject().put("status", JSONObject().put("type", "active").put("activeFlags", JSONArray().put("waitingOnUserInput")))))
         Assert.assertEquals(ThreadActivity.APPROVAL, threadActivity(JSONObject().put("status", JSONObject().put("type", "active").put("activeFlags", JSONArray().put("awaitingApproval")))))
         Assert.assertEquals(ThreadActivity.INPUT, threadActivity(JSONObject().put("status", JSONObject().put("type", "active").put("activeFlags", JSONArray().put("awaitingUserInput")))))
         Assert.assertEquals(ThreadActivity.APPROVAL, threadActivity(JSONObject().put("status", "active"), JSONArray().put(JSONObject().put("method", "item/commandExecution/requestApproval"))))

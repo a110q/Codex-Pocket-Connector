@@ -109,6 +109,32 @@ test('Pocket-owned runtime comes from its own process and replaces active status
   assert(requests.every(c=>c.method==='thread/read'&&c.args.includeTurns===false));
 });
 
+test('runtime discovery pages all desktop summaries including running chats beyond the first fifty', async t => {
+  const server=new Server(),calls=[];
+  const reader={async connect(){},async tool(name,args){calls.push(args);assert.equal(name,'list_threads');assert.equal(args.mode,'history');
+    return args.cursor?{threads:[{id:'older-running',status:'active',hostId:'local'},{id:'other-host',status:'active',hostId:'remote'}]}:{threads:Array.from({length:50},(_,i)=>({id:String(i),status:'idle'})),nextCursor:'page2'}},close(){}};
+  const a=fixtureAdapter({server,runtimeReader:reader});t.after(()=>a.close());
+  a.localCatalog=async()=>({threads:[...Array.from({length:50},(_,i)=>({id:String(i)})),{id:'older-running'}]});
+  const result=await a.listThreads();assert.equal(calls.length,2);assert.equal(result.threads.find(t=>t.id==='older-running').status,'active');
+  assert.equal(a.subscriptions.size,0);assert.equal(a.snapshots.size,0);assert(!result.threads.some(t=>t.id==='other-host'));
+});
+
+test('a warm runtime monitor pushes unopened task changes and list requests never wait for its next sample', async t => {
+  let status='active',release,reads=0;
+  const reader={async connect(){},async tool(){reads++;if(release===true)await new Promise(resolve=>{release=resolve});return{threads:[{id:'qa',status}]}},close(){}};
+  const a=fixtureAdapter({server:new Server(),runtimeReader:reader,runtimePollMs:15});t.after(()=>a.close());
+  a.localCatalog=async()=>({threads:[{id:'qa'}]});
+  const events=[];a.on('event',e=>{if(e.type==='threads.status')events.push(e)});
+  const wait=async condition=>{const end=Date.now()+2000;while(!condition()){assert(Date.now()<end);await new Promise(r=>setTimeout(r,5));}};
+  a.startRuntimeMonitor();await wait(()=>events.length===1);
+  assert.equal(a.runtimeSnapshot().threads[0].status,'active');
+  status='idle';await wait(()=>events.some(e=>e.threads[0].status==='idle'));
+  release=true;await wait(()=>typeof release==='function');
+  assert.equal((await a.desktopRuntime({threads:[]})).get('qa').status,'idle');
+  a.close();release();await new Promise(r=>setTimeout(r,40));
+  assert.equal(a.runtimeSnapshot(),null);assert.equal(a.runtimeTimer,null);assert.equal(a.subscriptions.size,0);
+});
+
 test('missing desktop runtime retains unknown evidence and never imports another host or ChatGPT status', async t => {
   const server=new Server();server.pages=async()=>[{id:'qa',status:{type:'notLoaded'},updatedAt:1}];
   let unavailable=false;

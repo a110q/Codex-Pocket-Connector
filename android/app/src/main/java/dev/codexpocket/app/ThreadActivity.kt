@@ -19,8 +19,8 @@ internal enum class ThreadActivity(val label: String, val wireStatus: String) {
 
 internal fun activityForStatus(status: String): ThreadActivity = when (status) {
     "running", "inProgress", "active", "working" -> ThreadActivity.RUNNING
-    "waitingForApproval", "awaitingApproval" -> ThreadActivity.APPROVAL
-    "waitingForUserInput", "awaitingUserInput", "waitingForInput" -> ThreadActivity.INPUT
+    "waitingForApproval", "awaitingApproval", "waitingOnApproval" -> ThreadActivity.APPROVAL
+    "waitingForUserInput", "awaitingUserInput", "waitingOnUserInput", "waitingForInput" -> ThreadActivity.INPUT
     "needs_attention", "waiting" -> ThreadActivity.WAITING
     "error", "failed", "systemError" -> ThreadActivity.ERROR
     "idle", "completed", "interrupted", "stopped", "cancelled" -> ThreadActivity.IDLE
