@@ -5,10 +5,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,13 +42,20 @@ internal fun recentChanges(snapshot:JSONObject?):RecentChanges?{
 }
 
 @Composable internal fun ChatDeliverables(artifacts:List<JSONObject>,changes:RecentChanges?,connected:Boolean,onPreview:(JSONObject)->Unit,onAll:()->Unit){
+    var expanded by rememberSaveable{mutableStateOf(false)}
     Surface(color=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(16.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
-        Column(Modifier.padding(14.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
-            Row(verticalAlignment=Alignment.CenterVertically){
+        Column(Modifier.padding(horizontal=14.dp,vertical=4.dp)){
+            Surface(onClick={expanded=!expanded},color=androidx.compose.ui.graphics.Color.Transparent,modifier=Modifier.fillMaxWidth().semantics{
+                contentDescription=if(expanded)"收起交付与修改"else"展开交付与修改"
+                stateDescription=if(expanded)"已展开"else"已折叠"
+            }){Row(Modifier.heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
                 CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("文件",Modifier.size(18.dp))}
                 Spacer(Modifier.width(8.dp));Text("交付与修改",Modifier.weight(1f),fontSize=14.sp,fontWeight=FontWeight.SemiBold)
                 if(artifacts.isNotEmpty())Text("${artifacts.size} 个文件",fontSize=12.sp,color=PocketPalette.muted)
-            }
+                else if(changes!=null)Text("${changes.files.size} 个修改",fontSize=12.sp,color=PocketPalette.muted)
+                Spacer(Modifier.width(10.dp));PocketIcon(if(expanded)"上拉"else"下拉",Modifier.size(14.dp))
+            }}
+            if(expanded){Column(Modifier.padding(top=6.dp,bottom=10.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             artifacts.take(3).forEach{file->ArtifactRow(file,enabled=connected){onPreview(file)}}
             if(changes!=null){
                 if(artifacts.isNotEmpty())HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
@@ -74,6 +83,7 @@ internal fun recentChanges(snapshot:JSONObject?):RecentChanges?{
                 Text(if(artifacts.size>3)"查看全部 ${artifacts.size} 个文件与修改"else"查看全部交付与修改",Modifier.weight(1f),fontSize=13.sp)
                 PocketIcon("展开",Modifier.size(16.dp))
             }
+            }}
         }
     }
 }

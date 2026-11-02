@@ -468,10 +468,10 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
                     expandedGroups=if(block.key in expandedGroups)expandedGroups-block.key else expandedGroups+block.key
                 }}
                 // Expanded records remain independent lazy rows, including very long tool runs.
-                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
+                if(!block.execution||block.key in expandedGroups)items(block.records,key={"message:"+it.optString("turnId")+":"+it.optString("id")}){message->MessageCard(message,model::openLink,onDetail={mode->model.showMessage(message,mode)},onRelated=model::openAgentThread,imageSupport=MarkdownImageSupport("${model.profile?.optString("hostId")}:${thread.optString("id")}:${model.connected}",model::inlineImageBitmap,model::openLink),images={MessageImages(message.optJSONArray("attachments").objects().filter{it.optString("type")=="image"},model.connected,model::attachmentBitmap,model::preview);MessageFiles(message.optJSONArray("attachments").objects(),model.connected,model::preview)})}
             }
             if(artifacts.isNotEmpty()||changes!=null)item(key="artifacts"){
-                ChatDeliverables(artifacts,changes,model.connected,onPreview={file->focus.clearFocus();model.preview(file)},onAll={focus.clearFocus();showResults=true})
+                key(thread.optString("id")){ChatDeliverables(artifacts,changes,model.connected,onPreview={file->focus.clearFocus();model.preview(file)},onAll={focus.clearFocus();showResults=true})}
             }
             if(!browserFullscreen)items(requests,key={"approval:"+it.optString("id")}){ApprovalCard(it,model)}
             if(taskFailed)item(key="task-error"){TaskErrorCard(taskError){message->model.showMessage(message,if(message.optBoolean("hasDetail"))"detail"else"text")}}
@@ -575,7 +575,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
     }
 }
 
-@Composable fun MarkdownText(text:String,modifier:Modifier=Modifier,onLink:(String)->Unit={}){
+@Composable fun MarkdownText(text:String,modifier:Modifier=Modifier,imageSupport:MarkdownImageSupport?=null,onLink:(String)->Unit={}){
     val colors=MaterialTheme.colorScheme;val context=LocalContext.current
     val bubbleBorder=PocketPalette.bubbleBorder
     val linkCallback by rememberUpdatedState(onLink)
@@ -586,6 +586,15 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
             .blockQuoteColor(argb(bubbleBorder)).blockQuoteWidth((2*context.resources.displayMetrics.density).toInt()).blockMargin((12*context.resources.displayMetrics.density).toInt())}
         override fun configureParser(builder:org.commonmark.parser.Parser.Builder){builder.extensions(listOf(org.commonmark.ext.gfm.tables.TablesExtension.create()))}
         override fun configureVisitor(builder:io.noties.markwon.MarkwonVisitor.Builder){
+            builder.on(org.commonmark.node.Image::class.java){visitor,node->
+                val start=visitor.length()
+                val label=node.title?.takeIf{it.isNotBlank()}?:buildString{
+                    fun collect(child:org.commonmark.node.Node?){var current=child;while(current!=null){if(current is org.commonmark.node.Text)append(current.literal);collect(current.firstChild);current=current.next}}
+                    collect(node.firstChild)
+                }.ifBlank{"对话图片"}
+                visitor.builder().append("[图片：$label]")
+                visitor.builder().setSpan(MarkdownImageSource(node.destination,label),start,visitor.length())
+            }
             // The stock table drawing plugin consumes cell text. Our table has
             // separate native cells, so render only each cell's inline children.
             builder.on(org.commonmark.ext.gfm.tables.TableCell::class.java){visitor,node->visitor.visitChildren(node)}
@@ -606,8 +615,8 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
     val parts=remember(markwon,text){markdownParts(markwon,text)}
     Column(modifier,verticalArrangement=Arrangement.spacedBy(8.dp)){
         parts.forEach{part->when(part){
-            is MarkdownPart.Prose->MarkdownSpanned(part.content,argb(colors.onSurface),argb(colors.primary))
-            is MarkdownPart.Grid->MarkdownTable(part.table,argb(colors.onSurface),argb(colors.primary))
+            is MarkdownPart.Prose->MarkdownSpanned(part.content,argb(colors.onSurface),argb(colors.primary),imageSupport=imageSupport)
+            is MarkdownPart.Grid->MarkdownTable(part.table,argb(colors.onSurface),argb(colors.primary),imageSupport)
         }}
     }
 }

@@ -188,6 +188,19 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         val threadId = selected?.optString("id") ?: error("请先打开对话")
         return messageImages.load(threadId,image,::chunk)
     }
+    suspend fun inlineImageBitmap(link:String):android.graphics.Bitmap {
+        if(link.startsWith("https://",true)||link.startsWith("http://",true))return messageImages.remote(link)
+        val thread=selected?:error("请先打开对话")
+        val threadId=thread.getString("id");val generation=computerGeneration;val loader=messageImages
+        val artifact=snapshot?.optJSONArray("artifacts").objects().find{it.optString("path")==link}
+            ?:rpc("file.resolve",JSONObject().put("threadId",threadId).put("hostId",thread.optString("hostId","local")).put("link",link)).getJSONObject("artifact")
+        check(generation==computerGeneration&&selected?.optString("id")==threadId){"对话已切换"}
+        require(artifact.optString("mime").startsWith("image/")){"此链接不是图片"}
+        return loader.load(threadId,artifact){id,file,offset->
+            check(generation==computerGeneration&&selected?.optString("id")==threadId){"对话已切换"}
+            chunk(id,file,offset)
+        }
+    }
     var foreground = false; private set
     private var connection: PocketConnection? = null
     private var account: AccountAuthorization? = null
@@ -242,7 +255,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 if(catalogPolling?.isActive!=true)catalogPolling=scope.launch{
                     // Only fetch summaries. Opening every chat would download its
                     // history and make the list increasingly expensive to refresh.
-                    while(isActive&&foreground){delay(5000);if(connected)refreshThreads()}
+                    while(isActive&&foreground){delay(5000);if(connected){refreshThreads();refreshProjects()}}
                 }
                 if(taskPolling?.isActive!=true)taskPolling=scope.launch{
                     val peer=JSONObject(profile!!.toString());val poller=TaskComputerPoller(context,peer)
@@ -261,7 +274,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         cacheWrite?.let(handler::removeCallbacks);cacheWrite=null
         receiptPolling?.cancel();receiptPolling=null
         if(pendingOperation!=null)busy=false
-        pairingJob?.cancel(); pairingJob = null;taskPolling?.cancel();taskPolling=null;catalogPolling?.cancel();catalogPolling=null;threadListRequest=null;threadListQueued=false; connection?.close(); connection = null; connected = false; persist()
+        pairingJob?.cancel(); pairingJob = null;taskPolling?.cancel();taskPolling=null;catalogPolling?.cancel();catalogPolling=null;projectListRequest=null;projectListQueued=false;threadListRequest=null;threadListQueued=false; connection?.close(); connection = null; connected = false; persist()
         TaskMonitorService.releaseUi(context,this)
     }
     private fun connect() {
@@ -433,8 +446,25 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun refresh() {
         if (!connected) return
         refreshThreads(reportErrors=true)
-        request("projects.list") { r, e -> if (e != null) error = e else { projects = r?.optJSONArray("projects").objects().filter { it.optString("hostId", "local") == "local" }; persistSoon() } }
+        refreshProjects(reportErrors=true)
         request("models.list") { r, _ -> models = r?.optJSONArray("models").objects() }
+    }
+    private var projectListRequest:Any?=null
+    private var projectListQueued=false
+    private fun refreshProjects(reportErrors:Boolean=false){
+        if(!connected)return
+        if(projectListRequest!=null){if(reportErrors)projectListQueued=true;return}
+        val token=Any();projectListRequest=token
+        request("projects.list"){r,e->
+            if(projectListRequest!==token)return@request
+            projectListRequest=null
+            if(e!=null){if(reportErrors)error=e}
+            else if(r?.optJSONArray("projects")!=null){
+                val next=r.optJSONArray("projects").objects().filter{it.optString("hostId","local")=="local"}
+                if(next.map{it.toString()}!=projects.map{it.toString()}){projects=next;persistSoon()}
+            }
+            if(projectListQueued){projectListQueued=false;refreshProjects(reportErrors=true)}
+        }
     }
     private fun refreshThreads(reportErrors:Boolean=false) {
         if(!connected)return
@@ -463,6 +493,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         }
     }
     private fun resetSummaryConnection(){
+        projectListRequest=null;projectListQueued=false
         threadListRequest=null;threadListQueued=false;summaryUpdates.clear();summaryRuntime.clear()
     }
     private fun mergeSummary(previous:JSONObject,metadata:JSONObject)=JSONObject(previous.toString()).also{merged->

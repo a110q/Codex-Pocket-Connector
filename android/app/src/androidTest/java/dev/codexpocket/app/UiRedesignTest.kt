@@ -99,6 +99,8 @@ class UiRedesignTest {
         peer.threads.getJSONObject(0).put("status","idle")
         chat()
         compose.onNodeWithText("交付与修改").assertIsDisplayed()
+        compose.onNodeWithText("最近一轮 · 修改 1 个文件").assertDoesNotExist()
+        compose.onNodeWithContentDescription("展开交付与修改").performClick()
         compose.onNodeWithText("最近一轮 · 修改 1 个文件").assertIsDisplayed()
         compose.onNodeWithText("app/login.kt").assertIsDisplayed()
         compose.onNodeWithText("+2").assertIsDisplayed();compose.onNodeWithText("−1").assertIsDisplayed()
@@ -115,6 +117,70 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("关闭预览").performClick()
         compose.runOnUiThread{model.updateAppearance("dark")}
         shot("redesign-results-dark")
+    }
+    @Test fun deliverablesStartFoldedAndKeepTheUsersChoiceOnLiveRefresh(){
+        chat()
+        compose.onNodeWithContentDescription("展开交付与修改").assertIsDisplayed()
+        compose.onNodeWithContentDescription("预览文件 验收说明.md").assertDoesNotExist()
+        shot("deliverables-folded")
+        compose.onNodeWithContentDescription("展开交付与修改").performClick()
+        compose.onNodeWithContentDescription("预览文件 验收说明.md").assertIsDisplayed()
+        peer.publish();compose.waitForIdle()
+        compose.onNodeWithContentDescription("收起交付与修改").performClick()
+        compose.onNodeWithContentDescription("预览文件 验收说明.md").assertDoesNotExist()
+    }
+    @Test fun projectRemovalAndRenameAppearWithoutReenteringOrManualRefresh(){
+        peer.projects.remove(2);peer.projects.getJSONObject(1).put("title","网站已改名")
+        until(16000){model.projects.size==2&&model.projects.any{it.label()=="网站已改名"}}
+        compose.onNodeWithText("数据分析",useUnmergedTree=true).assertDoesNotExist()
+        compose.onNodeWithText("网站已改名").assertIsDisplayed()
+        Assert.assertNull(model.selected)
+        peer.projects.remove(1);peer.projects.remove(0)
+        until(16000){model.projects.isEmpty()}
+        compose.onNodeWithText("codex_android").assertDoesNotExist()
+        Assert.assertEquals(10,model.threads.size)
+    }
+    @Test fun swipingAndTappingBothSwitchWorkspaceFilters(){
+        peer.threads.getJSONObject(1).put("status","waitingForApproval")
+        compose.runOnUiThread{model.refresh()}
+        until{model.threads.any{threadActivity(it)==ThreadActivity.APPROVAL}}
+        compose.onNodeWithTag("workspace-pages").performTouchInput{swipeLeft()}
+        compose.onNodeWithContentDescription("筛选运行中对话").assertIsSelected()
+        compose.onNodeWithText("修复自动重连").assertIsDisplayed()
+        compose.onNodeWithTag("workspace-pages").performTouchInput{swipeLeft()}
+        compose.onNodeWithContentDescription("筛选待审批对话").assertIsSelected()
+        compose.onNodeWithText("重新设计手机界面").assertIsDisplayed()
+        compose.onNodeWithTag("workspace-pages").performTouchInput{swipeRight()}
+        compose.onNodeWithContentDescription("筛选运行中对话").assertIsSelected()
+        compose.onNodeWithContentDescription("筛选全部对话").performClick()
+        compose.onNodeWithContentDescription("筛选全部对话").assertIsSelected()
+        compose.onNodeWithText("图片预览优化").assertIsDisplayed()
+        Assert.assertNull(model.selected)
+        shot("workspace-swipe-all")
+    }
+    @Test fun assistantMarkdownImagesLoadInsideTheReplyOverTheEncryptedFileChannel(){
+        while(peer.messages.length()>0)peer.messages.remove(0)
+        peer.messages.put(JSONObject().put("id","inline-reply").put("turnId","ui-turn").put("role","assistant").put("textComplete",true)
+            .put("text","① 法式开衫：第一套\n\n![穿搭图](desktop-attachment.jpg)\n\n② 灰开衫：第二套\n\n| 搭配 | 风格 |\n| --- | --- |\n| 开衫＋衬衫 | 复古学院 |\n\n图片之后的结论。"))
+        chat()
+        fun picture(view:View):InlinePicture?{
+            if(view is TextView){val text=view.text as? android.text.Spanned;val span=text?.getSpans(0,text.length,android.text.style.ImageSpan::class.java)?.firstOrNull();if(span?.drawable is InlinePicture)return span.drawable as InlinePicture}
+            return if(view is ViewGroup)(0 until view.childCount).firstNotNullOfOrNull{picture(view.getChildAt(it))}else null
+        }
+        compose.onNodeWithTag("chat-history").performScrollToIndex(1)
+        until(20000){picture(compose.activity.window.decorView)?.bitmap!=null}
+        Assert.assertTrue(peer.calls.any{it.optString("action")=="file.read"})
+        shot("assistant-inline-image")
+        // The image occupies a real span between the first and second outfits.
+        compose.runOnUiThread{
+            fun find(view:View):TextView?=if(view is TextView&&view.text.contains("① 法式"))view else if(view is ViewGroup)(0 until view.childCount).firstNotNullOfOrNull{find(view.getChildAt(it))}else null
+            val text=find(compose.activity.window.decorView)!!.text as android.text.Spanned
+            val span=text.getSpans(0,text.length,MarkdownImageSource::class.java).single()
+            Assert.assertTrue(text.getSpanStart(span)>text.indexOf("第一套"));Assert.assertTrue(text.getSpanEnd(span)<text.indexOf("第二套"))
+            val click=text.getSpans(text.getSpanStart(span),text.getSpanEnd(span),android.text.style.ClickableSpan::class.java).single()
+            click.onClick(find(compose.activity.window.decorView)!!)
+        }
+        until{model.previewKind=="image"&&!model.previewLoading}
     }
     @Test fun modificationSummaryUsesTransportedPathsAndDoesNotDoubleCountTurnDiff(){
         val snapshot=JSONObject().put("messages",JSONArray().put(JSONObject().put("type","fileChange").put("turnId","one").put("text","src/a.kt\n@@ -1 +1,2 @@\n-old\n+new\n+guard")))

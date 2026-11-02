@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-@Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},images:@Composable ()->Unit={}){
+@Composable fun MessageCard(message:JSONObject,onLink:(String)->Unit,onDetail:(String)->Unit={},onRelated:(JSONObject)->Unit={},imageSupport:MarkdownImageSupport?=null,images:@Composable ()->Unit={}){
     val role=message.optString("role");val text=message.optString("text")
     val clipboard=LocalClipboard.current;val scope=rememberCoroutineScope()
     when(role){
@@ -65,7 +65,7 @@ import org.json.JSONObject
                     CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon("复制",Modifier.size(14.dp))}
                 }
             }
-            MarkdownText(text,Modifier.fillMaxWidth(),onLink)
+            MarkdownText(text,Modifier.fillMaxWidth(),imageSupport,onLink)
             if(!message.optBoolean("textComplete",true))TextButton(onClick={onDetail("text")}){Text("查看完整内容（${message.optInt("textLength")} 字符）",fontSize=12.sp)}
         }
     }

@@ -21,6 +21,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.models = []; this.ownedThreads = new Set(); this.createdThreads = new Set(); this.catalogRefreshTimers = new Map(); this.states = new Map(); this.approvals = new Map(); this.refreshTimers = new Map(); this.ipcAvailable = false;
     this.ipcConnecting = null; this.ownerErrors = new Map(); this.threadQueues = new Map(); this.releaseTimers = new Map(); this.threadServers = new Map();
     this.runtimeReader = options.runtimeReader ?? null; this.runtimeRetryAt = 0;
+    this.projectReader = options.projectReader ?? null;
     this.ownerBridge = new DesktopOwnerBridge(this);
     this.workspace = new WorkspaceTools(this);
     this.extensions = new ExtensionTools(this);
@@ -165,9 +166,28 @@ export class StandaloneAdapter extends DesktopAdapter {
     return runtime;
   }
   async listProjects() {
-    const [catalog, values] = await Promise.all([this.localCatalog(), this.server.pages('project/list')]);
-    const projects = [...catalog.projects];
-    for (const value of values) if (!projects.some(p => p.canonicalProjectId === value.id || p.projectId === value.id)) projects.push({ projectId: value.id, canonicalProjectId: value.id, projectKind: 'local', hostId: 'local', label: value.name, path: value.roots[0]?.path ?? null, rootPaths: value.roots.map(root => root.path) });
+    const catalog = await this.localCatalog();
+    if (this.options.catalog !== false || this.projectReader) {
+      try {
+        if (!this.projectReader) this.projectReader = new DesktopAdapter({ ...this.options, timeoutMs: 2000, callerThreadId: this.callerThreadId || catalog.threads[0]?.id });
+        await this.projectReader.connect();
+        return await this.projectReader.listProjects();
+      } catch (error) {
+        this.projectReader?.close();
+        // A current sidebar snapshot remains usable if desktop IPC is down.
+        // Never fall back to unioning project/list into this visible set.
+        if (catalog.projectAuthority !== 'desktop-state') throw error;
+      }
+    }
+    if (catalog.projectAuthority === 'desktop-state') return { projects: catalog.projects, catalog: { localComplete: true, source: 'desktop-visible-projects-state' } };
+    const values = await this.server.pages('project/list');
+    const projects = catalog.projectAuthority === 'canonical' ? [] : [...catalog.projects];
+    for (const value of values) {
+      const stored = catalog.projects.find(p => p.canonicalProjectId === value.id || p.projectId === value.id);
+      const current = { ...stored, projectId: stored?.projectId ?? value.id, canonicalProjectId: value.id, projectKind: 'local', hostId: 'local', label: value.name, path: value.roots?.[0]?.path ?? null, rootPaths: (value.roots ?? []).map(root => root.path) };
+      const index = projects.findIndex(p => p.canonicalProjectId === value.id || p.projectId === value.id);
+      if (index < 0) projects.push(current); else projects[index] = current;
+    }
     return { projects, catalog: { localComplete: true, source: 'codex-app-server+desktop-membership' } };
   }
   async owner(threadId, hostId = 'local') {
@@ -550,6 +570,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   close() {
     this.initializationAttempt = null;
     this.runtimeReader?.close(); this.runtimeRetryAt = 0;
+    this.projectReader?.close();
     for (const timer of this.refreshTimers?.values() ?? []) clearTimeout(timer);
     this.refreshTimers?.clear(); this.server?.close(); this.ipcAvailable = false;
     for (const server of new Set(this.threadServers.values())) if (server !== this.server) server.close();

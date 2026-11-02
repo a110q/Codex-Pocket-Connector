@@ -57,12 +57,16 @@ export async function readDesktopCatalog({ codexHome = process.env.CODEX_HOME ??
   const canonicalToLegacy = new Map(Object.entries(legacyToCanonical).filter(([, id]) => typeof id === 'string').map(([legacy, canonical]) => [canonical, legacy]));
   const projects = new Map();
   const localProjects = record(global['local-projects']);
+  // projectsMigrated only means the initial copy exists. During assignment
+  // migration the desktop still edits its sidebar in local-projects, while
+  // project/list can retain removed projects (and expose CLI-only projects).
+  const desktopProjectsAvailable = stateAvailable && global['local-projects'] != null && typeof global['local-projects'] === 'object' && !Array.isArray(global['local-projects']) && migration.threadAssignmentsMigrated !== true;
   for (const [id, project] of Object.entries(localProjects)) {
     const value = record(project); const rootPaths = strings(value.rootPaths);
     projects.set(id, { projectId: id, projectKind: 'local', hostId: 'local', label: value.name || 'Untitled project', path: rootPaths[0] ?? null, rootPaths,
       ...(typeof legacyToCanonical[id] === 'string' ? { canonicalProjectId: legacyToCanonical[id] } : {}) });
   }
-  let rows = []; let spawned = new Set(); let databaseAvailable = false; let db;
+  let rows = []; let spawned = new Set(); let databaseAvailable = false; let projectAuthority = desktopProjectsAvailable ? 'desktop-state' : 'legacy'; let db;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
     const columns = new Set(db.prepare('PRAGMA table_info(threads)').all().map(row => row.name));
@@ -72,9 +76,19 @@ export async function readDesktopCatalog({ codexHome = process.env.CODEX_HOME ??
     try { spawned = new Set(db.prepare('SELECT child_thread_id FROM thread_spawn_edges').all().map(row => row.child_thread_id)); } catch {}
     try {
       const roots = db.prepare('SELECT project_id, path FROM project_roots ORDER BY position').all();
-      for (const project of db.prepare('SELECT id, name, position FROM projects ORDER BY position').all()) {
-        const id = canonicalToLegacy.get(project.id) ?? project.id; const old = projects.get(id);
+      const canonicalProjects = db.prepare('SELECT id, name, position FROM projects ORDER BY position').all();
+      const legacyProjects = new Map(projects);
+      // Once migrated, the canonical list owns existence. The legacy JSON can
+      // retain deleted projects indefinitely; unioning it resurrects them.
+      if (!desktopProjectsAvailable && migration.projectsMigrated === true) { projects.clear(); projectAuthority = 'canonical'; }
+      for (const project of canonicalProjects) {
+        const id = canonicalToLegacy.get(project.id) ?? project.id; const old = legacyProjects.get(id);
+        if (desktopProjectsAvailable && !old) continue;
         const rootPaths = roots.filter(root => root.project_id === project.id).map(root => root.path);
+        if (desktopProjectsAvailable) {
+          projects.set(id, { ...old, canonicalProjectId: project.id, position: project.position });
+          continue;
+        }
         projects.set(id, { ...old, projectId: id, canonicalProjectId: project.id, projectKind: 'local', hostId: 'local', label: project.name || old?.label || 'Untitled project',
           rootPaths: rootPaths.length ? rootPaths : old?.rootPaths ?? [], path: rootPaths[0] ?? old?.path ?? null, position: project.position });
       }
@@ -115,7 +129,7 @@ export async function readDesktopCatalog({ codexHome = process.env.CODEX_HOME ??
     const ai = projectOrder.indexOf(a.projectId); const bi = projectOrder.indexOf(b.projectId);
     return (ai < 0 ? Infinity : ai) - (bi < 0 ? Infinity : bi) || (a.position ?? Infinity) - (b.position ?? Infinity) || a.label.localeCompare(b.label);
   });
-  return { threads, projects: orderedProjects, source: 'desktop-local-metadata', localComplete: databaseAvailable && stateAvailable, limitations };
+  return { threads, projects: orderedProjects, projectAuthority, source: 'desktop-local-metadata', localComplete: databaseAvailable && stateAvailable, limitations };
 }
 
 export function normalizeThreadSettings(state) {
@@ -711,12 +725,12 @@ export class DesktopAdapter extends EventEmitter {
   }
   async listProjects() {
     const [result, catalog] = await Promise.all([this.tool('list_projects', {}), this.localCatalog()]);
-    const projects = new Map(catalog.projects.map(project => [`${project.projectKind}:${project.hostId ?? 'local'}:${project.projectId}`, project]));
-    for (const project of result.projects ?? []) {
-      const key = `${project.projectKind}:${project.hostId ?? 'local'}:${project.projectId}`; const stored = projects.get(key);
-      projects.set(key, { ...stored, ...project, rootPaths: stored?.rootPaths?.length ? stored.rootPaths : project.path ? [project.path] : [] });
-    }
-    return { ...result, projects: [...projects.values()], catalog: { source: 'desktop-local-metadata+app-tools', localComplete: catalog.localComplete, limitations: catalog.limitations } };
+    if (!Array.isArray(result.projects)) throw new Error('桌面项目清单暂不可用，请稍后重试');
+    const projects = result.projects.map(project => {
+      const stored = catalog.projects.find(value => value.projectId === project.projectId && value.projectKind === project.projectKind && (value.hostId ?? 'local') === (project.hostId ?? 'local'));
+      return { ...stored, ...project, rootPaths: project.rootPaths ?? (stored?.path === project.path && stored?.rootPaths?.length ? stored.rootPaths : project.path ? [project.path] : []) };
+    });
+    return { ...result, projects, catalog: { source: 'desktop-visible-projects', localComplete: true, limitations: catalog.limitations } };
   }
   async updateSettings(args, { owner: knownOwner } = {}) {
     const allowed = new Set(['threadId', 'hostId', 'model', 'reasoningEffort', 'permissionMode']);

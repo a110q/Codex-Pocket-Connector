@@ -24,12 +24,42 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 // Share the existing encrypted, per-thread file reader. No arbitrary URL or path
 // is fetched by the phone. Decode sampled bitmaps and bound the disk cache.
 class MessageImageLoader(context: Context,computer:String="") {
     private val cache = File(context.cacheDir, "message-images/"+computer.replace(Regex("[^A-Za-z0-9_-]"),"_").ifBlank{"legacy"})
     private val slots = Semaphore(2)
+    private val http=OkHttpClient.Builder().callTimeout(30,TimeUnit.SECONDS).build()
+    suspend fun remote(source:String):Bitmap=slots.withPermit{withContext(Dispatchers.IO){
+        // This client has no pairing headers, cookies, account tokens or custom
+        // certificate trust. Only an explicit HTTP(S) Markdown image is fetched.
+        val id=MessageDigest.getInstance("SHA-256").digest(source.toByteArray()).joinToString(""){"%02x".format(it)}
+        cache.mkdirs();val target=File(cache,"remote-$id.jpg")
+        if(target.exists()){target.setLastModified(System.currentTimeMillis());return@withContext decode(target)}
+        val temp=File.createTempFile("remote-",".part",cache)
+        try{
+            http.newCall(Request.Builder().url(source).build()).execute().use{response->
+                check(response.isSuccessful){"图片服务暂时不可用"}
+                val body=response.body?:error("图片内容为空")
+                require(body.contentLength()<=50L*1024*1024){"图片超过 50 MB"}
+                body.byteStream().use{input->temp.outputStream().use{output->
+                    val buffer=ByteArray(32768);var total=0L
+                    while(true){coroutineContext.ensureActive();val count=input.read(buffer);if(count<0)break;total+=count;require(total<=50L*1024*1024){"图片超过 50 MB"};output.write(buffer,0,count)}
+                }}
+            }
+            val bitmap=decode(temp)
+            val saved=File.createTempFile("thumbnail-",".part",cache)
+            try{saved.outputStream().use{check(bitmap.compress(Bitmap.CompressFormat.JPEG,88,it))};check(saved.renameTo(target))}finally{saved.delete()}
+            trim(target);bitmap
+        }finally{temp.delete()}
+    }}
     suspend fun load(threadId: String, image: JSONObject, chunk: suspend (String, String, Long) -> JSONObject): Bitmap = slots.withPermit {
         withContext(Dispatchers.IO) {
             val id = image.optString("id")

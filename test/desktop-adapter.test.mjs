@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { DesktopAdapter, FramedSocket, FrameDecoder, encodeFrame, applyPatches, normalizeSnapshot, normalizeThreadSettings, modelsFromTools, readDesktopCatalog } from '../desktop-adapter.mjs';
 
@@ -182,7 +181,8 @@ test('pinned thread normalization deduplicates by source, host and id', async ()
 });
 
 async function catalogFixture(t, { migrated = false } = {}) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'codex-adapter-catalog-'));
+  await mkdir(path.resolve('.private/tests'), { recursive: true });
+  const directory = await mkdtemp(path.resolve('.private/tests/codex-adapter-catalog-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const dbPath = path.join(directory, 'state_5.sqlite'); const globalStatePath = path.join(directory, '.codex-global-state.json');
   const db = new DatabaseSync(dbPath);
@@ -200,6 +200,54 @@ async function catalogFixture(t, { migrated = false } = {}) {
   await writeFile(globalStatePath, JSON.stringify(global));
   return { codexHome: directory, dbPath, globalStatePath, global };
 }
+
+test('migrated project deletion is not resurrected from legacy JSON and an empty canonical list stays empty', async t => {
+  const fixture = await catalogFixture(t, { migrated: true });
+  let catalog = await readDesktopCatalog(fixture);
+  assert.equal(catalog.projectAuthority, 'canonical');
+  assert.deepEqual(catalog.projects.map(p => p.projectId), ['legacy-project']);
+  const db = new DatabaseSync(fixture.dbPath);
+  db.exec('DELETE FROM projects; DELETE FROM project_roots'); db.close();
+  catalog = await readDesktopCatalog(fixture);
+  assert.deepEqual(catalog.projects, []);
+  assert.equal(catalog.threads.length, 65); // Removing a project does not delete its conversations.
+  fixture.global['app-server-projects-migration-by-host'][`local:${fixture.codexHome}`].projectsMigrated = false;
+  await writeFile(fixture.globalStatePath, JSON.stringify(fixture.global));
+  assert.equal((await readDesktopCatalog(fixture)).projects.length, 2);
+});
+
+test('sidebar removal during assignment migration wins over retained canonical rows and aliases', async t => {
+  const fixture = await catalogFixture(t);
+  let catalog = await readDesktopCatalog(fixture);
+  assert.equal(catalog.projectAuthority, 'desktop-state');
+  assert.equal(catalog.projects.length, 2);
+  assert.equal(catalog.projects[0].label, 'Legacy label');
+  assert.equal(catalog.projects[0].canonicalProjectId, 'canonical-project');
+  delete fixture.global['local-projects']['legacy-project'];
+  await writeFile(fixture.globalStatePath, JSON.stringify(fixture.global));
+  catalog = await readDesktopCatalog(fixture);
+  assert.deepEqual(catalog.projects.map(p => p.projectId), ['explicit-project']);
+  const db = new DatabaseSync(fixture.dbPath, { readOnly: true });
+  assert.equal(db.prepare('SELECT count(*) AS n FROM projects').get().n, 1); db.close();
+  assert.equal(catalog.threads.length, 65);
+  fixture.global['local-projects'] = {};
+  await writeFile(fixture.globalStatePath, JSON.stringify(fixture.global));
+  assert.deepEqual((await readDesktopCatalog(fixture)).projects, []);
+});
+
+test('desktop visible project list owns existence even when the canonical catalog retains removed projects', async t => {
+  const fixture = await catalogFixture(t);
+  const adapter = new DesktopAdapter({ codexHome: fixture.codexHome }); t.after(() => adapter.close());
+  let projects = [{ projectId: 'explicit-project', projectKind: 'local', hostId: 'local', label: '新名称', path: '/new-root' }];
+  adapter.tool = async () => ({ projects });
+  let result = await adapter.listProjects();
+  assert.equal(result.projects.length, 1);
+  assert.equal(result.projects[0].label, '新名称');
+  assert.deepEqual(result.projects[0].rootPaths, ['/new-root']);
+  projects = []; assert.deepEqual((await adapter.listProjects()).projects, []);
+  adapter.tool = async () => ({ text: 'unavailable' });
+  await assert.rejects(adapter.listProjects(), /项目清单暂不可用/);
+});
 
 test('full read-only catalog preserves explicit memberships, canonical aliases, and all chats beyond fifty', async t => {
   const fixture = await catalogFixture(t);
@@ -220,7 +268,7 @@ test('full read-only catalog preserves explicit memberships, canonical aliases, 
   assert.equal(JSON.stringify(result).includes('PRIVATE BODY'), false);
   const project = (await adapter.call('projects.list')).projects[0];
   assert.equal(project.projectId, 'legacy-project'); assert.equal(project.label, 'Live project');
-  assert.deepEqual(project.rootPaths, ['/workspace', '/workspace-two']);
+  assert.deepEqual(project.rootPaths, ['/workspace']);
   assert.equal((await adapter.call('threads.list', { includeArchived: true, includeSubagents: true })).threads.length, 65);
   assert.deepEqual((await adapter.call('threads.list', { projectId: 'explicit-project' })).threads.map(thread => thread.id), ['t0']);
 });

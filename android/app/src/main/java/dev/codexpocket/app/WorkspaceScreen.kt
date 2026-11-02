@@ -4,6 +4,10 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.ui.platform.testTag
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,6 +21,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,17 +83,13 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
     val search=if(activeOnly)model.taskSearch else model.projectSearch
     fun updateSearch(v:String){if(activeOnly)model.taskSearch=v else model.projectSearch=v}
     var searching by rememberSaveable(activeOnly){mutableStateOf(search.isNotBlank())}
-    var filter by rememberSaveable(activeOnly,model.showArchived){mutableStateOf(WorkspaceFilter.ALL)}
+    val pager=rememberPagerState(pageCount={WorkspaceFilter.entries.size})
+    val pagerScope=rememberCoroutineScope()
+    val filter=WorkspaceFilter.entries[pager.currentPage]
+    LaunchedEffect(activeOnly,model.showArchived){pager.scrollToPage(0)}
     var menu by remember{mutableStateOf(false)}
     val allThreads=model.threads.filter{it.optBoolean("archived")==model.showArchived}.filter{!activeOnly||threadActivity(it).actionable}
-    val threads=allThreads.filter{when(filter){WorkspaceFilter.ALL->true;WorkspaceFilter.RUNNING->threadActivity(it)==ThreadActivity.RUNNING;WorkspaceFilter.APPROVAL->threadActivity(it)==ThreadActivity.APPROVAL}}
     fun matches(t:JSONObject)=t.label().contains(search,true)
-    val projectIds=model.projects.map{it.optString("projectId")}.toSet()
-    val visible=model.projects.filter{p->
-        val children=threads.filter{it.optString("projectId")==p.optString("projectId")}
-        (filter==WorkspaceFilter.ALL||children.isNotEmpty())&&(search.isBlank()||p.label().contains(search,true)||children.any(::matches))
-    }
-    val standalone=threads.filter{it.optString("projectId") !in projectIds}.filter(::matches)
     Column(Modifier.fillMaxSize()){
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
             Column(Modifier.weight(1f)){
@@ -109,7 +110,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=16.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
             WorkspaceFilter.entries.forEach{option->
                 val count=allThreads.count{when(option){WorkspaceFilter.ALL->true;WorkspaceFilter.RUNNING->threadActivity(it)==ThreadActivity.RUNNING;WorkspaceFilter.APPROVAL->threadActivity(it)==ThreadActivity.APPROVAL}}
-                Surface(onClick={filter=option},color=if(filter==option)MaterialTheme.colorScheme.primaryContainer else Color.Transparent,contentColor=if(filter==option)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,shape=RoundedCornerShape(12.dp),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="筛选${option.label}对话";selected=filter==option;role=Role.Tab;stateDescription=if(filter==option)"已选中"else"未选中"}){
+                Surface(onClick={pagerScope.launch{pager.animateScrollToPage(option.ordinal)}},color=if(filter==option)MaterialTheme.colorScheme.primaryContainer else Color.Transparent,contentColor=if(filter==option)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,shape=RoundedCornerShape(12.dp),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="筛选${option.label}对话";selected=filter==option;role=Role.Tab;stateDescription=if(filter==option)"已选中"else"未选中"}){
                     Row(Modifier.padding(horizontal=14.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)){
                         Text(option.label,fontSize=13.sp,fontWeight=if(filter==option)FontWeight.SemiBold else FontWeight.Normal)
                         Text("$count",fontSize=12.sp)
@@ -119,30 +120,40 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         }
         if(!model.connected&&allThreads.any{threadActivity(it).actionable})Text("当前显示上次状态，连接后自动更新",Modifier.padding(horizontal=20.dp,vertical=4.dp),fontSize=11.sp,color=PocketPalette.muted)
         if(searching)TextField(search,::updateSearch,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp).padding(bottom=8.dp).heightIn(min=52.dp).semantics{contentDescription="搜索项目或对话"},placeholder={Text("搜索项目或对话",fontSize=14.sp)},leadingIcon={PocketIcon("搜索",Modifier.size(20.dp))},trailingIcon={if(search.isNotBlank())PocketAction("关闭","清空搜索"){updateSearch("")}},singleLine=true,shape=RoundedCornerShape(12.dp),colors=TextFieldDefaults.colors(focusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,unfocusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,focusedIndicatorColor=Color.Transparent,unfocusedIndicatorColor=Color.Transparent))
-        LazyColumn(Modifier.weight(1f).navigationBarsPadding(),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
-            if(activeOnly){
-                val shown=threads.filter(::matches)
-                if(shown.isEmpty())item{WorkspaceEmpty(filter,search,true)}
-                items(shown,key={it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false)}
-            }else{
-                visible.forEach{project->
-                    val id=project.optString("projectId");val children=threads.filter{it.optString("projectId")==id}
-                    val open=id !in model.collapsedProjects||search.isNotBlank()||filter!=WorkspaceFilter.ALL
-                    item(key="project:$id"){
-                        ProjectHeading(project,children.size,children.count{threadActivity(it)==ThreadActivity.RUNNING},children.count{threadActivity(it).waiting},open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})
+        HorizontalPager(pager,modifier=Modifier.weight(1f).fillMaxWidth().testTag("workspace-pages"),verticalAlignment=Alignment.Top,key={WorkspaceFilter.entries[it].name}){page->
+            val pageFilter=WorkspaceFilter.entries[page]
+            val threads=allThreads.filter{when(pageFilter){WorkspaceFilter.ALL->true;WorkspaceFilter.RUNNING->threadActivity(it)==ThreadActivity.RUNNING;WorkspaceFilter.APPROVAL->threadActivity(it)==ThreadActivity.APPROVAL}}
+            val projectIds=model.projects.map{it.optString("projectId")}.toSet()
+            val visible=model.projects.filter{p->
+                val children=threads.filter{it.optString("projectId")==p.optString("projectId")}
+                (pageFilter==WorkspaceFilter.ALL||children.isNotEmpty())&&(search.isBlank()||p.label().contains(search,true)||children.any(::matches))
+            }
+            val standalone=threads.filter{it.optString("projectId") !in projectIds}.filter(::matches)
+            LazyColumn(Modifier.fillMaxSize().then(if(page==pager.currentPage)Modifier else Modifier.clearAndSetSemantics{}).navigationBarsPadding(),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+                if(activeOnly){
+                    val shown=threads.filter(::matches)
+                    if(shown.isEmpty())item{WorkspaceEmpty(pageFilter,search,true)}
+                    items(shown,key={it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false)}
+                }else{
+                    visible.forEach{project->
+                        val id=project.optString("projectId");val children=threads.filter{it.optString("projectId")==id}
+                        val open=id !in model.collapsedProjects||search.isNotBlank()||pageFilter!=WorkspaceFilter.ALL
+                        item(key="project:$id"){
+                            ProjectHeading(project,children.size,children.count{threadActivity(it)==ThreadActivity.RUNNING},children.count{threadActivity(it).waiting},open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})
+                        }
+                        if(open){
+                            val shown=children.filter{project.label().contains(search,true)||matches(it)}
+                            if(shown.isEmpty())item{Text("还没有对话，点 ＋ 开始",Modifier.padding(start=51.dp,top=8.dp,bottom=18.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                            items(shown,key={"project-chat:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,true)}
+                        }
+                        item(key="divider:$id"){Spacer(Modifier.height(8.dp))}
                     }
-                    if(open){
-                        val shown=children.filter{project.label().contains(search,true)||matches(it)}
-                        if(shown.isEmpty())item{Text("还没有对话，点 ＋ 开始",Modifier.padding(start=51.dp,top=8.dp,bottom=18.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-                        items(shown,key={"project-chat:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,true)}
+                    if(standalone.isNotEmpty()){
+                        item{Text("独立对话",Modifier.padding(horizontal=8.dp,vertical=8.dp),fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                        items(standalone,key={"independent:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false)}
                     }
-                    item(key="divider:$id"){Spacer(Modifier.height(8.dp))}
+                    if(visible.isEmpty()&&standalone.isEmpty())item{WorkspaceEmpty(pageFilter,search,false)}
                 }
-                if(standalone.isNotEmpty()){
-                    item{Text("独立对话",Modifier.padding(horizontal=8.dp,vertical=8.dp),fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-                    items(standalone,key={"independent:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false)}
-                }
-                if(visible.isEmpty()&&standalone.isEmpty())item{WorkspaceEmpty(filter,search,false)}
             }
         }
     }

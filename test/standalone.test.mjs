@@ -9,6 +9,43 @@ import { readFileSync } from 'node:fs';
 // Unit fixtures must never discover or subscribe to the user's real desktop.
 const fixtureAdapter = options => new StandaloneAdapter({ ipcPath: '/codex-pocket-tests/no-ipc.sock', runtimeCatalog: false, ...options });
 
+test('desktop visible projects override canonical rows, support empty results and retain aliases', async t => {
+  const server = new Server();
+  server.pages = async () => { throw new Error('must not query canonical projects'); };
+  let projects = [{ projectId: 'legacy-keep', canonicalProjectId: 'keep', label: '保留的项目' }];
+  const reader = { async connect() {}, async listProjects() { return { projects }; }, close() {} };
+  const adapter = fixtureAdapter({ server, catalog: false, projectReader: reader }); t.after(() => adapter.close());
+  assert.deepEqual((await adapter.listProjects()).projects, projects);
+  projects = []; assert.deepEqual((await adapter.listProjects()).projects, []);
+  reader.listProjects = async () => { throw new Error('desktop disconnected'); };
+  await assert.rejects(adapter.listProjects(), /desktop disconnected/);
+});
+
+test('desktop IPC failure uses the current sidebar state without resurrecting project/list rows', async t => {
+  const server = new Server();
+  server.pages = async () => { throw new Error('must not query canonical projects'); };
+  const reader = { async connect() { throw new Error('desktop disconnected'); }, close() {} };
+  const adapter = fixtureAdapter({ server, catalog: false, projectReader: reader }); t.after(() => adapter.close());
+  let projects = [{ projectId: 'keep', label: '保留的项目' }];
+  adapter.localCatalog = async () => ({ projectAuthority: 'desktop-state', projects });
+  assert.deepEqual((await adapter.listProjects()).projects, projects);
+  projects = []; assert.deepEqual((await adapter.listProjects()).projects, []);
+});
+
+test('project/list controls migrated project existence and keeps legacy aliases only for surviving projects', async t => {
+  const server = new Server(); const adapter = fixtureAdapter({ server, catalog: false }); t.after(() => adapter.close());
+  let values = [{ id: 'keep', name: '新名称', roots: [{ path: '/new-root' }] }];
+  server.pages = async method => { assert.equal(method, 'project/list'); return values; };
+  adapter.localCatalog = async () => ({ projectAuthority: 'canonical', projects: [
+    { projectId: 'legacy-keep', canonicalProjectId: 'keep', label: '旧名称' },
+    { projectId: 'legacy-removed', canonicalProjectId: 'removed' }
+  ] });
+  const projects = (await adapter.listProjects()).projects;
+  assert.equal(projects.length, 1); assert.equal(projects[0].projectId, 'legacy-keep');
+  assert.equal(projects[0].label, '新名称'); assert.equal(projects[0].path, '/new-root');
+  values = []; assert.deepEqual((await adapter.listProjects()).projects, []);
+});
+
 test('stdio connects without a caller chat, handles partial frames, paging, errors, timeouts and notifications', async t => {
   const client = new AppServerClient({ binary:process.execPath, env:{...process.env,CODEX_THREAD_ID:'private-thread',CODEX_APP_TOOLS_PIPE_PATH:'private-pipe'}, timeoutMs:1000, spawnProcess:(binary,args,opts)=>spawn(binary,['test/support/app-server-fixture.mjs'],opts) });
   t.after(()=>client.close()); await client.connect();

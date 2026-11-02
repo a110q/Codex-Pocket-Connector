@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -37,17 +39,19 @@ internal fun markdownParts(markwon:Markwon,text:String):List<MarkdownPart> = bui
     }
     flush()
 }
-@Composable internal fun MarkdownSpanned(content:Spanned,color:Int,linkColor:Int,modifier:Modifier=Modifier,alignment:Table.Alignment?=null,strong:Boolean=false){
-    AndroidView(modifier=modifier,factory={TextView(it).apply{
+@Composable internal fun MarkdownSpanned(content:Spanned,color:Int,linkColor:Int,modifier:Modifier=Modifier,alignment:Table.Alignment?=null,strong:Boolean=false,imageSupport:MarkdownImageSupport?=null){
+    var width by remember{mutableIntStateOf(1)}
+    val rendered=imageSpanned(content,imageSupport,width,LocalDensity.current.density)
+    AndroidView(modifier=modifier.fillMaxWidth().onSizeChanged{width=it.width},factory={TextView(it).apply{
         textSize=15.5f;includeFontPadding=false;setFallbackLineSpacing(false);setTextIsSelectable(true)
         movementMethod=android.text.method.LinkMovementMethod.getInstance()
         setLineHeight(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,25f,resources.displayMetrics).toInt())
     }},update={
-        it.setTextColor(color);it.setLinkTextColor(linkColor);it.text=content;it.setTypeface(null,if(strong)android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+        it.setTextColor(color);it.setLinkTextColor(linkColor);it.text=rendered;it.setTypeface(null,if(strong)android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
         it.gravity=when(alignment){Table.Alignment.CENTER->android.view.Gravity.CENTER_HORIZONTAL;Table.Alignment.RIGHT->android.view.Gravity.RIGHT;else->android.view.Gravity.LEFT}
     })
 }
-@Composable internal fun MarkdownTable(table:Table,color:Int,linkColor:Int){
+@Composable internal fun MarkdownTable(table:Table,color:Int,linkColor:Int,imageSupport:MarkdownImageSupport?=null){
     val rows=table.rows()
     val count=rows.maxOfOrNull{it.columns().size}?:0
     if(count==0)return
@@ -66,7 +70,7 @@ internal fun markdownParts(markwon:Markwon,text:String):List<MarkdownPart> = bui
                                 if(column>0)VerticalDivider()
                                 val cell=row.columns().getOrNull(column)
                                 Box(Modifier.width(widths[column]).fillMaxHeight().padding(horizontal=12.dp,vertical=10.dp)){
-                                    cell?.let{MarkdownSpanned(it.content(),color,linkColor,Modifier.fillMaxWidth(),it.alignment(),row.header())}
+                                    cell?.let{MarkdownSpanned(it.content(),color,linkColor,Modifier.fillMaxWidth(),it.alignment(),row.header(),imageSupport)}
                                 }
                             }
                         }
