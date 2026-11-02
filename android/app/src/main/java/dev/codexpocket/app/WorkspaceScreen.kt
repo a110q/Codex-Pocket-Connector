@@ -139,7 +139,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
                         val id=project.optString("projectId");val children=threads.filter{it.optString("projectId")==id}
                         val open=id !in model.collapsedProjects||search.isNotBlank()||pageFilter!=WorkspaceFilter.ALL
                         item(key="project:$id"){
-                            ProjectHeading(project,children.size,children.count{threadActivity(it)==ThreadActivity.RUNNING},children.count{threadActivity(it).waiting},open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})
+                            ProjectHeading(project,children.size,children.count{threadActivity(it)==ThreadActivity.RUNNING},children.count{threadActivity(it).waiting},children.count(model::hasUnseenCompletion),open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})
                         }
                         if(open){
                             val shown=children.filter{project.label().contains(search,true)||matches(it)}
@@ -164,7 +164,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
     EmptyState(title,if(search.isNotBlank())"试试其他关键词，或切换筛选。"else if(filter!=WorkspaceFilter.ALL)"状态变化后会自动显示在这里。"else"连接电脑后，项目与对话会同步到这里。")
 }
 
-@Composable private fun ProjectHeading(project:JSONObject,count:Int,running:Int,waiting:Int,open:Boolean,connected:Boolean,onToggle:()->Unit,onNew:()->Unit){
+@Composable private fun ProjectHeading(project:JSONObject,count:Int,running:Int,waiting:Int,completed:Int,open:Boolean,connected:Boolean,onToggle:()->Unit,onNew:()->Unit){
     var menu by remember{mutableStateOf(false)};var path by remember{mutableStateOf(false)}
     Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface,RoundedCornerShape(14.dp)).padding(start=10.dp),verticalAlignment=Alignment.CenterVertically){
         Row(Modifier.weight(1f).clickable(onClick=onToggle).heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
@@ -174,6 +174,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
             Spacer(Modifier.width(7.dp));Surface(shape=RoundedCornerShape(6.dp),color=MaterialTheme.colorScheme.surfaceVariant){Text("$count",Modifier.padding(horizontal=6.dp,vertical=1.dp),fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
             if(running>0){Spacer(Modifier.width(5.dp));ProjectActivityCount("$running 运行",if(connected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,"${project.label()}：$running 个运行中${if(connected)""else"，上次状态"}")}
             if(waiting>0){Spacer(Modifier.width(5.dp));ProjectActivityCount("$waiting 等待",if(connected)MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,"${project.label()}：$waiting 个等待处理${if(connected)""else"，上次状态"}")}
+            if(completed>0){Spacer(Modifier.width(6.dp));CompletionDot("${project.label()}：$completed 个任务刚完成，未查看")}
         }
         PocketAction("新增","在 ${project.label()} 中新开对话",connected,onNew)
         Box{
@@ -185,6 +186,10 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         }
     }
     if(path)AlertDialog(onDismissRequest={path=false},title={Text(project.label())},text={androidx.compose.foundation.text.selection.SelectionContainer{Text(project.optString("path").ifBlank{"桌面未提供项目路径"},fontSize=14.sp)}},confirmButton={TextButton(onClick={path=false}){Text("完成")}})
+}
+
+@Composable private fun CompletionDot(description:String){
+    Box(Modifier.size(8.dp).background(Color(0xFF2785F5),RoundedCornerShape(50)).semantics{contentDescription=description})
 }
 
 @Composable private fun ProjectActivityCount(text:String,color:Color,description:String){
@@ -220,6 +225,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         Surface(shape=RoundedCornerShape(12.dp),color=when{running&&model.connected->MaterialTheme.colorScheme.primaryContainer;activity.waiting&&model.connected->MaterialTheme.colorScheme.tertiaryContainer;else->Color.Transparent},modifier=Modifier.fillMaxWidth().combinedClickable(onClick={model.openThread(thread)},onLongClick={menu=true},onLongClickLabel="管理对话").semantics{contentDescription="${thread.label()}，${if(!model.connected&&activity.actionable)"上次状态："else""}${activity.label}"}){
             Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(horizontal=8.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
                 ThreadActivityMarker(activity,model.connected)
+                if(model.hasUnseenCompletion(thread)){Spacer(Modifier.width(4.dp));CompletionDot("${thread.label()}：任务已完成，未查看")}
                 Spacer(Modifier.width(8.dp));Text(thread.label(),Modifier.weight(1f),fontSize=14.sp,fontWeight=if(activity.inFlight)FontWeight.Medium else FontWeight.Normal,maxLines=1,overflow=TextOverflow.Ellipsis)
                 if(activity.actionable){Spacer(Modifier.width(8.dp));Text((if(model.connected)""else"上次")+activity.label,fontSize=11.sp,fontWeight=FontWeight.Medium,color=accent)}
                 else{val time=threadTime(thread);if(time.isNotBlank()){Spacer(Modifier.width(10.dp));Text(time,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}

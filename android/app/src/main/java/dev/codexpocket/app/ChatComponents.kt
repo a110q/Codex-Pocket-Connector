@@ -214,3 +214,23 @@ private fun executionState(message:JSONObject):ExecutionState {
         }
     }
 }
+
+@Composable internal fun LiveTaskProgress(activity:ThreadActivity,connected:Boolean,syncIssue:String?,messages:List<JSONObject>,onRefresh:()->Unit){
+    val running=connected&&activity==ThreadActivity.RUNNING
+    val last=messages.lastOrNull{it.optString("role")!="user"&&it.optString("type")!="queuedUserMessage"}
+    val executing=last?.takeIf{it.optString("status") in listOf("inProgress","running","active")}
+    val title=when{!connected->"等待重新连接";syncIssue!=null->"正在恢复实时同步";running&&executing!=null->"正在执行";running->"任务运行中";else->"正在同步最新内容"}
+    val detail=when{!connected->"当前显示已缓存的内容，连接后自动同步。";syncIssue!=null->syncIssue;executing!=null->executing.optString("title").ifBlank{"新的执行结果会自动显示。"};else->"电脑仍在处理，新的回复会自动显示。"}
+    Surface(Modifier.fillMaxWidth().semantics{contentDescription="任务实时进度"},color=PocketPalette.lavender.copy(alpha=.5f),shape=RoundedCornerShape(12.dp)){
+        Row(Modifier.padding(horizontal=12.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
+            if(connected)CircularProgressIndicator(Modifier.size(16.dp),strokeWidth=1.8.dp)
+            else CompositionLocalProvider(LocalContentColor provides PocketPalette.muted){PocketIcon("时钟",Modifier.size(16.dp))}
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(4.dp)){
+                Text(title,fontSize=13.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(detail,fontSize=12.sp,lineHeight=18.sp,color=PocketPalette.muted)
+            }
+            if(connected&&syncIssue!=null)TextButton(onClick=onRefresh){Text("刷新内容",fontSize=12.sp)}
+        }
+    }
+}

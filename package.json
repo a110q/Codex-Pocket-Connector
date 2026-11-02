@@ -1,6 +1,6 @@
 {
   "name": "codex-pocket",
-  "version": "0.9.15-4",
+  "version": "0.9.16",
   "private": true,
   "type": "module",
   "engines": {
@@ -20,6 +20,6 @@
     "qrcode": "1.5.4",
     "ws": "8.22.0"
   },
-  "pocketVersion": "0.9.15.4",
-  "pocketBuild": 47
+  "pocketVersion": "0.9.16",
+  "pocketBuild": 48
 }

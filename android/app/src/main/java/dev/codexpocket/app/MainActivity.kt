@@ -342,7 +342,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     val previewExpanded = (model.previewExpanded || editingAddress) && !previewCollapsed
     val browserFullscreen = previewExpanded && model.previewKind == "browser"
     BackHandler(enabled=browserFullscreen){focus.clearFocus();model.expandPreview(false)}
-    val requests=snapshot?.optJSONArray("requests").objects();val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=!activeId.isNullOrBlank()&&activeId!="null"
+    val requests=snapshot?.optJSONArray("requests").objects();val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=activity.inFlight&&(!activeId.isNullOrBlank()&&activeId!="null")
     val settings=snapshot?.optJSONObject("thread")?.optJSONObject("settings")?:JSONObject()
     val history=snapshot?.optJSONObject("history")
     val historyNotice=history!=null||history?.optBoolean("hasEarlier")==true||(snapshot!=null&&snapshot.optBoolean("historyComplete")!=true)||snapshot?.optString("source")=="desktop-history-summary"
@@ -356,6 +356,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         }
         if(artifacts.isNotEmpty()||changes!=null)add("artifacts")
         requests.forEach{add("approval:"+it.optString("id"))}
+        if(activity==ThreadActivity.RUNNING||model.chatSyncIssue!=null)add("task-progress")
         if(taskFailed)add("task-error")
     }
     var initialScroll by remember{mutableStateOf(false)}
@@ -400,7 +401,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
             if(load)loadHistory()
         }
     }
-    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind,rowKeys.size){
+    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind,rowKeys.size,activity,model.chatSyncIssue){
         if(lastScrollRequest!=model.scrollRequest){lastScrollRequest=model.scrollRequest;followLatest=true}
         if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){
             list.scrollToItem(rowKeys.lastIndex.coerceAtLeast(0));initialScroll=true
@@ -474,6 +475,9 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
                 key(thread.optString("id")){ChatDeliverables(artifacts,changes,model.connected,onPreview={file->focus.clearFocus();model.preview(file)},onAll={focus.clearFocus();showResults=true})}
             }
             if(!browserFullscreen)items(requests,key={"approval:"+it.optString("id")}){ApprovalCard(it,model)}
+            if(activity==ThreadActivity.RUNNING||model.chatSyncIssue!=null)item(key="task-progress"){
+                LiveTaskProgress(activity,model.connected,model.chatSyncIssue,messages){model.refreshSelectedSnapshot(force=true)}
+            }
             if(taskFailed)item(key="task-error"){TaskErrorCard(taskError){message->model.showMessage(message,if(message.optBoolean("hasDetail"))"detail"else"text")}}
 
         }

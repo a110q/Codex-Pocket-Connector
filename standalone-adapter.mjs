@@ -346,10 +346,10 @@ export class StandaloneAdapter extends DesktopAdapter {
       // The existing desktop remains the owner; never resume its running turn
       // in a second app-server merely to read or send a message.
       const owner = options.owner ?? await this.desktopOwner(threadId, args.hostId);
-      if (owner) try { return await super.readThread(args, { ...options, owner, liveOnly: true }); } catch (error) { if (options.liveOnly) throw error; }
+      if (owner) try { return { ...await super.readThread(args, { ...options, ...(args.tailOnly === true ? { loadHistory: false } : {}), owner, liveOnly: true }), live: true }; } catch (error) { if (options.liveOnly) throw error; }
       else if (options.liveOnly) throw this.ownerUnavailable(threadId);
     }
-    return { ...normalizeSnapshot(await this.storedState(threadId)), tokenUsage:this.extensions.tokens.get(threadId)??null, source: 'codex-app-server', live: true };
+    return { ...normalizeSnapshot(await this.storedState(threadId)), tokenUsage:this.extensions.tokens.get(threadId)??null, source: 'codex-app-server', live: this.ownedThreads.has(threadId), ...(!this.ownedThreads.has(threadId) ? { liveUnavailable: '实时记录暂未同步，正在自动重试' } : {}) };
   }
   async readServerQueuedMessages(threadId, hostId) {
     if (!this.ready || hostId !== 'local' || this.serverQueueUnsupported) return null;

@@ -518,3 +518,15 @@ test('recovering another owner never closes a socket while a delivery is still a
   await assert.rejects(a.sendMessage({ threadId: 'qa', text: 'draft' }), e => e.notSubmitted && e.code === 'DESKTOP_OWNER_UNAVAILABLE');
   assert.equal(closes, 0);
 });
+
+test('stored desktop fallback reports loss of live subscription and a later read recovers it', async t => {
+  const server=new Server(),a=fixtureAdapter({server,catalog:false});t.after(()=>a.close());a.ready=true;
+  a.desktopOwner=async()=> 'desktop-owner';
+  const prototype=Object.getPrototypeOf(StandaloneAdapter.prototype),original=prototype.readThread;let available=false;
+  prototype.readThread=async function(args,options){assert.equal(options.loadHistory,false);if(!available)throw Error('snapshot timed out');return {thread:{id:'qa',status:'active'},messages:[{id:'fresh',text:'new reply'}],source:'desktop-live'};};
+  try{
+    const stored=await a.readThread({threadId:'qa',tailOnly:true});assert.equal(stored.live,false);assert.equal(stored.source,'codex-app-server');assert.match(stored.liveUnavailable,/自动重试/);
+    available=true;const live=await a.readThread({threadId:'qa',tailOnly:true});assert.equal(live.live,true);assert.equal(live.messages[0].text,'new reply');
+    assert(!server.calls.some(c=>c.method==='thread/resume'));
+  }finally{prototype.readThread=original}
+});

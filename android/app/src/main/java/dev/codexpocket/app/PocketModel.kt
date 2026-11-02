@@ -47,6 +47,14 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     var models by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var snapshot by mutableStateOf(saved.optJSONObject("snapshot")); private set
     var selected by mutableStateOf<JSONObject?>(null); private set
+    private var completedChats by mutableStateOf(saved.optJSONArray("completedChats")?.let{a->(0 until a.length()).map{a.getString(it)}.toSet()}.orEmpty())
+    fun hasUnseenCompletion(thread:JSONObject)=threadIdentity(thread) in completedChats
+    private fun observeCompletion(previous:JSONObject?,next:JSONObject){
+        val key=threadIdentity(next);val activity=threadActivity(next)
+        val viewing=foreground&&selected?.let(::threadIdentity)==key
+        if(activity.inFlight||viewing)completedChats=completedChats-key
+        else if(previous!=null&&threadActivity(previous).inFlight&&activity==ThreadActivity.IDLE&&next.optString("lastTurnStatus") !in listOf("interrupted","stopped","cancelled"))completedChats=completedChats+key
+    }
     private val threadBackStack = mutableListOf<Pair<JSONObject,JSONObject?>>()
     var error by mutableStateOf<String?>(null)
     var notice by mutableStateOf<String?>(null)
@@ -222,11 +230,12 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             saved.put("outgoingFiles",JSONObject().also{obj->outgoingFiles.forEach{(key,files)->obj.put(key,JSONArray(files.map{it.json()}))}})
             saved.put("outgoingImages",JSONObject().also{obj->outgoing.forEach{(key,images)->obj.put(key,JSONArray(images.map{it.json()}))}})
             saved.put("timelineFormat", 3).put("profile", profile ?: JSONObject.NULL).put("threads", JSONArray(threads)).put("snapshot", snapshot ?: JSONObject.NULL)
+                .put("completedChats",JSONArray(completedChats.toList()))
                 .put("pending", pendingOperation ?: JSONObject.NULL).put("drafts", JSONObject(drafts.entries)).put("projects", JSONArray(projects)).put("appearance", appearance)
             saved.remove("draft")
             profile?.let{p->
                 computers=computers.filter{it.optString("hostId")!=p.optString("hostId")}+JSONObject(p.toString())
-                val cache=JSONObject();listOf("threads","projects","snapshot","pending","drafts","outgoingImages","outgoingFiles","referenceDrafts").forEach{cache.put(it,saved.opt(it))};computerStates.put(p.getString("hostId"),cache)
+                val cache=JSONObject();listOf("threads","projects","snapshot","pending","drafts","outgoingImages","outgoingFiles","referenceDrafts","completedChats").forEach{cache.put(it,saved.opt(it))};computerStates.put(p.getString("hostId"),cache)
             }
             saved.put("computers",JSONArray(computers)).put("computerStates",computerStates)
             saved.put("pendingScan",pendingScannedPair?:JSONObject.NULL)
@@ -237,6 +246,9 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         cacheWrite?.let(handler::removeCallbacks)
         cacheWrite = Runnable { persist() }.also { handler.postDelayed(it, 1000) }
     }
+    var chatSyncIssue by mutableStateOf<String?>(null); private set
+    private var chatSyncRequest:Any?=null
+    private var lastChatSnapshotAt=0L
     private var taskPolling:Job?=null
     private var catalogPolling:Job?=null
     private var threadListRequest:Any?=null
@@ -255,7 +267,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 if(catalogPolling?.isActive!=true)catalogPolling=scope.launch{
                     // Only fetch summaries. Opening every chat would download its
                     // history and make the list increasingly expensive to refresh.
-                    while(isActive&&foreground){delay(5000);if(connected){refreshThreads();refreshProjects()}}
+                    while(isActive&&foreground){delay(5000);if(connected){refreshThreads();refreshProjects();refreshSelectedSnapshot()}}
                 }
                 if(taskPolling?.isActive!=true)taskPolling=scope.launch{
                     val peer=JSONObject(profile!!.toString());val poller=TaskComputerPoller(context,peer)
@@ -270,7 +282,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     fun stop() {
         closePreview();resetHistoryRequest()
-        foreground = false; reconnect?.let(handler::removeCallbacks); reconnect = null
+        foreground = false; chatSyncRequest=null; reconnect?.let(handler::removeCallbacks); reconnect = null
         cacheWrite?.let(handler::removeCallbacks);cacheWrite=null
         receiptPolling?.cancel();receiptPolling=null
         if(pendingOperation!=null)busy=false
@@ -319,6 +331,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         profile=next?.let{JSONObject(it.toString())};account?.let{profile?.put("accountToken",it.token)}
         val cache=next?.let{computerStates.optJSONObject(it.optString("hostId"))}?:JSONObject()
         threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
+        completedChats=cache.optJSONArray("completedChats")?.let{a->(0 until a.length()).map{a.getString(it)}.toSet()}.orEmpty()
         referenceDrafts=cache.optJSONObject("referenceDrafts")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key)?.let{a->(0 until a.length()).map{a.getString(it)}}.orEmpty()}}.orEmpty()
         drafts=DraftBook(cache.optJSONObject("drafts")?.let{obj->obj.keys().asSequence().associateWith{obj.optString(it)}}.orEmpty())
         outgoing=cache.optJSONObject("outgoingImages")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key).objects().mapNotNull{try{OutgoingImage.restore(it).takeIf{image->File(image.path).isFile}}catch(_:Exception){null}}}}.orEmpty()
@@ -380,7 +393,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             attempts.put(next.getString("hostId"),JSONObject().put("pairCode",next.getString("pairCode")).put("mobileToken",next.getString("mobileToken")));saved.put("pairAttempts",attempts)
             next.put("approved", false)
             persist();cacheWrite?.let(handler::removeCallbacks);cacheWrite=null;pairingJob?.cancel();pairingJob=null;reconnect?.let(handler::removeCallbacks);reconnect=null;connection?.close(); connection = null; connected = false;scope.cancel();pairingRequest=null;taskPolling=null;scope=CoroutineScope(SupervisorJob()+Dispatchers.Main)
-            closePreview(); closeMessage(); threadBackStack.clear(); threads = emptyList(); projects = emptyList(); models = emptyList(); snapshot = null; selected = null; drafts = DraftBook(); outgoing=emptyMap()
+            closePreview(); closeMessage(); threadBackStack.clear(); threads = emptyList(); projects = emptyList(); models = emptyList(); snapshot = null; selected = null; completedChats=emptySet(); drafts = DraftBook(); outgoing=emptyMap()
             computerGeneration++;supportsFileLinks=false;supportsHtmlPreview=false;resetHistoryRequest();supportsReceipts=false;receiptPolling?.cancel();receiptPolling=null
             profile = next;messageImages=MessageImageLoader(context,next.getString("hostId")); pairing = true; error = null; persist()
             TaskMonitorService.releaseUi(context,this)
@@ -485,8 +498,11 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                         reconcileSummaryRuntime(if(update==null)thread else mergeSummary(thread,update.metadata))
                     }
                 if(refreshed.size!=threads.size||refreshed.zip(threads).any{(next,old)->next.toString()!=old.toString()}){
+                    val previous=threads.associateBy(::threadIdentity)
+                    refreshed.forEach{observeCompletion(previous[threadIdentity(it)],it)}
                     threads=refreshed
                     selected?.let{current->threads.find{threadIdentity(it)==threadIdentity(current)}?.let{selected=mergeSummary(current,it)}}
+                    if(syncOpenThreadRuntime())refreshSelectedSnapshot(force=true)
                     persistSoon()
                 }
             }
@@ -503,7 +519,32 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             changed=updateThreadSummary(JSONObject().put("thread",thread).put("source",event.optString("source","desktop-runtime"))
                 .put("streamId",event.optString("streamId")).put("revision",event.opt("revision")?:JSONObject.NULL))||changed
         }
+        val refreshOpenChat=syncOpenThreadRuntime()
         if(changed)persistSoon()
+        if(refreshOpenChat)refreshSelectedSnapshot(force=true)
+    }
+    private fun syncOpenThreadRuntime():Boolean{
+        var changed=false
+        snapshot?.let { current->
+            val metadata=current.optJSONObject("thread")
+            if(metadata!=null&&selected?.let(::threadIdentity)==threadIdentity(metadata)) {
+                summaryRuntime[threadIdentity(metadata)]?.let{runtime->
+                    // The open chat must consume the same authoritative status
+                    // as the sidebar, including completion without text deltas.
+                    val merged=mergeSnapshotRuntime(metadata,runtime)
+                    if(merged!==metadata){
+                        changed=threadActivity(metadata)!=threadActivity(merged)
+                        snapshot=JSONObject(current.toString()).put("thread",merged)
+                    }
+                }
+            }
+        }
+        return changed
+    }
+    private fun mergeSnapshotRuntime(previous:JSONObject,metadata:JSONObject):JSONObject{
+        val merged=mergeSummary(previous,metadata)
+        if(threadActivity(previous).inFlight&&threadActivity(metadata).inFlight&&!metadata.has("activeTurnId")&&previous.has("activeTurnId"))merged.put("activeTurnId",previous.opt("activeTurnId"))
+        return merged
     }
     private fun mergeSummary(previous:JSONObject,metadata:JSONObject)=JSONObject(previous.toString()).also{merged->
         // Runtime fields form one observation. In particular an idle catalog
@@ -540,21 +581,51 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         (runtimeFields+listOf("updatedAt","recencyAt")).forEach{field->if(normalized.has(field))metadata.put(field,normalized.opt(field))}
         thread.optString("title").takeIf{it.isNotBlank()&&it!="null"&&it!="Untitled"}?.let{metadata.put("title",it)}
         summaryUpdates[key]=SummaryUpdate(metadata,++summaryVersion,source,stream,revision)
-        threads=threads.map{if(threadIdentity(it)==key)mergeSummary(it,metadata)else it}
+        threads=threads.map{if(threadIdentity(it)==key)mergeSummary(it,metadata).also{next->observeCompletion(it,next)}else it}
         selected?.takeIf{threadIdentity(it)==key}?.let{selected=mergeSummary(it,metadata)}
         return true
     }
     fun openThread(thread: JSONObject) {
-        if(selected?.optString("id")!=thread.optString("id")){closeMessage();resetHistoryRequest()}
+        if(selected?.optString("id")!=thread.optString("id")){closeMessage();resetHistoryRequest();chatSyncRequest=null;chatSyncIssue=null;lastChatSnapshotAt=0L}
         if (selected?.optString("id") != thread.optString("id")) closePreview()
         if (selected?.optString("id") != thread.optString("id")) error = null
         selected = thread
+        completedChats=completedChats-threadIdentity(thread);persistSoon()
         if (snapshot?.optJSONObject("thread")?.optString("id") != thread.optString("id")) snapshot = null
         if (!connected) return
         loadingThread = true
+        val version=summaryVersion;val computer=computerGeneration
         request("thread.read", JSONObject().put("threadId", thread.getString("id")).put("hostId", thread.optString("hostId", "local"))) { r, e ->
-            if (selected?.optString("id") != thread.optString("id")) return@request
-            loadingThread = false; if (e != null) error = e else { r?.let { acceptSnapshot(it) }; persistSoon() }
+            if (computerGeneration!=computer||selected?.let(::threadIdentity)!=threadIdentity(thread)) return@request
+            loadingThread = false; if (e != null) error = e else { r?.let { acceptSnapshot(reconcileReadSnapshot(it,version)) }; persistSoon() }
+        }
+    }
+    // A stored fallback is readable but has no live subscription. Re-read only
+    // the selected chat after silence, retry sequentially, and stop in background.
+    fun refreshSelectedSnapshot(force:Boolean=false) {
+        val thread=selected?:return
+        val current=snapshot
+        if(!foreground||!connected||loadingThread||loadingHistory||chatSyncRequest!=null)return
+        val activity=threadActivity(current?.optJSONObject("thread")?:thread,current?.optJSONArray("requests"))
+        val degraded=current?.optBoolean("live",true)==false||chatSyncIssue!=null
+        if(!force&&!degraded&&(!activity.inFlight||System.currentTimeMillis()-lastChatSnapshotAt<5000))return
+        val token=Any();val computer=computerGeneration;val identity=threadIdentity(thread);val version=summaryVersion
+        chatSyncRequest=token
+        request("thread.read",JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")).put("tailOnly",true)){r,e->
+            if(chatSyncRequest!==token||computerGeneration!=computer||selected?.let(::threadIdentity)!=identity)return@request
+            chatSyncRequest=null
+            if(e!=null){chatSyncIssue="实时内容同步暂未恢复，正在自动重试";connectionLog.record("chat.sync.retry")}else if(r!=null){acceptSnapshot(reconcileReadSnapshot(r,version,preserveRuntime=true));persistSoon()}
+        }
+    }
+    private fun reconcileReadSnapshot(value:JSONObject,version:Long,preserveRuntime:Boolean=false):JSONObject{
+        val thread=value.optJSONObject("thread")?:return value
+        val key=threadIdentity(thread);val update=summaryUpdates[key]
+        // Desktop runtime is authoritative for owner conversations; a read can
+        // return older stored content even when it began after completion.
+        val metadata=if(preserveRuntime)summaryRuntime[key] else update?.takeIf{it.source=="desktop-runtime"||it.version>version}?.metadata
+        if(metadata==null)return value
+        return JSONObject(value.toString()).put("thread",mergeSnapshotRuntime(thread,metadata)).also{
+            if(!threadActivity(metadata).inFlight)it.put("requests",JSONArray())
         }
     }
     private fun acceptSnapshot(next: JSONObject, olderPage: Boolean = false) {
@@ -576,6 +647,10 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         accepted.put("messages", JSONArray(merged.map { it.value }))
         accepted.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }
         snapshot = accepted
+        if(!olderPage){
+            lastChatSnapshotAt=System.currentTimeMillis()
+            chatSyncIssue=if(accepted.optBoolean("live",true))null else "当前显示历史记录，正在恢复实时同步"
+        }
         if(!olderPage)updateThreadSummary(accepted)
         if(!olderPage)profile?.let{TaskNotifications.observe(context,it,accepted,false)}
     }
@@ -824,7 +899,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         pairingRequest?.cancel();pairingRequest=null
         computerGeneration++;supportsFileLinks=false;supportsHtmlPreview=false;resetHistoryRequest();supportsReceipts=false;pendingCompletion=null;pendingStatus=""
         scope.cancel();scope=CoroutineScope(SupervisorJob()+Dispatchers.Main);busy=false
-        stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; outgoing=emptyMap();outgoingFiles=emptyMap();pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
+        stop(); threadBackStack.clear(); closeMessage(); profile = null; snapshot = null; selected = null; completedChats=emptySet(); threads = emptyList(); projects = emptyList(); models = emptyList(); drafts = DraftBook(); pendingOperation = null; outgoing=emptyMap();outgoingFiles=emptyMap();pairing = false; status = "尚未连接电脑"; saved = JSONObject(); persist()
         computers=emptyList();computerStates=JSONObject();pendingScannedPair=null;persist()
     }
     suspend fun chunk(threadId: String, artifactId: String, offset: Long): JSONObject = suspendCancellableCoroutine { continuation ->

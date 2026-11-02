@@ -119,6 +119,83 @@ class ThreadStatusTest {
         context.contentResolver.openOutputStream(uri)!!.use { instrumentation.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    @Test fun openedChatConsumesRuntimeCompletionAndShowsProgressWhileOutputIsQuiet(){
+        start()
+        compose.runOnUiThread{model.openThread(catalog.first{it.getString("id")=="run"})}
+        until{!model.loadingThread&&model.snapshot!=null}
+        compose.setContent{PocketTheme("light"){ChatScreen(model)}}
+        compose.onNodeWithContentDescription("任务实时进度").assertIsDisplayed()
+        peer.event(runtimeEvent(10,"idle","active"))
+        until{threadActivity(model.snapshot!!.getJSONObject("thread"))==ThreadActivity.IDLE}
+        compose.onNodeWithContentDescription("任务实时进度").assertDoesNotExist()
+    }
+    @Test fun storedFallbackRecoversWithoutReopeningChatAndStopsPollingInBackground(){
+        var restored=false
+        peer.extra={action,args->when(action){
+            "threads.list"->JSONObject().put("threads",JSONArray(catalog))
+            "projects.list"->JSONObject().put("projects",JSONArray().put(JSONObject().put("projectId","pocket")).put(JSONObject().put("projectId","web")))
+            "thread.read"->data(args.getString("threadId"),"active",if(restored)2 else 1).put("live",restored)
+                .put("source",if(restored)"desktop-live"else"codex-app-server")
+                .put("messages",JSONArray().put(JSONObject().put("id","reply").put("key","t:reply").put("turnId","t").put("role","assistant").put("text",if(restored)"新的实时回复已恢复"else"旧的历史回复")))
+            else->null
+        }}
+        start();compose.runOnUiThread{model.openThread(catalog.first{it.getString("id")=="run"})}
+        until{model.chatSyncIssue!=null&&!model.loadingThread}
+        restored=true
+        until(10000){model.chatSyncIssue==null&&model.snapshot!!.getJSONArray("messages").getJSONObject(0).optString("text")=="新的实时回复已恢复"}
+        Assert.assertTrue(peer.actions.count{it=="thread.read"}>=2)
+        compose.runOnUiThread{model.stop()};val reads=peer.actions.count{it=="thread.read"}
+        Thread.sleep(5500);Assert.assertEquals(reads,peer.actions.count{it=="thread.read"})
+    }
+    @Test fun listCompletionUpdatesOpenChatAndStaleContentReadCannotReviveRunning(){
+        val original=peer.extra
+        peer.extra={action,args->if(action=="thread.read")data(args.getString("threadId"),"active",1).also{it.getJSONObject("thread").put("activeTurnId","old-turn")}else original?.invoke(action,args)}
+        start();compose.runOnUiThread{model.openThread(catalog.first{it.getString("id")=="run"})}
+        until{!model.loadingThread&&model.snapshot!=null}
+        Assert.assertEquals("old-turn",model.snapshot!!.getJSONObject("thread").optString("activeTurnId"))
+        peer.event(runtimeEvent(1))
+        until{activity("run")==ThreadActivity.RUNNING}
+        Assert.assertEquals("停止任务需要保留当前轮次标识","old-turn",model.snapshot!!.getJSONObject("thread").optString("activeTurnId"))
+        catalog=catalog.map{JSONObject(it.toString()).put("status","idle")}
+        until(12000){activity("run")==ThreadActivity.IDLE&&threadActivity(model.snapshot!!.getJSONObject("thread"))==ThreadActivity.IDLE}
+        compose.runOnUiThread{model.refreshSelectedSnapshot(force=true)}
+        Thread.sleep(600);compose.waitForIdle()
+        Assert.assertEquals(ThreadActivity.IDLE,threadActivity(model.snapshot!!.getJSONObject("thread")))
+    }
+    @Test fun completionDotsSurviveRestartShowOnCollapsedProjectsAndClearOnlyWhenRead(){
+        start();val displayed=mutableStateOf(model)
+        compose.setContent{PocketTheme("light"){PocketApp(displayed.value,{},null,{})}}
+        Assert.assertFalse(model.hasUnseenCompletion(catalog.first{it.getString("id")=="idle"}))
+        push("run","idle",2)
+        until{model.hasUnseenCompletion(catalog.first{it.getString("id")=="run"})}
+        compose.onNodeWithContentDescription("重构手机工作空间：任务已完成，未查看",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithText("codex_android").performClick()
+        compose.onNodeWithContentDescription("codex_android：1 个任务刚完成，未查看",useUnmergedTree=true).assertIsDisplayed()
+        screenshot("completion-dot-collapsed")
+        compose.runOnUiThread{model.stop();model=PocketModel(context,filename);displayed.value=model;model.start()}
+        until{model.connected&&model.threads.size==5}
+        Assert.assertTrue("完成提示重启后丢失",model.hasUnseenCompletion(catalog.first{it.getString("id")=="run"}))
+        screenshot("completion-dot-list")
+        compose.onNodeWithContentDescription("重构手机工作空间，可继续").performClick()
+        until{model.selected?.optString("id")=="run"&&!model.loadingThread}
+        Assert.assertFalse(model.hasUnseenCompletion(catalog.first{it.getString("id")=="run"}))
+        compose.runOnUiThread{model.stop();model=PocketModel(context,filename)}
+        Assert.assertFalse("已查看状态没有持久化",model.hasUnseenCompletion(catalog.first{it.getString("id")=="run"}))
+    }
+    @Test fun completionWhileViewingDoesNotLeaveUnreadDotButBackgroundCompletionDoes(){
+        start()
+        compose.runOnUiThread{model.openThread(catalog.first{it.getString("id")=="run"})}
+        until{!model.loadingThread&&model.snapshot!=null}
+        push("run","idle",2)
+        until{activity("run")==ThreadActivity.IDLE}
+        Assert.assertFalse(model.hasUnseenCompletion(catalog.first{it.getString("id")=="run"}))
+        push("run","active",3);until{activity("run")==ThreadActivity.RUNNING}
+        compose.runOnUiThread{model.stop()}
+        catalog=catalog.map{JSONObject(it.toString()).put("status","idle")}
+        compose.runOnUiThread{model=PocketModel(context,filename);model.start()}
+        until{model.connected&&activity("run")==ThreadActivity.IDLE}
+        Assert.assertTrue("后台完成必须提示",model.hasUnseenCompletion(catalog.first{it.getString("id")=="run"}))
+    }
     @Test fun leftMarkersProjectCountsAndLiveCompletionStayInSync() {
         start(); show()
         compose.onNodeWithContentDescription("重构手机工作空间，运行中").assertIsDisplayed()

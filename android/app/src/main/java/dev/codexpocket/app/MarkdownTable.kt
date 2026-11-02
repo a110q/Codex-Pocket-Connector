@@ -2,6 +2,8 @@ package dev.codexpocket.app
 
 import android.text.Spanned
 import android.widget.TextView
+import android.content.Context
+import android.view.View.MeasureSpec
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -39,10 +41,24 @@ internal fun markdownParts(markwon:Markwon,text:String):List<MarkdownPart> = bui
     }
     flush()
 }
+// Lazy prefetch may measure an AndroidView at a different width before placing
+// it in its final Compose bounds. Rebuild TextView's cached text layout at the
+// placed width, including its height, instead of drawing the narrow cache.
+internal class MarkdownTextView(context:Context):TextView(context){
+    override fun onLayout(changed:Boolean,left:Int,top:Int,right:Int,bottom:Int){
+        super.onLayout(changed,left,top,right,bottom)
+        val available=right-left-compoundPaddingLeft-compoundPaddingRight
+        if(available>0&&layout!=null&&layout.width!=available){
+            super.onMeasure(MeasureSpec.makeMeasureSpec(right-left,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(0,MeasureSpec.UNSPECIFIED))
+            super.onLayout(true,left,top,right,bottom)
+            requestLayout()
+        }
+    }
+}
 @Composable internal fun MarkdownSpanned(content:Spanned,color:Int,linkColor:Int,modifier:Modifier=Modifier,alignment:Table.Alignment?=null,strong:Boolean=false,imageSupport:MarkdownImageSupport?=null){
     var width by remember{mutableIntStateOf(1)}
     val rendered=imageSpanned(content,imageSupport,width,LocalDensity.current.density)
-    AndroidView(modifier=modifier.fillMaxWidth().onSizeChanged{width=it.width},factory={TextView(it).apply{
+    AndroidView(modifier=modifier.fillMaxWidth().onSizeChanged{width=it.width},factory={MarkdownTextView(it).apply{
         textSize=15.5f;includeFontPadding=false;setFallbackLineSpacing(false);setTextIsSelectable(true)
         movementMethod=android.text.method.LinkMovementMethod.getInstance()
         setLineHeight(android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,25f,resources.displayMetrics).toInt())

@@ -330,7 +330,11 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
               catch (error) { throw Object.assign(error, { notSubmitted: true }); }
             }
             const result = await adapter.call(payload.action, args);
-            return payload.action === 'thread.read' ? history.put(files.decorate(result)) : result;
+            if(payload.action==='thread.read') {
+              connectionLog('chat.snapshot', { source:result.source, live:result.live!==false, revision:result.revision??null, messages:result.messages?.length??0 });
+              return history.put(files.decorate(result));
+            }
+            return result;
           }, payload.action === 'message.send' && adapter.confirmMessage ? () => adapter.confirmMessage({ ...payload.args, clientUserMessageId: payload.id }) : undefined);
           if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, result: result ?? {} });
         } catch (e) { if (link.isCurrent(socket) && channel === requestChannel) send({ type: 'response', id: payload.id, error: e.message, uncertain: !!e.uncertain }); }
