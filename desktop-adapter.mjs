@@ -10,6 +10,11 @@ import { findDesktopEndpoints } from './platform.mjs';
 
 // This adapter targets the installed desktop build. Its IPC is private and may
 // change in later releases; incompatible stream versions fail closed.
+// Receive compatibility is separate from the version of snapshots we publish
+// as an owner. Do not accept arbitrary future versions or change outgoing RPCs.
+export const SUPPORTED_DESKTOP_STREAM_VERSIONS = Object.freeze([11, 13]);
+export const supportsDesktopStreamVersion = version => SUPPORTED_DESKTOP_STREAM_VERSIONS.includes(version);
+const STREAM_COMPATIBILITY_ERROR = '电脑会话接口版本暂不支持，请更新电脑连接器后重启。';
 const VERSIONS = Object.freeze({
   'thread-owner-discovery': 1,
   'thread-follower-start-turn': 2,
@@ -457,7 +462,7 @@ export class DesktopAdapter extends EventEmitter {
     this.ready = false; this.tools = []; this.ipc = null; this.appTools = null; this.connecting = null; this.incompatible = false;
   }
   async connect() {
-    if (this.incompatible) throw new Error('Desktop stream version changed; update and restart the companion.');
+    if (this.incompatible) throw new Error(STREAM_COMPATIBILITY_ERROR);
     if (this.ready) return this.diagnostics();
     if (this.connecting) return this.connecting;
     this.connecting = this.connectDesktop();
@@ -622,14 +627,16 @@ export class DesktopAdapter extends EventEmitter {
       return;
     }
     if (message.method !== 'thread-stream-state-changed') return;
-    if (message.version !== VERSIONS[message.method]) {
-      this.incompatible = true; this.close();
-      this.emit('event', { type: 'desktop.incompatible', error: 'Desktop stream version changed; update and restart the companion.' }); return;
-    }
-    const { hostId, conversationId, change } = message.params;
+    const { hostId, conversationId, change } = message.params ?? {};
     const key = `${hostId}:${conversationId}`;
     const sub = this.subscriptions.get(key);
     if (!sub || (sub.owner && sub.owner !== message.sourceClientId)) return;
+    // Unrelated broadcasts (including another owner's unsupported version)
+    // must not disable this connector. Fail closed only for a followed owner.
+    if (!supportsDesktopStreamVersion(message.version)) {
+      this.incompatible = true; this.close();
+      this.emit('event', { type: 'desktop.incompatible', error: STREAM_COMPATIBILITY_ERROR }); return;
+    }
     const current = this.snapshots.get(key);
     try {
       if (!Number.isSafeInteger(change.revision)) throw new Error('Invalid desktop stream revision');

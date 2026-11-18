@@ -140,11 +140,44 @@ test('approval rejects stale requests and unsupported decisions without writing'
 
 test('incompatible live stream disables all actions until a companion update', async () => {
   const adapter = new DesktopAdapter(); adapter.ready = true; const events = []; adapter.on('event', event => events.push(event));
-  adapter.handleIpc({ type: 'broadcast', method: 'thread-stream-state-changed', version: 999, params: {} });
+  adapter.subscriptions.set('local:t', { threadId:'t', hostId:'local', owner:'owner' });
+  adapter.handleIpc({ type: 'broadcast', method: 'thread-stream-state-changed', version: 999, sourceClientId:'owner', params: {hostId:'local',conversationId:'t'} });
   assert.equal(events[0].type, 'desktop.incompatible'); assert.equal(adapter.snapshots.size, 0);
   assert.equal(adapter.ready, false);
   await assert.rejects(adapter.call('message.send', { threadId: 't', text: 'Never deliver' }), /disconnected/);
-  await assert.rejects(adapter.connect(), /update and restart/);
+  await assert.rejects(adapter.connect(), /更新电脑连接器后重启/);
+});
+
+test('unsupported broadcasts outside the followed owner cannot disconnect the connector', t => {
+  const adapter = new DesktopAdapter(); t.after(() => adapter.close()); adapter.ready = true;
+  adapter.subscriptions.set('local:t', { threadId:'t', hostId:'local', owner:'owner' });
+  const events = []; adapter.on('event', event => events.push(event));
+  const message = {type:'broadcast',method:'thread-stream-state-changed',version:999,sourceClientId:'owner',params:{hostId:'local',conversationId:'unfollowed'}};
+  adapter.handleIpc(message);
+  adapter.handleIpc({...message,params:{hostId:'local',conversationId:'t'},sourceClientId:'other'});
+  adapter.handleIpc({...message,params:null});
+  assert.equal(adapter.ready,true); assert.equal(adapter.incompatible,false); assert.equal(events.length,0);
+});
+
+for (const version of [11,13]) test(`v${version} opening a desktop chat receives snapshot and 34 patches without disconnecting`, async t => {
+  const adapter = new DesktopAdapter({streamThrottleMs:1}); t.after(() => adapter.close()); adapter.ready = true;
+  adapter.owner = async () => 'owner'; adapter.refreshQueuedMessages = async () => {}; adapter.watchQueuedMessages = () => {};
+  const disconnected = []; adapter.on('event', event => { if(event.type.startsWith('desktop.'))disconnected.push(event); });
+  const send = change => adapter.handleIpc({type:'broadcast',method:'thread-stream-state-changed',version,sourceClientId:'owner',params:{hostId:'local',conversationId:'t',change}});
+  const state = {id:'t',threadRuntimeStatus:{type:'active',activeFlags:[]},turns:[{turnId:'turn',status:'inProgress',items:[{id:'a',type:'agentMessage',text:'开始'}]}]};
+  adapter.broadcast = (method, params) => {
+    assert.equal(method,'thread-stream-following-changed');
+    if(params.following)queueMicrotask(() => send({type:'snapshot',revision:1,conversationState:state}));
+  };
+  const initial = await adapter.readThread({threadId:'t'}, {liveOnly:true,loadHistory:false});
+  assert.equal(initial.messages[0].text,'开始'); assert.equal(initial.thread.status,'active');
+  for(let revision=2;revision<=35;revision++) send({type:'patches',baseRevision:revision-1,revision,patches:[
+    {op:'replace',path:['turns',0,'items',0,'text'],value:`内容 ${revision}`},
+    ...(revision===35?[{op:'replace',path:['threadRuntimeStatus'],value:{type:'idle'}},{op:'replace',path:['turns',0,'status'],value:'completed'}]:[])
+  ]});
+  const result = await adapter.readThread({threadId:'t'}, {liveOnly:true,loadHistory:false});
+  assert.equal(result.messages[0].text,'内容 35'); assert.equal(result.thread.status,'idle');
+  assert.equal(result.revision,35); assert.equal(adapter.ready,true); assert.equal(adapter.incompatible,false); assert.deepEqual(disconnected,[]);
 });
 
 test('transport reconnect resets partial decoder state and reports one disconnect per socket', async () => {
@@ -368,12 +401,12 @@ test('settings follower request versions are two locally and three for a nonloca
   assert.equal(writes[0].version, 2); assert.equal(writes[1].version, 3); assert.equal(writes[1].hostId, 'remote');
 });
 
-test('text render hints accompany canonical patches without double append or snapshot storms', async t => {
+for (const version of [11, 13]) test(`v${version} text render hints accompany canonical patches without double append or snapshot storms`, async t => {
   const adapter = new DesktopAdapter({ streamThrottleMs: 10 }); t.after(() => adapter.close()); const broadcasts = []; const events = [];
   adapter.broadcast = (...args) => broadcasts.push(args); adapter.on('event', event => events.push(event));
   adapter.subscriptions.set('local:t', { threadId: 't', hostId: 'local', owner: 'owner' });
   adapter.snapshots.set('local:t', { revision: 2, state: { id: 't', turnHistory: { kind: 'canonical', history: { isComplete: true, islands: [{ entries: [{ value: 'turn:t1' }] }], entitiesByKey: { 'turn:t1': { id: 't1', items: [{ id: 'a', type: 'agentMessage', text: 'before' }] } } } } } });
-  const make = change => ({ type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'owner', params: { hostId: 'local', conversationId: 't', change } });
+  const make = change => ({ type: 'broadcast', method: 'thread-stream-state-changed', version, sourceClientId: 'owner', params: { hostId: 'local', conversationId: 't', change } });
   const delta = make({ type: 'patches', baseRevision: 2, revision: 3, patches: [{ op: 'replace', path: ['turnHistory', 'history', 'entitiesByKey', 'turn:t1', 'items', 0, 'text'], value: 'before after' }], acceptedTextChanges: [{ type: 'text', key: { hostId: 'local', threadId: 't', entityKey: 'turn:t1', itemId: 'a' }, target: { field: 'text' }, edits: [{ at: 6, deleteCount: 0, insert: ' after' }] }] });
   adapter.handleIpc(delta); adapter.handleIpc(delta);
   await new Promise(resolve => setTimeout(resolve, 20));

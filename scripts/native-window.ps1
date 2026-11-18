@@ -39,6 +39,12 @@ try {
     $pocketSdk = Join-Path $pocketRoot 'native\webview2'
     $pocketLoader = Join-Path $pocketSdk $(if ([Environment]::Is64BitProcess) {'win-x64'} else {'win-x86'})
     $env:PATH = $pocketLoader + ';' + $env:PATH
+    # Explorer can propagate the downloaded ZIP's Internet mark to its DLLs.
+    # Only unblock this app's bundled WebView2 libraries, before LoadFrom.
+    foreach ($pocketLibrary in @((Join-Path $pocketSdk 'Microsoft.Web.WebView2.Core.dll'), (Join-Path $pocketSdk 'Microsoft.Web.WebView2.Wpf.dll'), (Join-Path $pocketLoader 'WebView2Loader.dll'))) {
+        try { Unblock-File -LiteralPath $pocketLibrary -ErrorAction Stop }
+        catch { throw '无法解除应用组件的下载阻止标记。请将完整安装包解压到当前用户可写的目录后重试，或使用单文件 EXE。' }
+    }
     [Reflection.Assembly]::LoadFrom((Join-Path $pocketSdk 'Microsoft.Web.WebView2.Core.dll')) | Out-Null
     [Reflection.Assembly]::LoadFrom((Join-Path $pocketSdk 'Microsoft.Web.WebView2.Wpf.dll')) | Out-Null
     $pocketDescriptor = Join-Path $env:POCKET_STATE_DIR ('native-' + [Guid]::NewGuid().ToString('N') + '.json')

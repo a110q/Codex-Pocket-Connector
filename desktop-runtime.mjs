@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import { FramedSocket, applyPatches } from './desktop-adapter.mjs';
+import { FramedSocket, applyPatches, supportsDesktopStreamVersion } from './desktop-adapter.mjs';
 
 // A native launcher is not an App Tools caller. Observe the existing desktop
 // owner/follower channel instead. Retain only runtime metadata, never histories.
@@ -54,7 +54,7 @@ export class DesktopRuntime extends EventEmitter {
     if (!watch || watch.owner !== message.sourceClientId) return;
     if (message.method === 'thread-stream-following-status-requested' && message.version === 1) { this.follow(p.conversationId, watch); return; }
     if (message.method !== 'thread-stream-state-changed') return;
-    if (message.version !== 11) { this.close(); this.emit('unavailable'); return; }
+    if (!supportsDesktopStreamVersion(message.version)) { this.close(); this.emit('unavailable'); return; }
     const c = p.change;
     if (!Number.isSafeInteger(c?.revision) || (watch.revision != null && c.revision <= watch.revision)) return;
     try {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { compareVersions } from '../version.mjs';
-import { UpdateManager, verifyRelease, updateRequest } from '../updates.mjs';
+import { UpdateManager, verifyRelease, updateRequest, revealUpdate } from '../updates.mjs';
 import { updateFixture } from './support/update-fixture.mjs';
 import { fixture } from './support/connector-fixture.mjs';
 import { startConnector } from '../connector.mjs';
@@ -50,6 +50,28 @@ test('downloads enforce size/hash and refuse redirects, remove partial files, re
   u.download();await u.job;rmSync(destination);assert.throws(()=>u.open(),/已移除/);
   assert.match(u.state().error,/已移除/);assert.equal(u.state().download,'error');
   u.download();await u.job;assert.equal(u.state().download,'ready');u.open();assert.equal(u.state().error,'');
+});
+
+test('opening a folder failure preserves the verified download and exposes its path for manual opening',async t=>{
+  const f=await updateFixture();t.after(()=>f.close());let fail=true;
+  const u=new UpdateManager({config:f.config,directory:resolve(f.directory,'reveal-failure'),platform:'win32',version:'0.9.9.3',build:35,reveal:()=>{if(fail)throw Error('无法自动打开安装包位置。请按下载路径手动打开。')}});t.after(()=>u.close());
+  assert.equal(u.state().downloadPath,null);await u.check();u.download();await u.job;
+  const path=u.state().downloadPath;assert(path);assert(existsSync(path));const count=f.requests.length;
+  assert.throws(()=>u.open(),/手动打开/);assert.equal(u.state().download,'ready');assert.equal(u.state().downloadPath,path);assert.deepEqual(readFileSync(path),f.package);
+  fail=false;u.open();assert.equal(u.state().error,'');assert.equal(f.requests.length,count);
+  writeFileSync(path,'changed');assert.throws(()=>u.open(),/已改变/);assert.equal(u.state().downloadPath,null);
+});
+
+test('Windows reveal falls back through the shell broker, handles exit failures, and never executes the installer',()=>{
+  const file=String.raw`C:\Users\测试 O'Brien\AppData\Local\Codex Pocket\updates\0.9.16.1\Codex-Pocket.exe`;
+  const calls=[];const run=(...args)=>{calls.push(args);return calls.length===1?{status:1}:{status:0}};
+  revealUpdate(file,{platform:'win32',run});
+  assert.equal(calls[0][0],'explorer.exe');assert.deepEqual(calls[0][1],['/select,',file]);
+  assert.equal(calls[1][0],'powershell.exe');assert.equal(calls[1][2].env.POCKET_UPDATE_DIRECTORY,String.raw`C:\Users\测试 O'Brien\AppData\Local\Codex Pocket\updates\0.9.16.1`);
+  const script=Buffer.from(calls[1][1].at(-1),'base64').toString('utf16le');assert(script.includes('Shell.Application'));assert(!script.includes(file));assert(!script.includes('Start-Process'));
+  for(const result of [{status:1},{status:null,error:Error('blocked')},{status:null,signal:'SIGTERM'}])assert.throws(()=>revealUpdate(file,{platform:'win32',run:()=>result}),/文件已保留.*无需重新下载/);
+  let launches=0;revealUpdate(file,{platform:'win32',run:()=>{launches++;return {status:0}}});assert.equal(launches,1);
+  assert.throws(()=>revealUpdate('/download/app.zip',{platform:'darwin',run:()=>({status:1})}),/手动打开/);
 });
 test('connector update actions require local authentication and do not stop its connection runtime',async t=>{
   const f=await updateFixture();t.after(()=>f.close());const relay=await fixture();t.after(()=>relay.close());

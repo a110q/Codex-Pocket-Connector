@@ -2,7 +2,7 @@ import https from 'node:https';
 import tls from 'node:tls';
 import { createHash, createPublicKey, verify, X509Certificate } from 'node:crypto';
 import { readFileSync, existsSync, mkdirSync, createWriteStream, renameSync, rmSync, openSync, readSync, closeSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, win32 } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { spawnSync } from 'node:child_process';
@@ -81,7 +81,7 @@ export class UpdateManager {
     this.controller = null; this.file = null; this.job = null;
     this.value = { status:'idle', currentVersion:version, currentBuild:build, platform:this.platform, release:null, asset:null, download:'idle', received:0, error:'', prompt:false };
   }
-  state() { return structuredClone(this.value); }
+  state() { return structuredClone({ ...this.value, downloadPath: this.value.download === 'ready' ? this.file : null }); }
   async checkAutomatically() {
     if(this.controller||this.value.download==='ready'||this.value.prompt)return this.state();
     const now=this.now();
@@ -173,8 +173,18 @@ export function updateError(error) {
   if (/更新|安装包|当前系统|检测/.test(error.message)) return error.message;
   return '暂时无法连接更新服务，请检查网络后重试。';
 }
-function revealUpdate(file) {
-  const result = process.platform === 'win32' ? spawnSync('explorer.exe',['/select,',file],{windowsHide:true,timeout:10000})
-    : spawnSync('/usr/bin/open',['-R',file],{timeout:10000});
-  if (result.error || (process.platform !== 'win32' && result.status !== 0)) throw Error('无法打开安装包位置，请重新下载后重试。');
+export function revealUpdate(file, { platform = process.platform, run = spawnSync } = {}) {
+  const result = platform === 'win32' ? run('explorer.exe',['/select,',file],{windowsHide:true,timeout:10000})
+    : run('/usr/bin/open',['-R',file],{timeout:10000});
+  if (!result.error && result.status === 0) return;
+  if (platform === 'win32') {
+    // Explorer may return nonzero when it delegates to an existing shell.
+    // Ask the shell broker to open the directory as a fallback; never execute
+    // the downloaded installer or interpolate its path into PowerShell code.
+    const script = "$ErrorActionPreference='Stop'; $shell=New-Object -ComObject Shell.Application; $folder=$shell.NameSpace($env:POCKET_UPDATE_DIRECTORY); if ($null -eq $folder) { throw '下载目录不可用' }; $shell.Open($folder.Self.Path)";
+    const fallback = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { windowsHide:true, timeout:10000, env:{ ...process.env, POCKET_UPDATE_DIRECTORY:win32.dirname(file) } });
+    if (!fallback.error && fallback.status === 0) return;
+  }
+  throw Error('无法自动打开安装包位置。文件已保留，请按下方下载路径手动打开，无需重新下载。');
 }

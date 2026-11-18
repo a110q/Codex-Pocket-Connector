@@ -4,19 +4,20 @@ import { EventEmitter } from 'node:events';
 import { DesktopRuntime } from '../desktop-runtime.mjs';
 
 class Transport extends EventEmitter {
-  constructor(){super();this.calls=[];this.follows=[];this.owners=new Set(['qa']);}
+  constructor(){super();this.calls=[];this.follows=[];this.owners=new Set(['qa']);this.version=11;}
   async connect(){}
   async exchange(m){this.calls.push(m);return m.method==='initialize'?{resultType:'success',result:{clientId:'observer'}}:this.owners.has(m.params.conversationId)?{resultType:'success',handledByClientId:'owner'}:{resultType:'error',error:'no-client-found'};}
   write(m){if(m.method==='thread-stream-following-changed'){this.follows.push(m);if(m.params.following)queueMicrotask(()=>this.snapshot(m.params.conversationId));}}
-  snapshot(id='qa',revision=1,status={type:'active',activeFlags:[]}){this.emit('message',{type:'broadcast',method:'thread-stream-state-changed',version:11,sourceClientId:'owner',params:{hostId:'local',conversationId:id,change:{type:'snapshot',revision,conversationState:{threadRuntimeStatus:status,turns:[{text:'large transcript that must not be retained'}]}}}});}
-  patch(revision,baseRevision,patches,sourceClientId='owner',hostId='local'){this.emit('message',{type:'broadcast',method:'thread-stream-state-changed',version:11,sourceClientId,params:{hostId,conversationId:'qa',change:{type:'patches',revision,baseRevision,patches}}});}
+  snapshot(id='qa',revision=1,status={type:'active',activeFlags:[]}){this.emit('message',{type:'broadcast',method:'thread-stream-state-changed',version:this.version,sourceClientId:'owner',params:{hostId:'local',conversationId:id,change:{type:'snapshot',revision,conversationState:{threadRuntimeStatus:status,turns:[{text:'large transcript that must not be retained'}]}}}});}
+  patch(revision,baseRevision,patches,sourceClientId='owner',hostId='local'){this.emit('message',{type:'broadcast',method:'thread-stream-state-changed',version:this.version,sourceClientId,params:{hostId,conversationId:'qa',change:{type:'patches',revision,baseRevision,patches}}});}
   close(){}
 }
 const catalog={threads:[{id:'qa'},{id:'unloaded'},{id:'hidden',isSubagent:true},{id:'remote',hostId:'remote'},{id:'archived',archived:true}]};
 function fixture(t){const transport=new Transport(),reader=new DesktopRuntime({createRuntimeTransport:()=>transport});t.after(()=>reader.close());return{reader,transport};}
 
-test('native runtime observation uses IPC only, projects metadata and follows completion without navigation',async t=>{
+for (const version of [11,13]) test(`v${version} native runtime observation uses IPC only, projects metadata and follows completion without navigation`,async t=>{
  const {reader,transport}=fixture(t);let changed=0;reader.on('changed',()=>changed++);
+ transport.version=version;
  assert.equal((await reader.read(catalog)).get('qa').status,'active');
  assert.deepEqual(transport.calls.filter(c=>c.method==='thread-owner-discovery').map(c=>c.params.conversationId),['qa','unloaded']);
  assert(!JSON.stringify([...reader.watches]).includes('large transcript'));
