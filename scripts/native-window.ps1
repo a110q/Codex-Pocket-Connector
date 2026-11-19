@@ -3,21 +3,51 @@ Set-StrictMode -Version Latest
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 $pocketRoot = Split-Path -Parent $PSScriptRoot
 $pocketBackend = $null
+$pocketBackendStarted = $false
 $pocketMutex = $null
+$pocketDescriptor = $null
+$pocketTimer = $null
+$pocketVersion = 'unknown'
+$pocketLog = $null
+$script:pocketLoaded = $false
+$script:pocketOrigin = $null
+$script:pocketToken = $null
+
+function Show-PocketStartupFailure($stage, $detail, $hint) {
+    $logHint = ''
+    if ($pocketLog) {
+        try {
+            # Keep only fixed diagnostic codes; neither the backend's raw
+            # stderr nor the authenticated local URL belongs in a log.
+            [IO.File]::WriteAllLines($pocketLog, [string[]]@(
+                ('version=' + $pocketVersion), ('stage=' + $stage), ('detail=' + $detail)
+            ))
+            $logHint = "`n诊断文件：$pocketLog"
+        } catch { }
+    }
+    [Windows.MessageBox]::Show(("$hint`n诊断编号：$stage / $detail" + $logHint), 'Codex Pocket') | Out-Null
+}
+
+function Get-PocketBackendFailure($stderr) {
+    if ($stderr -cmatch '(?m)^POCKET_STARTUP_ERROR:(OPTIONS|LOCAL_CONFIG|PACKAGE|LISTENER|STATE_WRITE|DESCRIPTOR|BACKEND_IMPORT):(EACCES|EPERM|ENOENT|EEXIST|ENOTDIR|EISDIR|ENOSPC|EADDRINUSE|ERR_INVALID_URL|INVALID_JSON|ERR_MODULE_NOT_FOUND|ERR_UNKNOWN_BUILTIN_MODULE|UNKNOWN)\s*$') {
+        return @{ Stage = $Matches[1]; Detail = $Matches[2] }
+    }
+    if ($stderr -cmatch 'ERR_(MODULE_NOT_FOUND|UNKNOWN_BUILTIN_MODULE)|MODULE_NOT_FOUND') {
+        return @{ Stage = 'BACKEND_IMPORT'; Detail = $Matches[0] }
+    }
+    return @{ Stage = 'BACKEND_EXIT'; Detail = 'NO_STARTUP_CODE' }
+}
+
+$pocketStage = 'STARTUP_SCRIPTS'
 try {
     . (Join-Path $PSScriptRoot 'find-codex-node.ps1')
-    if (-not $env:POCKET_STATE_DIR) { $env:POCKET_STATE_DIR = Join-Path $env:LOCALAPPDATA 'Codex Pocket' }
-    [IO.Directory]::CreateDirectory($env:POCKET_STATE_DIR) | Out-Null
-    # POSIX modes do not restrict Windows files. Keep saved account and pairing
-    # credentials private to the current user and SYSTEM before starting Node.
-    $pocketAcl = New-Object Security.AccessControl.DirectorySecurity
-    $pocketAcl.SetAccessRuleProtection($true, $false)
-    $pocketUser = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    foreach ($sid in @($pocketUser, (New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'))) {
-        $pocketRule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-        $pocketAcl.AddAccessRule($pocketRule)
-    }
-    Set-Acl -LiteralPath $env:POCKET_STATE_DIR -AclObject $pocketAcl
+    . (Join-Path $PSScriptRoot 'windows-state-directory.ps1')
+    $env:POCKET_STATE_DIR = Initialize-PocketStateDirectory $env:POCKET_STATE_DIR ([ref]$pocketStage)
+    $pocketStage = 'VERSION'
+    $pocketLog = Join-Path $env:POCKET_STATE_DIR 'startup-diagnostic.txt'
+    $pocketVersion = (Get-Content -LiteralPath (Join-Path $pocketRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).pocketVersion
+    if ($pocketVersion -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { $pocketVersion = 'unknown' }
+    $pocketStage = 'NODE_RUNTIME'
     # Recover custom Codex locations before starting the embedded window.
     $pocketInstallation = Join-Path $env:POCKET_STATE_DIR 'codex-installation.json'
     if (Test-Path -LiteralPath $pocketInstallation -PathType Leaf) {
@@ -36,6 +66,7 @@ try {
     $pocketCreated = $false
     $pocketMutex = New-Object Threading.Mutex($true, 'Local\CodexPocket-Native-Window', [ref]$pocketCreated)
     if (-not $pocketCreated) { [Windows.MessageBox]::Show('Codex Pocket 已经打开，请切回已有窗口。','Codex Pocket') | Out-Null; return }
+    $pocketStage = 'WEBVIEW_FILES'
     $pocketSdk = Join-Path $pocketRoot 'native\webview2'
     $pocketLoader = Join-Path $pocketSdk $(if ([Environment]::Is64BitProcess) {'win-x64'} else {'win-x86'})
     $env:PATH = $pocketLoader + ';' + $env:PATH
@@ -47,6 +78,7 @@ try {
     }
     [Reflection.Assembly]::LoadFrom((Join-Path $pocketSdk 'Microsoft.Web.WebView2.Core.dll')) | Out-Null
     [Reflection.Assembly]::LoadFrom((Join-Path $pocketSdk 'Microsoft.Web.WebView2.Wpf.dll')) | Out-Null
+    $pocketStage = 'BACKEND_SPAWN'
     $pocketDescriptor = Join-Path $env:POCKET_STATE_DIR ('native-' + [Guid]::NewGuid().ToString('N') + '.json')
     $pocketStart = New-Object Diagnostics.ProcessStartInfo
     $pocketStart.FileName = $pocketNode
@@ -60,9 +92,10 @@ try {
     $pocketStart.EnvironmentVariables['POCKET_CODEX_ROOTS'] = ConvertTo-Json -InputObject @($script:PocketDesktopRoots) -Compress
     $pocketBackend = New-Object Diagnostics.Process
     $pocketBackend.StartInfo = $pocketStart
-    $pocketBackend.Start() | Out-Null
+    $pocketBackendStarted = $pocketBackend.Start()
     $pocketOutput = $pocketBackend.StandardOutput.ReadToEndAsync()
     $pocketError = $pocketBackend.StandardError.ReadToEndAsync()
+    $pocketStage = 'WEBVIEW_WINDOW'
     $pocketWindow = New-Object Windows.Window
     $pocketWindow.Title = 'Codex Pocket'
     $pocketWindow.Width = 1100; $pocketWindow.Height = 820
@@ -73,37 +106,56 @@ try {
     $pocketCreation.UserDataFolder = Join-Path $env:POCKET_STATE_DIR 'WebView2'
     $pocketWeb.CreationProperties = $pocketCreation
     $pocketWindow.Content = $pocketWeb
-    $script:pocketLoaded = $false
     $script:pocketStartedAt = [DateTime]::UtcNow
     $pocketTimer = New-Object Windows.Threading.DispatcherTimer
     $pocketTimer.Interval = [TimeSpan]::FromMilliseconds(300)
     $pocketTimer.Add_Tick({
         if ($script:pocketLoaded) { return }
-        if ($pocketBackend.HasExited) {
+        try {
+            if ($pocketBackend.HasExited) {
+                $pocketTimer.Stop()
+                $stderr = ''
+                if ($pocketError.Wait(250)) { $stderr = $pocketError.Result }
+                $failure = Get-PocketBackendFailure $stderr
+                $hint = switch ($failure.Stage) {
+                    'OPTIONS' { '连接器的启动参数无效。' }
+                    'LOCAL_CONFIG' { 'Pocket 无法读取本地配置。请保留现有配置，先发送诊断编号。' }
+                    'PACKAGE' { 'Pocket 无法读取程序文件。若使用 ZIP，请完整解压后再运行。' }
+                    'BACKEND_IMPORT' { 'Pocket 缺少必要的程序模块，或当前 Node 环境不兼容。' }
+                    'LISTENER' { 'Pocket 无法启动本机连接服务。' }
+                    'STATE_WRITE' { 'Pocket 无法写入本地配置，请检查磁盘空间和目录权限。' }
+                    'DESCRIPTOR' { 'Pocket 无法写入启动状态，请检查磁盘空间和目录权限。' }
+                    default { 'Pocket 连接服务在窗口就绪前退出。' }
+                }
+                Show-PocketStartupFailure $failure.Stage ($failure.Detail + '; exit=' + $pocketBackend.ExitCode) $hint
+                $pocketWindow.Close(); return
+            }
+            if (Test-Path -LiteralPath $pocketDescriptor -PathType Leaf) {
+                $result = [IO.File]::ReadAllText($pocketDescriptor) | ConvertFrom-Json
+                $target = [Uri]$result.url
+                if ($result.event -ne 'ready' -or $target.Host -ne '127.0.0.1' -or $target.Scheme -ne 'http' -or $target.Fragment.Length -le 1) { throw 'Invalid local connector URL' }
+                $script:pocketOrigin = $target.GetLeftPart([UriPartial]::Authority)
+                $script:pocketToken = $target.Fragment.Substring(1)
+                $pocketWeb.Source = $target
+                $script:pocketLoaded = $true
+                $pocketTimer.Stop()
+                Remove-Item -LiteralPath $pocketDescriptor -ErrorAction SilentlyContinue
+            } elseif (([DateTime]::UtcNow - $script:pocketStartedAt).TotalSeconds -gt 20) {
+                $pocketTimer.Stop()
+                Show-PocketStartupFailure 'BACKEND_TIMEOUT' '20_SECONDS' 'Pocket 本机连接服务启动超时。'
+                $pocketWindow.Close()
+            }
+        } catch {
             $pocketTimer.Stop()
-            [Windows.MessageBox]::Show('连接服务启动失败。请确认 Codex 已安装并登录，再重新打开软件。','Codex Pocket') | Out-Null
-            $pocketWindow.Close(); return
-        }
-        if (Test-Path -LiteralPath $pocketDescriptor -PathType Leaf) {
-            $result = [IO.File]::ReadAllText($pocketDescriptor) | ConvertFrom-Json
-            $target = [Uri]$result.url
-            if ($target.Host -ne '127.0.0.1' -or $target.Scheme -ne 'http') { throw 'Invalid local connector URL' }
-            $script:pocketOrigin = $target.GetLeftPart([UriPartial]::Authority)
-            $script:pocketToken = $target.Fragment.Substring(1)
-            $pocketWeb.Source = $target
-            $script:pocketLoaded = $true
-            $pocketTimer.Stop()
-            Remove-Item -LiteralPath $pocketDescriptor
-        } elseif (([DateTime]::UtcNow - $script:pocketStartedAt).TotalSeconds -gt 20) {
-            $pocketTimer.Stop()
-            [Windows.MessageBox]::Show('启动超时，请确认本机 Codex 已正确安装。','Codex Pocket') | Out-Null
+            Show-PocketStartupFailure 'WINDOW_HANDSHAKE' 'INVALID_OR_UNREADABLE' 'Pocket 无法打开本机连接页面。'
             $pocketWindow.Close()
         }
     })
     $pocketWeb.Add_CoreWebView2InitializationCompleted({
         param($sender,$eventArgs)
         if (-not $eventArgs.IsSuccess) {
-            [Windows.MessageBox]::Show('无法启动应用窗口。请安装 Microsoft Edge WebView2 Runtime 后重试。','Codex Pocket') | Out-Null
+            $pocketTimer.Stop()
+            Show-PocketStartupFailure 'WEBVIEW_INIT' 'FAILED' '无法初始化应用窗口，请确认 Microsoft Edge WebView2 Runtime 可用。'
             $pocketWindow.Close(); return
         }
         $pocketWeb.CoreWebView2.Settings.AreDevToolsEnabled = $false
@@ -119,9 +171,18 @@ try {
     $pocketWindow.ShowDialog() | Out-Null
     $pocketTimer.Stop()
 } catch {
-    [Windows.MessageBox]::Show(('无法启动 Codex Pocket：' + $_.Exception.Message + "`n请先安装并登录 Codex；窗口需要 Microsoft Edge WebView2 Runtime。"),'Codex Pocket') | Out-Null
+    $hint = switch ($pocketStage) {
+        'NODE_RUNTIME' { '未找到可运行 Pocket 的 Node 环境。需要 Node 22.13 或更高版本，并支持 node:sqlite。' }
+        { $_ -like 'STATE_*' } { Get-PocketStateFailureHint $pocketStage }
+        'WEBVIEW_FILES' { '无法加载应用窗口组件。若使用 ZIP，请完整解压到当前用户可写的目录。' }
+        'BACKEND_SPAWN' { 'Windows 无法启动 Pocket 的本机连接服务。' }
+        default { '无法启动 Codex Pocket，请发送诊断编号。' }
+    }
+    $detail = if ($pocketStage -like 'STATE_*') { Get-PocketStartupHResult $_ } else { '0x' + $_.Exception.HResult.ToString('X8') }
+    Show-PocketStartupFailure $pocketStage $detail $hint
 } finally {
-    if ($pocketBackend -and -not $pocketBackend.HasExited) {
+    if ($pocketTimer) { $pocketTimer.Stop() }
+    if ($pocketBackend -and $pocketBackendStarted -and -not $pocketBackend.HasExited) {
         # Let Node close its TLS listener, WebSocket, databases and Codex child.
         # The EXE's kill-on-close Job Object covers forced termination as well.
         try {
@@ -129,5 +190,6 @@ try {
         } catch { }
         if (-not $pocketBackend.WaitForExit(3000)) { $pocketBackend.Kill(); $pocketBackend.WaitForExit(2000) | Out-Null }
     }
+    if ($pocketDescriptor) { Remove-Item -LiteralPath $pocketDescriptor -ErrorAction SilentlyContinue }
     if ($pocketMutex) { $pocketMutex.Dispose() }
 }

@@ -43,10 +43,10 @@ export function buildWindowsConnector({ out = releaseDirectory('windows'), confi
   const defaults = validateDefaults(JSON.parse(readFileSync(config, 'utf8')));
   const stage = resolve(root, '.private', `windows-connector-build-${Date.now()}`), name = `Codex-Pocket-Connector-${version}-Windows`, directory = resolve(stage, name), bundle = resolve(directory, 'app');
   mkdirSync(resolve(bundle, 'scripts'), { recursive: true }); mkdirSync(resolve(directory, 'scripts'), { recursive: true }); mkdirSync(out, { recursive: true });
-  const files = ['updates.mjs', 'file-links.mjs', 'artifact-web-server.mjs', 'version.mjs', 'pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-runtime.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'contacts.mjs', 'contact-defaults.json', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
+  const files = ['updates.mjs', 'file-links.mjs', 'artifact-web-server.mjs', 'version.mjs', 'pocket-scheduler.mjs', 'extensions-tools.mjs', 'workspace-tools.mjs', 'file-uploads.mjs', 'approvals.mjs', 'image-uploads.mjs', 'relay-profiles.mjs', 'companion.mjs', 'connector.mjs', 'connector-server.mjs', 'connector-core.mjs', 'connector-runtime.mjs', 'app-server-client.mjs', 'codex-installation.mjs', 'standalone-adapter.mjs', 'desktop-runtime.mjs', 'desktop-owner-bridge.mjs', 'platform.mjs', 'lan.mjs', 'relay.mjs', 'accounts.mjs', 'contacts.mjs', 'contact-defaults.json', 'desktop-adapter.mjs', 'history.mjs', 'protocol.mjs', 'relay-connection.mjs', 'preview-tunnel.mjs', 'manager.html', 'connector.html', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
   for (const file of files) cpSync(resolve(root, file), resolve(bundle, file));
   const manifest = JSON.parse(readFileSync(resolve(bundle, 'package.json'), 'utf8')); manifest.pocketVersion = version; writeFileSync(resolve(bundle, 'package.json'), JSON.stringify(manifest, null, 2));
-  for (const file of ['desktop-service.mjs', 'find-codex-node.ps1', 'connect-installed.ps1', 'start-connector.ps1', 'native-window.ps1']) {
+  for (const file of ['desktop-service.mjs', 'find-codex-node.ps1', 'windows-state-directory.ps1', 'connect-installed.ps1', 'start-connector.ps1', 'native-window.ps1']) {
     const target = resolve(bundle, 'scripts', file);
     file.endsWith('.ps1') ? copyText(resolve(root, 'scripts', file), target) : cpSync(resolve(root, 'scripts', file), target);
   }
@@ -68,7 +68,20 @@ export function buildWindowsConnector({ out = releaseDirectory('windows'), confi
   const updates = validateUpdateConfig(JSON.parse(readFileSync(resolve(root, 'update-defaults.json'), 'utf8')));
   writeFileSync(resolve(bundle, 'update-defaults.json'), JSON.stringify(updates, null, 2));
   cpSync(resolve(root, 'docs/USER_GUIDE.md'), resolve(directory, 'Quick-Start.md'));
-  writeFileSync(resolve(directory, 'READ-ME-FIRST.txt'), '\uFEFFCodex Pocket '+version+' - Windows 11\r\n\r\n1. Install and sign in to the official Codex desktop app.\r\n2. Extract the whole ZIP and double-click Codex-Pocket.exe.\r\n3. A desktop window opens; choose LAN or public connection.\r\n4. Codex connects automatically; if needed, select its installation folder.\r\n5. Scan the QR on Android and approve the phone inside the desktop window.\r\n\r\nThe desktop window uses Microsoft Edge WebView2 Runtime. If missing, install it\r\nfrom https://developer.microsoft.com/microsoft-edge/webview2 .\r\nKeep the desktop window running while using the phone.\r\nOnly local Codex projects and chats are supported by the standalone connection.\r\nRemote hosts and ChatGPT-only chats are not included.\r\n\r\nWindows package has not yet been tested on a Windows 11 device.\r\n');
+  const quickStart = [
+    `Codex Pocket ${version} · Windows 11`, '',
+    '1. 完整解压 ZIP，再双击 Codex-Pocket.exe；也可直接运行单文件 EXE。',
+    '2. 打开官方桌面应用的 Codex 模式。',
+    '3. 在 Pocket 窗口选择局域网或公网连接，按提示扫码和授权。', '',
+    'Pocket 支持本机 Codex 对话，不包含 ChatGPT Work 对话或远程主机。',
+    '使用手机端时，请保持电脑连接器窗口开启。',
+    '应用窗口需要 Microsoft Edge WebView2 Runtime。',
+    '若连接器无法启动，请发送弹窗里的诊断编号，或仅发送以下诊断文件：',
+    '%LOCALAPPDATA%\\Codex Pocket\\startup-diagnostic.txt',
+    '请勿发送该目录下的其他配置文件。', '',
+    '此包尚未通过 Windows 11 实机连接验收。', ''
+  ];
+  writeFileSync(resolve(directory, 'READ-ME-FIRST.txt'), '\uFEFF' + quickStart.join('\r\n'));
   const zig=process.env.POCKET_ZIG || resolve(root,'.private/toolchains/zig-npm/package/zig');
   const native=resolve(root,'desktop/windows/Launcher.c'), res=resolve(stage,'portable.res');
   windowsResources({output:res,icon:resolve(bundle,'Pocket.ico'),version});

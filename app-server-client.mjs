@@ -13,7 +13,7 @@ import { resolveCodexCLI as findCodexCLI } from './codex-installation.mjs';
 export class AppServerClient extends EventEmitter {
   constructor({ binary, env = process.env, cwd = process.cwd(), timeoutMs = 20000, spawnProcess = spawn } = {}) {
     super(); Object.assign(this, { binary, env, cwd, timeoutMs, spawnProcess });
-    this.pending = new Map(); this.serial = 0; this.child = null; this.connecting = null;
+    this.pending = new Map(); this.serial = 0; this.child = null; this.connecting = null; this.closing = null;
   }
   async connect() {
     if (this.connecting) return this.connecting;
@@ -22,6 +22,7 @@ export class AppServerClient extends EventEmitter {
   }
   async start() {
     if (this.child) return;
+    if (this.closing) await this.closeAndWait();
     const env = { ...this.env };
     for (const key of ['CODEX_THREAD_ID', 'CODEX_DESKTOP_CONTEXT_THREAD_ID', 'CODEX_APP_TOOLS_PIPE_PATH']) delete env[key];
     const child = this.spawnProcess(this.binary ?? findCodexCLI({env:this.env}), ['app-server'], { env, cwd: this.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -90,23 +91,31 @@ export class AppServerClient extends EventEmitter {
     } while (cursor);
     return result;
   }
-  async closeAndWait() {
-    const child = this.child;
-    if (!child) return;
-    await new Promise((resolve, reject) => {
-      let hardTimer;
-      const finish = () => { clearTimeout(timer); clearTimeout(hardTimer); resolve(); };
-      child.once('exit', finish);
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL');
-        hardTimer = setTimeout(() => reject(new Error('Codex 对话进程尚未退出')), 1000);
-      }, 3000);
-      this.close();
-    });
+  async closeAndWait({ graceMs = 3000, killWaitMs = 1000 } = {}) {
+    this.close();
+    const closing = this.closing;
+    if (!closing) return;
+    let timer, hardTimer;
+    try {
+      await Promise.race([closing.exited, new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          try { closing.child.kill('SIGKILL'); }
+          catch (error) { reject(error); return; }
+          hardTimer = setTimeout(() => reject(new Error('Codex 对话进程尚未退出')), killWaitMs);
+        }, graceMs);
+      })]);
+      if (this.closing === closing) this.closing = null;
+    } finally { clearTimeout(timer); clearTimeout(hardTimer); }
   }
   close() {
     const child = this.child; if (!child) return;
-    this.child = null; child.stdin.end(); child.kill();
+    this.child = null;
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      // Keep an exit receipt even if closeAndWait times out. A subsequent
+      // handoff must not interpret a detached stdin as a released writer.
+      this.closing = { child, exited: new Promise(resolve => child.once('exit', resolve)) };
+      child.stdin.end(); child.kill();
+    }
     for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error('Codex 连接已关闭。')); }
     this.pending.clear();
   }

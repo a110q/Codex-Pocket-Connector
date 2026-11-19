@@ -78,10 +78,10 @@ class UiRedesignTest {
         until{model.threads.any{it.optString("id")=="ui-0"&&threadActivity(it)==ThreadActivity.IDLE}}
         compose.onNodeWithText("暂无运行中的对话").assertIsDisplayed()
         Assert.assertNull(model.selected)
-        compose.onNodeWithContentDescription("筛选待审批对话").performClick()
-        compose.onNodeWithText("重新设计手机界面").assertIsDisplayed()
-        compose.onNodeWithText("图片预览优化").assertDoesNotExist()
-        shot("redesign-approval-filter")
+        compose.onNodeWithContentDescription("筛选待我处理对话").assertTextContains("2").performClick()
+        compose.onNodeWithContentDescription("重新设计手机界面，等待审批").assertIsDisplayed()
+        compose.onNodeWithContentDescription("图片预览优化，等待回答").assertIsDisplayed()
+        shot("pending-workspace")
         compose.onNodeWithContentDescription("展开搜索").performClick()
         compose.onNodeWithContentDescription("搜索项目或对话").performTextInput("没有匹配")
         compose.onNodeWithText("没有找到相关对话").assertIsDisplayed()
@@ -91,6 +91,60 @@ class UiRedesignTest {
         compose.onNodeWithText("图片预览优化").assertIsDisplayed()
         compose.runOnUiThread{model.updateAppearance("dark")}
         shot("redesign-workspace-dark")
+    }
+    @Test fun pendingWorkspaceLocatesMatchingLiveRequestAndKeepsTheFilterOnBack(){
+        fun approval(id:String,command:String)=JSONObject().put("id",id).put("method","item/commandExecution/requestApproval")
+            .put("params",JSONObject().put("command",command).put("cwd","/workspace/codex_android"))
+        val approvalThread=peer.threads.getJSONObject(1).put("status","waitingForApproval")
+        peer.threads.getJSONObject(2).put("status","waitingForUserInput")
+        fun question(id:String)=JSONObject().put("id",id).put("method","item/tool/requestUserInput")
+            .put("params",JSONObject().put("questions",JSONArray().put(JSONObject().put("id","scope").put("header","预览范围")
+                .put("question","这次需要检查哪个页面？").put("options",JSONArray().put(JSONObject().put("label","工作空间").put("description","检查任务筛选"))))))
+        peer.pendingByThread["ui-1"]=JSONArray().put(approval("resolved","已处理的命令").put("status","resolved"))
+            .put(question("earlier-question")).put(approval("approval-first","npm run test:ui"))
+            .also{array->repeat(5){array.put(approval("approval-$it","npm run test:case-$it"))}}
+        peer.pendingByThread["ui-2"]=JSONArray().put(question("question-first"))
+        compose.runOnUiThread{model.refresh()}
+        until{model.threads.count{threadActivity(it).needsUserAction}==2}
+        compose.onNodeWithContentDescription("筛选待我处理对话").assertTextContains("2").performClick()
+        compose.onNodeWithContentDescription("重新设计手机界面，等待审批").performClick()
+        until{!model.loadingThread&&model.snapshot?.optJSONObject("thread")?.optString("id")=="ui-1"}
+        compose.onNodeWithText("npm run test:ui").assertIsDisplayed()
+        compose.onNodeWithText("已处理的命令").assertDoesNotExist()
+        compose.onNodeWithText("这次需要检查哪个页面？").assertIsNotDisplayed()
+        shot("pending-approval-located")
+        compose.onNodeWithTag("chat-history").performScrollToIndex(0)
+        compose.onNodeWithText("查看待处理（7）").assertIsDisplayed().performClick()
+        compose.onNodeWithText("npm run test:ui").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回项目").performClick()
+        compose.onNodeWithContentDescription("筛选待我处理对话").assertIsSelected()
+        compose.onNodeWithContentDescription("图片预览优化，等待回答").performClick()
+        until{!model.loadingThread&&model.snapshot?.optJSONObject("thread")?.optString("id")=="ui-2"}
+        compose.onNodeWithText("这次需要检查哪个页面？").assertIsDisplayed()
+        compose.onNodeWithText("待回答").assertIsDisplayed()
+        compose.onNodeWithText("回答问题").assertIsEnabled()
+        shot("pending-question-located")
+        compose.onNodeWithContentDescription("返回项目").performClick()
+        approvalThread.put("status","idle");peer.pendingByThread.remove("ui-1");peer.publish("ui-1")
+        until{model.threads.count{threadActivity(it).needsUserAction}==1}
+        compose.onNodeWithContentDescription("筛选待我处理对话").assertIsSelected().assertTextContains("1")
+        compose.onNodeWithText("重新设计手机界面").assertDoesNotExist()
+        Assert.assertFalse("定位卡片不应提交审批、回复或指令",peer.calls.any{it.optString("action") in setOf("approval.respond","message.send")})
+    }
+    @Test fun stalePendingSummaryFallsBackToConversationWithoutSubmitting(){
+        val thread=peer.threads.getJSONObject(1).put("status","waitingForApproval")
+        compose.runOnUiThread{model.refresh()}
+        until{model.threads.any{it.optString("id")=="ui-1"&&threadActivity(it)==ThreadActivity.APPROVAL}}
+        compose.onNodeWithContentDescription("筛选待我处理对话").performClick()
+        // Simulate a decision on desktop after the list was read but before the conversation opens.
+        thread.put("status","idle")
+        compose.onNodeWithContentDescription("重新设计手机界面，等待审批").performClick()
+        compose.onNodeWithText("此对话当前没有待处理的请求").assertIsDisplayed()
+        compose.onNodeWithText("允许本次").assertDoesNotExist()
+        Assert.assertFalse(peer.calls.any{it.optString("action")=="approval.respond"})
+        compose.onNodeWithContentDescription("返回项目").performClick()
+        compose.onNodeWithContentDescription("筛选待我处理对话").assertIsSelected().assertTextContains("0")
+        compose.onNodeWithText("暂无需要你处理的对话").assertIsDisplayed()
     }
     @Test fun deliverablesShowRealFilesAndChangesAndPreviewFromChat(){
         executionTranscript(listOf(execution("verify","检查连接")))
@@ -148,7 +202,7 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("筛选运行中对话").assertIsSelected()
         compose.onNodeWithText("修复自动重连").assertIsDisplayed()
         compose.onNodeWithTag("workspace-pages").performTouchInput{swipeLeft()}
-        compose.onNodeWithContentDescription("筛选待审批对话").assertIsSelected()
+        compose.onNodeWithContentDescription("筛选待我处理对话").assertIsSelected()
         compose.onNodeWithText("重新设计手机界面").assertIsDisplayed()
         compose.onNodeWithTag("workspace-pages").performTouchInput{swipeRight()}
         compose.onNodeWithContentDescription("筛选运行中对话").assertIsSelected()
@@ -222,7 +276,7 @@ class UiRedesignTest {
     }
     @Test fun compactWorkspaceKeepsSearchAndNavigationAccessible(){
         compose.onNodeWithContentDescription("搜索项目或对话").assertDoesNotExist()
-        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("移动端适配问题"))
+        compose.onNodeWithTag("workspace-list-ALL").performScrollToNode(hasText("移动端适配问题"))
         compose.onNodeWithText("移动端适配问题").assertIsDisplayed()
         compose.onNodeWithContentDescription("新建对话").assertIsDisplayed().assertIsEnabled().performClick()
         compose.onNodeWithContentDescription("新对话指令").assertIsDisplayed()
@@ -578,6 +632,7 @@ class UiRedesignTest {
         val settings=JSONObject().put("model","gpt-6.1-sol").put("reasoningEffort","high").put("permissionMode","auto")
         val projects=JSONArray().put(JSONObject().put("projectId","p1").put("title","codex_android").put("path","/workspace/codex_android")).put(JSONObject().put("projectId","p2").put("title","个人网站").put("path","/workspace/website")).put(JSONObject().put("projectId","p3").put("title","数据分析").put("path","/workspace/analysis"))
         val threads=JSONArray()
+        val pendingByThread=ConcurrentHashMap<String,JSONArray>()
         val messages=JSONArray()
         private val files=mutableMapOf<String,ByteArray>()
         private val artifacts=JSONArray()
@@ -617,16 +672,16 @@ class UiRedesignTest {
         }
         // Serialize encryption and enqueueing together so test workers cannot reorder sequence numbers.
         private fun send(socket:WebSocket,payload:JSONObject)=synchronized(codec){socket.send(codec.encode(payload))}
-        fun publish(){
+        fun publish(id:String="ui-0"){
             sockets.forEach{socket->channels[socket]?.let{channel->
-                val event=JSONObject().put("type","thread.updated").put("data",snapshot("ui-0"))
+                val event=JSONObject().put("type","thread.updated").put("data",snapshot(id))
                 send(socket,JSONObject().put("type","event").put("channel",channel).put("event",event))
             }}
         }
         private fun snapshot(id:String):JSONObject{
-            val thread=JSONObject(threads.optJSONObject(0).toString()).put("id",id).put("settings",JSONObject(settings.toString())).put("cwd","/workspace/codex_android")
+            val thread=JSONObject((threads.objects().firstOrNull{it.optString("id")==id}?:threads.getJSONObject(0)).toString()).put("id",id).put("settings",JSONObject(settings.toString())).put("cwd","/workspace/codex_android")
             if(active)thread.put("activeTurnId","qa-active-turn")
-            return JSONObject().put("thread",thread).put("messages",JSONArray(messages.toString())).put("artifacts",if(reference)JSONArray()else artifacts).put("historyComplete",true).put("history",JSONObject().put("total",messages.length()).put("hasEarlier",false)).put("requests",if(approval)JSONArray().put(JSONObject().put("id","ui-approval").put("method","item/commandExecution/requestApproval").put("params",JSONObject().put("command",if(reference)"./gradlew :app:testDebugUnitTest --tests \"*ReconnectAckTest\""else"npm test").put("reason","仅用于隔离界面验收").put("cwd","~/Projects/codex_android")))else JSONArray())
+            return JSONObject().put("thread",thread).put("messages",JSONArray(messages.toString())).put("artifacts",if(reference)JSONArray()else artifacts).put("historyComplete",true).put("history",JSONObject().put("total",messages.length()).put("hasEarlier",false)).put("requests",pendingByThread[id]?:if(approval)JSONArray().put(JSONObject().put("id","ui-approval").put("method","item/commandExecution/requestApproval").put("params",JSONObject().put("command",if(reference)"./gradlew :app:testDebugUnitTest --tests \"*ReconnectAckTest\""else"npm test").put("reason","仅用于隔离界面验收").put("cwd","~/Projects/codex_android")))else JSONArray())
         }
         private fun handle(action:String,args:JSONObject):JSONObject=when(action){
             "projects.list"->JSONObject().put("projects",projects)

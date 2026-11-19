@@ -33,6 +33,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.ClipEntry
 import kotlinx.coroutines.launch
@@ -204,6 +205,10 @@ class MainActivity : ComponentActivity() {
     var showNew by remember{mutableStateOf(false)}
     var presetProject by remember{mutableStateOf<String?>(null)}
     val snack=remember{SnackbarHostState()}
+    val workspaceState=rememberSaveableStateHolder()
+    var pendingActionThread by remember(model){mutableStateOf<String?>(null)}
+    val selectedIdentity=model.selected?.let(::threadIdentity)
+    LaunchedEffect(selectedIdentity){if(pendingActionThread!=selectedIdentity)pendingActionThread=null}
     LaunchedEffect(model.notice){model.notice?.let{snack.showSnackbar(it);model.notice=null}}
     BackHandler(model.selected==null&&tab!=0){tab=0}
     BackHandler(model.selected!=null){if(model.previewKind!=null)model.closePreview()else model.back()}
@@ -225,13 +230,22 @@ class MainActivity : ComponentActivity() {
         }}
     ){padding->
         Column(Modifier.fillMaxSize().padding(if(model.selected==null)padding else PaddingValues()).imePadding()){
-            if(model.selected!=null)key(model.selected?.optString("hostId"),model.selected?.optString("id")){ChatScreen(model,snack,onComputers={model.back();tab=2})}
+            if(model.selected!=null)key(selectedIdentity){
+                ChatScreen(model,snack,onComputers={model.back();tab=2},
+                    focusPendingAction=pendingActionThread!=null&&pendingActionThread==selectedIdentity,
+                    onPendingActionConsumed={pendingActionThread=null})
+            }
             else{
                 PendingCard(model);model.error?.let{ErrorBanner(it){model.error=null}}
                 if(model.pairing&&tab !in 2..5)PairingWaiting(model)
                 else if(model.profile==null&&tab !in 2..5)Welcome(scan,{showPair=true})
                 else when(tab){
-                    0,1->ThreadList(model,{tab=if(tab==0)1 else 0},{presetProject=it;showNew=true},tab==1,onCreate={presetProject=null;showNew=true})
+                    0,1->workspaceState.SaveableStateProvider(tab){
+                        ThreadList(model,{tab=if(tab==0)1 else 0},{presetProject=it;showNew=true},tab==1,
+                            onCreate={presetProject=null;showNew=true},onOpenPending={thread->
+                                pendingActionThread=threadIdentity(thread);model.openThread(thread)
+                            })
+                    }
                     2->ComputerScreen(model,scan,{showPair=true})
                     4,5->if(account?.isAdmin==true)key(tab){AdminScreen(account,if(tab==5)"all"else"pending")}else Text("需要管理员权限")
                     else->SettingsScreen(model,onComputer={tab=2},onTasks={tab=1},account=account,onAdmin={tab=4},onUsers={tab=5},onExitLan=onExitLan,onEnterLan=onEnterLan,onSwitchService=onSwitchService)
@@ -310,13 +324,13 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun ChatScreen(model:PocketModel,snackbar:SnackbarHostState?=null,onComputers:()->Unit={}) {
+@Composable fun ChatScreen(model:PocketModel,snackbar:SnackbarHostState?=null,onComputers:()->Unit={},focusPendingAction:Boolean=false,onPendingActionConsumed:()->Unit={}) {
     key(model.profile?.optString("relay"),model.profile?.optString("hostId"),model.selected?.optString("id")){
-        ChatContent(model,snackbar,onComputers)
+        ChatContent(model,snackbar,onComputers,focusPendingAction,onPendingActionConsumed)
     }
 }
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun ChatContent(model:PocketModel,snackbar:SnackbarHostState?,onComputers:()->Unit) {
+@Composable private fun ChatContent(model:PocketModel,snackbar:SnackbarHostState?,onComputers:()->Unit,focusPendingAction:Boolean,onPendingActionConsumed:()->Unit) {
     val thread=model.selected?:return;val focus=LocalFocusManager.current
     val snapshot=model.snapshot;val messages=snapshot?.optJSONArray("messages").objects();val list=rememberLazyListState()
     val blockIdentity=remember{TranscriptBlockIdentity<JSONObject>()}
@@ -329,7 +343,6 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     val taskFailed=snapshot!=null&&threadActivity(runtimeThread,snapshot.optJSONArray("requests"))==ThreadActivity.ERROR
     val taskTurnId=runtimeThread.optString("lastTurnId").takeIf{it.isNotBlank()&&it!="null"}?:messages.lastOrNull{it.optString("type")!="queuedUserMessage"}?.optString("turnId")
     val taskError=messages.lastOrNull{it.optString("type")=="turnError"&&it.optString("turnId")==taskTurnId}
-    val transcriptRowCount=blocks.sumOf{if(it.execution&&it.key in expandedGroups)1+it.records.size else 1}+(if(taskFailed)1 else 0)+(if(artifacts.isNotEmpty()||changes!=null)1 else 0)
     val chatScope=rememberCoroutineScope()
     var showResults by remember{mutableStateOf(false)};var showSettings by remember{mutableStateOf(false)};var settingsSection by remember{mutableStateOf("model")}
     var tools by remember{mutableStateOf<String?>(null)};var rename by remember{mutableStateOf(false)}
@@ -342,7 +355,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     val previewExpanded = (model.previewExpanded || editingAddress) && !previewCollapsed
     val browserFullscreen = previewExpanded && model.previewKind == "browser"
     BackHandler(enabled=browserFullscreen){focus.clearFocus();model.expandPreview(false)}
-    val requests=snapshot?.optJSONArray("requests").objects();val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=activity.inFlight&&(!activeId.isNullOrBlank()&&activeId!="null")
+    val requests=pendingThreadRequests(snapshot?.optJSONArray("requests"));val activeId=snapshot?.optJSONObject("thread")?.optString("activeTurnId");val active=activity.inFlight&&(!activeId.isNullOrBlank()&&activeId!="null")
     val settings=snapshot?.optJSONObject("thread")?.optJSONObject("settings")?:JSONObject()
     val history=snapshot?.optJSONObject("history")
     val historyNotice=history!=null||history?.optBoolean("hasEarlier")==true||(snapshot!=null&&snapshot.optBoolean("historyComplete")!=true)||snapshot?.optString("source")=="desktop-history-summary"
@@ -358,6 +371,18 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         requests.forEach{add("approval:"+it.optString("id"))}
         if(activity==ThreadActivity.RUNNING||model.chatSyncIssue!=null)add("task-progress")
         if(taskFailed)add("task-error")
+    }
+    // The workspace labels a mixed queue as waiting for approval. Match that label when locating the card.
+    val nextRequest=requests.firstOrNull{activity==ThreadActivity.APPROVAL&&isApprovalRequest(it)}?:requests.firstOrNull()
+    val pendingIndex=nextRequest?.let{rowKeys.indexOf("approval:"+it.optString("id"))}?:-1
+    val pendingInView by remember(list){derivedStateOf{
+        list.layoutInfo.visibleItemsInfo.any{it.key.toString().startsWith("approval:")}
+    }}
+    var jumpToPending by remember{mutableStateOf(false)}
+    fun revealPending(){
+        focus.clearFocus()
+        if(model.previewKind!=null){previewCollapsed=true;model.expandPreview(false)}
+        jumpToPending=true
     }
     var initialScroll by remember{mutableStateOf(false)}
     var followLatest by remember{mutableStateOf(true)}
@@ -401,8 +426,23 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
             if(load)loadHistory()
         }
     }
-    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind,rowKeys.size,activity,model.chatSyncIssue){
+    LaunchedEffect(messages.lastOrNull()?.optString("key"),lastText,requests.size,model.scrollRequest,previewExpanded,model.previewKind,rowKeys.size,activity,model.chatSyncIssue,
+        focusPendingAction,jumpToPending,pendingIndex,model.loadingThread,model.connected,snapshot!=null){
         if(lastScrollRequest!=model.scrollRequest){lastScrollRequest=model.scrollRequest;followLatest=true}
+        if(focusPendingAction||jumpToPending){
+            // A workspace entry uses the fresh thread snapshot, not a cached request that may have been answered on desktop.
+            if(focusPendingAction&&model.connected&&model.loadingThread)return@LaunchedEffect
+            if(previewExpanded&&model.previewKind!=null)return@LaunchedEffect
+            if(pendingIndex>=0){
+                list.scrollToItem(pendingIndex)
+                initialScroll=true;followLatest=false
+            }else if(focusPendingAction&&model.connected&&snapshot!=null&&model.chatSyncIssue==null&&model.error==null){
+                model.notice=if(activity.needsUserAction)"暂未同步到待处理请求，可刷新对话"else"此对话当前没有待处理的请求"
+            }
+            jumpToPending=false
+            if(focusPendingAction)onPendingActionConsumed()
+            if(pendingIndex>=0)return@LaunchedEffect
+        }
         if(messages.isNotEmpty()&&(!initialScroll||followLatest)&&!(previewExpanded&&model.previewKind!=null)){
             list.scrollToItem(rowKeys.lastIndex.coerceAtLeast(0));initialScroll=true
         }
@@ -444,8 +484,8 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
         ChatConnectionNotice(model)
         if(model.loadingThread)LinearProgressIndicator(Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.secondary)
-        if(previewExpanded&&model.previewKind!=null&&!browserFullscreen&&requests.isNotEmpty())TextButton(onClick={focus.clearFocus();previewCollapsed=true;model.expandPreview(false);chatScope.launch{list.scrollToItem((transcriptRowCount+requests.size-1).coerceAtLeast(0))}},modifier=Modifier.fillMaxWidth()){
-            Text("${requests.size} 项待审批 · 回到对话处理",fontSize=12.sp)
+        if(previewExpanded&&model.previewKind!=null&&!browserFullscreen&&requests.isNotEmpty())TextButton(onClick=::revealPending,modifier=Modifier.fillMaxWidth()){
+            Text("${requests.size} 项待处理 · 回到对话查看",fontSize=12.sp)
         }
         if(model.previewKind!=null)PreviewPane(model,if(previewCollapsed)Modifier.fillMaxWidth() else Modifier.fillMaxWidth().weight(if(previewExpanded)1f else 1.1f),previewExpanded,toggleExpand={focus.clearFocus();previewCollapsed=false;model.expandPreview(!model.previewExpanded)},onAddressFocusChange={addressFocused=it},minimized=previewCollapsed,onMinimize={focus.clearFocus();previewCollapsed=!previewCollapsed;model.expandPreview(false)})
         if(!(previewExpanded&&model.previewKind!=null))Box(Modifier.weight(1f).fillMaxWidth()){
@@ -481,6 +521,11 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
             if(taskFailed)item(key="task-error"){TaskErrorCard(taskError){message->model.showMessage(message,if(message.optBoolean("hasDetail"))"detail"else"text")}}
 
         }
+            if(requests.isNotEmpty()&&!pendingInView&&!model.loadingThread&&!focusPendingAction&&!jumpToPending){
+                FilledTonalButton(onClick=::revealPending,modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp).heightIn(min=48.dp)){
+                    Text("查看待处理（${requests.size}）")
+                }
+            }
             if(messages.isNotEmpty()&&requests.isEmpty()&&!followLatest&&!followBottom)SmallFloatingActionButton(onClick={followLatest=true;chatScope.launch{list.animateScrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}},modifier=Modifier.align(Alignment.BottomEnd).padding(12.dp).size(48.dp).semantics{contentDescription="跳到最新"},containerColor=PocketPalette.lavender,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(14.dp)){
                 PocketIcon("下拉",Modifier.size(20.dp))
             }
@@ -639,7 +684,7 @@ fun effortLabel(value:String)=when(value){"none"->"无";"minimal"->"最低";"low
                     Box(contentAlignment=Alignment.Center){PocketIcon("权限",Modifier.size(13.dp))}
                 }
                 Spacer(Modifier.width(8.dp));Text(if(question)"Codex 需要你的回答"else"请求在电脑执行"+if(method=="item/fileChange/requestApproval")"文件修改"else"终端命令",Modifier.weight(1f),fontWeight=FontWeight.SemiBold,fontSize=13.5.sp,lineHeight=20.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
-                Spacer(Modifier.width(6.dp));Surface(color=MaterialTheme.colorScheme.tertiaryContainer,contentColor=MaterialTheme.colorScheme.onTertiaryContainer,shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.tertiary.copy(alpha=.25f))){Text("待审批",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=12.sp,lineHeight=16.sp,fontWeight=FontWeight.SemiBold)}
+                Spacer(Modifier.width(6.dp));Surface(color=MaterialTheme.colorScheme.tertiaryContainer,contentColor=MaterialTheme.colorScheme.onTertiaryContainer,shape=RoundedCornerShape(8.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.tertiary.copy(alpha=.25f))){Text(if(question)"待回答"else"待审批",Modifier.padding(horizontal=8.dp,vertical=3.dp),fontSize=12.sp,lineHeight=16.sp,fontWeight=FontWeight.SemiBold)}
             }
             val summary=if(question)params.optJSONArray("questions").objects().firstOrNull()?.optString("question").orEmpty()else params.optString("command").ifBlank{params.optString("reason")}
             if(summary.isNotBlank())Surface(color=PocketPalette.subtle,shape=RoundedCornerShape(10.dp),border=BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){

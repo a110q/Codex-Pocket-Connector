@@ -77,16 +77,23 @@ internal fun threadTime(thread:JSONObject):String{
     }catch(_:Exception){""}
 }
 
-private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运行中"),APPROVAL("待审批")}
+private enum class WorkspaceFilter(val label:String){
+    ALL("全部"),RUNNING("运行中"),PENDING("待我处理");
 
-@Composable fun ThreadList(model:PocketModel,onNew:()->Unit,onProjectNew:(String)->Unit,activeOnly:Boolean=false,onCreate:()->Unit={}){
+    fun matches(activity:ThreadActivity)=when(this){
+        ALL->true
+        RUNNING->activity==ThreadActivity.RUNNING
+        PENDING->activity.needsUserAction
+    }
+}
+
+@Composable fun ThreadList(model:PocketModel,onNew:()->Unit,onProjectNew:(String)->Unit,activeOnly:Boolean=false,onCreate:()->Unit={},onOpenPending:(JSONObject)->Unit={model.openThread(it)}){
     val search=if(activeOnly)model.taskSearch else model.projectSearch
     fun updateSearch(v:String){if(activeOnly)model.taskSearch=v else model.projectSearch=v}
     var searching by rememberSaveable(activeOnly){mutableStateOf(search.isNotBlank())}
-    val pager=rememberPagerState(pageCount={WorkspaceFilter.entries.size})
+    val pager=key(model.showArchived){rememberPagerState(pageCount={WorkspaceFilter.entries.size})}
     val pagerScope=rememberCoroutineScope()
     val filter=WorkspaceFilter.entries[pager.currentPage]
-    LaunchedEffect(activeOnly,model.showArchived){pager.scrollToPage(0)}
     var menu by remember{mutableStateOf(false)}
     val allThreads=model.threads.filter{it.optBoolean("archived")==model.showArchived}.filter{!activeOnly||threadActivity(it).actionable}
     fun matches(t:JSONObject)=t.label().contains(search,true)
@@ -94,7 +101,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
             Column(Modifier.weight(1f)){
                 Text(if(activeOnly)"任务动态"else if(model.showArchived)"已归档"else"工作空间",fontSize=22.sp,lineHeight=28.sp,fontWeight=FontWeight.SemiBold)
-                Text(if(activeOnly)"运行、审批与出错的对话"else"${model.projects.size} 个项目 · ${allThreads.size} 个对话",maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if(activeOnly)"正在运行、等待处理或出错的对话"else"${model.projects.size} 个项目 · ${allThreads.size} 个对话",maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
             PocketAction("搜索",if(searching)"收起搜索"else"展开搜索"){searching=!searching;if(!searching)updateSearch("")}
             FilledTonalIconButton(onClick=onCreate,enabled=model.connected&&!model.busy&&model.pendingOperation==null,shape=RoundedCornerShape(14.dp),modifier=Modifier.size(48.dp).semantics{contentDescription="新建对话"}){PocketIcon("新增")}
@@ -109,7 +116,7 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=16.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
             WorkspaceFilter.entries.forEach{option->
-                val count=allThreads.count{when(option){WorkspaceFilter.ALL->true;WorkspaceFilter.RUNNING->threadActivity(it)==ThreadActivity.RUNNING;WorkspaceFilter.APPROVAL->threadActivity(it)==ThreadActivity.APPROVAL}}
+                val count=allThreads.count{option.matches(threadActivity(it))}
                 Surface(onClick={pagerScope.launch{pager.animateScrollToPage(option.ordinal)}},color=if(filter==option)MaterialTheme.colorScheme.primaryContainer else Color.Transparent,contentColor=if(filter==option)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,shape=RoundedCornerShape(12.dp),modifier=Modifier.heightIn(min=48.dp).semantics{contentDescription="筛选${option.label}对话";selected=filter==option;role=Role.Tab;stateDescription=if(filter==option)"已选中"else"未选中"}){
                     Row(Modifier.padding(horizontal=14.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)){
                         Text(option.label,fontSize=13.sp,fontWeight=if(filter==option)FontWeight.SemiBold else FontWeight.Normal)
@@ -122,18 +129,19 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
         if(searching)TextField(search,::updateSearch,modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp).padding(bottom=8.dp).heightIn(min=52.dp).semantics{contentDescription="搜索项目或对话"},placeholder={Text("搜索项目或对话",fontSize=14.sp)},leadingIcon={PocketIcon("搜索",Modifier.size(20.dp))},trailingIcon={if(search.isNotBlank())PocketAction("关闭","清空搜索"){updateSearch("")}},singleLine=true,shape=RoundedCornerShape(12.dp),colors=TextFieldDefaults.colors(focusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,unfocusedContainerColor=MaterialTheme.colorScheme.surfaceVariant,focusedIndicatorColor=Color.Transparent,unfocusedIndicatorColor=Color.Transparent))
         HorizontalPager(pager,modifier=Modifier.weight(1f).fillMaxWidth().testTag("workspace-pages"),verticalAlignment=Alignment.Top,key={WorkspaceFilter.entries[it].name}){page->
             val pageFilter=WorkspaceFilter.entries[page]
-            val threads=allThreads.filter{when(pageFilter){WorkspaceFilter.ALL->true;WorkspaceFilter.RUNNING->threadActivity(it)==ThreadActivity.RUNNING;WorkspaceFilter.APPROVAL->threadActivity(it)==ThreadActivity.APPROVAL}}
+            val threads=allThreads.filter{pageFilter.matches(threadActivity(it))}
+            val openThread:(JSONObject)->Unit=if(pageFilter==WorkspaceFilter.PENDING)onOpenPending else model::openThread
             val projectIds=model.projects.map{it.optString("projectId")}.toSet()
             val visible=model.projects.filter{p->
                 val children=threads.filter{it.optString("projectId")==p.optString("projectId")}
                 (pageFilter==WorkspaceFilter.ALL||children.isNotEmpty())&&(search.isBlank()||p.label().contains(search,true)||children.any(::matches))
             }
             val standalone=threads.filter{it.optString("projectId") !in projectIds}.filter(::matches)
-            LazyColumn(Modifier.fillMaxSize().then(if(page==pager.currentPage)Modifier else Modifier.clearAndSetSemantics{}).navigationBarsPadding(),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+            LazyColumn(Modifier.fillMaxSize().then(if(page==pager.currentPage)Modifier else Modifier.clearAndSetSemantics{}).testTag("workspace-list-${pageFilter.name}").navigationBarsPadding(),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                 if(activeOnly){
                     val shown=threads.filter(::matches)
                     if(shown.isEmpty())item{WorkspaceEmpty(pageFilter,search,true)}
-                    items(shown,key={it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false)}
+                    items(shown,key={it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false){openThread(it)}}
                 }else{
                     visible.forEach{project->
                         val id=project.optString("projectId");val children=threads.filter{it.optString("projectId")==id}
@@ -144,13 +152,13 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
                         if(open){
                             val shown=children.filter{project.label().contains(search,true)||matches(it)}
                             if(shown.isEmpty())item{Text("还没有对话，点 ＋ 开始",Modifier.padding(start=51.dp,top=8.dp,bottom=18.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-                            items(shown,key={"project-chat:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,true)}
+                            items(shown,key={"project-chat:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,true){openThread(it)}}
                         }
                         item(key="divider:$id"){Spacer(Modifier.height(8.dp))}
                     }
                     if(standalone.isNotEmpty()){
                         item{Text("独立对话",Modifier.padding(horizontal=8.dp,vertical=8.dp),fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurfaceVariant)}
-                        items(standalone,key={"independent:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false)}
+                        items(standalone,key={"independent:"+it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false){openThread(it)}}
                     }
                     if(visible.isEmpty()&&standalone.isEmpty())item{WorkspaceEmpty(pageFilter,search,false)}
                 }
@@ -160,8 +168,8 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
 }
 
 @Composable private fun WorkspaceEmpty(filter:WorkspaceFilter,search:String,activeOnly:Boolean){
-    val title=when{search.isNotBlank()->"没有找到相关对话";filter==WorkspaceFilter.RUNNING->"暂无运行中的对话";filter==WorkspaceFilter.APPROVAL->"暂无待审批的对话";activeOnly->"暂无待处理任务";else->"你的工作空间"}
-    EmptyState(title,if(search.isNotBlank())"试试其他关键词，或切换筛选。"else if(filter!=WorkspaceFilter.ALL)"状态变化后会自动显示在这里。"else"连接电脑后，项目与对话会同步到这里。")
+    val title=when{search.isNotBlank()->"没有找到相关对话";filter==WorkspaceFilter.RUNNING->"暂无运行中的对话";filter==WorkspaceFilter.PENDING->"暂无需要你处理的对话";activeOnly->"暂无待处理任务";else->"你的工作空间"}
+    EmptyState(title,if(search.isNotBlank())"试试其他关键词，或切换筛选。"else if(filter==WorkspaceFilter.PENDING)"需要审批或回答的对话会自动显示在这里。"else if(filter!=WorkspaceFilter.ALL)"状态变化后会自动显示在这里。"else"连接电脑后，项目与对话会同步到这里。")
 }
 
 @Composable private fun ProjectHeading(project:JSONObject,count:Int,running:Int,waiting:Int,completed:Int,open:Boolean,connected:Boolean,onToggle:()->Unit,onNew:()->Unit){
@@ -215,14 +223,14 @@ private enum class WorkspaceFilter(val label:String){ALL("全部"),RUNNING("运�
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun WorkspaceThread(thread:JSONObject,model:PocketModel,nested:Boolean){
+@Composable private fun WorkspaceThread(thread:JSONObject,model:PocketModel,nested:Boolean,onOpen:()->Unit){
     var menu by remember{mutableStateOf(false)};var deleting by remember{mutableStateOf(false)};var rename by remember{mutableStateOf(false)}
     val activity=threadActivity(thread);val running=activity==ThreadActivity.RUNNING
     val accent=when{!model.connected->MaterialTheme.colorScheme.onSurfaceVariant;running->MaterialTheme.colorScheme.primary;activity.waiting->MaterialTheme.colorScheme.tertiary;else->MaterialTheme.colorScheme.error}
     Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
         if(nested){Spacer(Modifier.width(12.dp));Box(Modifier.width(1.dp).height(48.dp).background(MaterialTheme.colorScheme.outlineVariant));Spacer(Modifier.width(8.dp))}
         Box(Modifier.weight(1f)){
-        Surface(shape=RoundedCornerShape(12.dp),color=when{running&&model.connected->MaterialTheme.colorScheme.primaryContainer;activity.waiting&&model.connected->MaterialTheme.colorScheme.tertiaryContainer;else->Color.Transparent},modifier=Modifier.fillMaxWidth().combinedClickable(onClick={model.openThread(thread)},onLongClick={menu=true},onLongClickLabel="管理对话").semantics{contentDescription="${thread.label()}，${if(!model.connected&&activity.actionable)"上次状态："else""}${activity.label}"}){
+        Surface(shape=RoundedCornerShape(12.dp),color=when{running&&model.connected->MaterialTheme.colorScheme.primaryContainer;activity.waiting&&model.connected->MaterialTheme.colorScheme.tertiaryContainer;else->Color.Transparent},modifier=Modifier.fillMaxWidth().combinedClickable(onClick=onOpen,onLongClick={menu=true},onLongClickLabel="管理对话").semantics{contentDescription="${thread.label()}，${if(!model.connected&&activity.actionable)"上次状态："else""}${activity.label}"}){
             Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(horizontal=8.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
                 ThreadActivityMarker(activity,model.connected)
                 if(model.hasUnseenCompletion(thread)){Spacer(Modifier.width(4.dp));CompletionDot("${thread.label()}：任务已完成，未查看")}

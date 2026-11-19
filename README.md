@@ -47,15 +47,17 @@
 ## 下载安装
 
 
-**Android、Windows、macOS 统一为 0.9.16.1（构建号 49）。** 修复新版 Codex 桌面端 v13 会话兼容、无关广播触发断连和 Windows 更新下载位置打开失败。手机保留 0.9.16 的实时内容恢复、中文排版和任务完成蓝点。请更新电脑连接器，覆盖更新保留账号和配对信息；下载与安装由用户决定。中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，校验值见同版 `SHA256SUMS.txt`。
+**Android、Windows、macOS 统一为 0.9.17.3（构建号 53）。** 修复 Windows 从共享目录启动时连接器静默退出，以及手机发起对话后电脑无法接续或归档、手机无法删除的问题。Android 新增「待我处理」，可定位等待审批或回答的对话。覆盖更新保留账号和配对信息；中继 0.9.12.1 继续兼容。从 [GitHub Releases](https://github.com/a110q/Codex-Pocket-Connector/releases/latest) 下载，校验值见同版 `SHA256SUMS.txt`。
 
 | 平台 | 下载 | 使用方式 |
 | --- | --- | --- |
-| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.16.1/Codex-Pocket-0.9.16.1.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
-| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.16.1/Codex-Pocket-Connector-0.9.16.1-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.16.1/Codex-Pocket-Connector-0.9.16.1-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
-| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.16.1/Codex-Pocket-Connector-0.9.16.1-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
+| Android 10+ | [APK](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.17.3/Codex-Pocket-0.9.17.3.apk) | 安装或覆盖更新；管理员和普通用户使用同一个包 |
+| Windows 11 x64 | [EXE](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.17.3/Codex-Pocket-Connector-0.9.17.3-Windows.exe) · [ZIP](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.17.3/Codex-Pocket-Connector-0.9.17.3-Windows.zip) | 直接运行 EXE；需要 WebView2 Runtime |
+| macOS 13+ | [Mac APP 压缩包](https://github.com/a110q/Codex-Pocket-Connector/releases/download/v0.9.17.3/Codex-Pocket-Connector-0.9.17.3-macOS.zip) | 解压得到 `.app`，移入「应用程序」后打开；支持 Apple Silicon / Intel |
 
 Mac 包尚未 Apple 公证，Windows EXE 尚未代码签名。请核对下载来源；如系统拦截，可使用系统提供的「仍要打开」或「更多信息」入口。Windows 版本仍需更多实机反馈。
+
+> 本地电脑连接器测试包 **0.9.17.1** 修复手机创建对话的占用交接和管理，并补充 Windows 启动诊断。未上线，Windows 仍待实机确认。见[验证记录](docs/verification-0.9.17.1.md)。
 
 ## 第一次使用
 

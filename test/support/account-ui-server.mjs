@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { fixture } from './connector-fixture.mjs';
-import { startConnector } from '../../connector.mjs';
+import { startConnector } from '../../connector-server.mjs';
 import { secret } from '../../protocol.mjs';
 import { X509Certificate } from 'node:crypto';
 import { prepareLan,startLanRelay } from '../../lan.mjs';

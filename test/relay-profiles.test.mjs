@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fixture } from './support/connector-fixture.mjs';
 import { RelayProfiles, verifyRelay } from '../relay-profiles.mjs';
-import { startConnector } from '../connector.mjs';
+import { startConnector } from '../connector-server.mjs';
 import { readJson } from '../connector-core.mjs';
 
 test('custom relay validates TLS, host and protocol, isolates identities, and restores built-in pairing',async t=>{

@@ -1,4 +1,4 @@
-name: Node checks
+name: Project checks
 on: [push, pull_request]
 permissions:
   contents: read
@@ -13,3 +13,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+  windows-state-directory:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Windows state directory startup
+        shell: powershell
+        run: .\test\windows\state-directory.ps1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --test test/connector-entry.test.mjs

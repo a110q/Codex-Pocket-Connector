@@ -6,7 +6,7 @@ import { compareVersions } from '../version.mjs';
 import { UpdateManager, verifyRelease, updateRequest, revealUpdate } from '../updates.mjs';
 import { updateFixture } from './support/update-fixture.mjs';
 import { fixture } from './support/connector-fixture.mjs';
-import { startConnector } from '../connector.mjs';
+import { startConnector } from '../connector-server.mjs';
 
 test('update versions compare numeric third and fourth components without treating a prefix as equal',()=>{
   for(const [a,b]of[['0.9.10','0.9.9.3'],['0.9.9.10','0.9.9.3'],['0.10.0','0.9.99.99'],['1.0.0','0.99.99.99']]){assert.equal(compareVersions(a,b),1);assert.equal(compareVersions(b,a),-1)}

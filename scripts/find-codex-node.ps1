@@ -50,12 +50,14 @@ function Find-CodexNode {
         if (-not [IO.Path]::IsPathRooted($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
         if ([IO.Path]::GetFileName($candidate) -ine 'node.exe') { continue }
         try {
-            $version = & $candidate -p "process.versions.node" 2>$null
+            # The Pocket backend imports node:sqlite at startup. A Node build
+            # that reports a suitable version can still lack that module.
+            $version = & $candidate --no-warnings -p "typeof require('node:sqlite').DatabaseSync === 'function' ? process.versions.node : ''" 2>$null
             if ($LASTEXITCODE -ne 0 -or $version -notmatch '^(\d+)\.(\d+)\.(\d+)$') { continue }
             if ([int]$Matches[1] -gt 22 -or ([int]$Matches[1] -eq 22 -and [int]$Matches[2] -ge 13)) {
                 return [IO.Path]::GetFullPath($candidate)
             }
         } catch { continue }
     }
-    throw 'Codex bundled Node 22.13+ was not found. Install and open the official Codex Windows app, sign in, then reopen Codex Pocket. Official download: https://chatgpt.com/codex . A custom desktop location can use POCKET_NODE to point to its bundled node.exe.'
+    throw '未找到可运行 Codex Pocket 的 Node 环境（需要 Node 22.13 或更高版本，并支持 node:sqlite）。可在诊断中确认失败阶段。'
 }

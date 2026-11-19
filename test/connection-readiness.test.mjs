@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { fixture } from './support/connector-fixture.mjs';
 import { startCompanion } from '../companion.mjs';
-import { startConnector } from '../connector.mjs';
+import { startConnector } from '../connector-server.mjs';
 import { StandaloneAdapter } from '../standalone-adapter.mjs';
 import { CipherChannel, digest, secret } from '../protocol.mjs';
 

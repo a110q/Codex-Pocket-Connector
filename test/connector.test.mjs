@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { copyFileSync, readFileSync, existsSync, mkdirSync, statSync, readdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import http from 'node:http';
@@ -8,9 +10,41 @@ import { DatabaseSync } from 'node:sqlite';
 import WebSocket from 'ws';
 import { fixture } from './support/connector-fixture.mjs';
 import { Enrollment, readJson, connectionCommand, diagnose } from '../connector-core.mjs';
-import { startConnector } from '../connector.mjs';
+import { startConnector } from '../connector-server.mjs';
 import { relayRequest } from '../companion.mjs';
 import { secret, digest, CipherChannel } from '../protocol.mjs';
+
+test('native launch failures report only diagnostic codes and close the unannounced listener', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const source = resolve(import.meta.dirname, '..'), root = resolve(f.directory, 'package');
+  const state = resolve(f.directory, 'isolated state');
+  mkdirSync(root); mkdirSync(state);
+  for (const file of readdirSync(source).filter(file => /\.mjs$/.test(file) || ['package.json','connector.html','contact-defaults.json'].includes(file))) {
+    copyFileSync(resolve(source, file), resolve(root, file));
+  }
+  writeFileSync(resolve(root, 'connector-defaults.json'), JSON.stringify(f.defaults));
+  const descriptor = resolve(f.directory, 'ready.json');
+  const run = extra => spawnSync(process.execPath, [resolve(root, 'connector.mjs'), '--native', '--descriptor', descriptor], {
+    cwd: root, env: { ...process.env, POCKET_STATE_DIR: state, POCKET_MANAGER_PORT: '43787', ...extra }, encoding: 'utf8', timeout: 15000
+  });
+  const corrupt = '{"token":"should-not-appear-in-diagnostics",';
+  const setup = resolve(state, 'connector.json');
+  writeFileSync(setup, corrupt);
+  const invalid = run();
+  assert.ifError(invalid.error);
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /POCKET_STARTUP_ERROR:LOCAL_CONFIG:INVALID_JSON/);
+  assert(!invalid.stderr.includes('should-not-appear'));
+  assert.equal(readFileSync(setup, 'utf8'), corrupt, 'do not reset existing account/relay data');
+  assert(!existsSync(descriptor));
+  writeFileSync(setup, '{}');
+  mkdirSync(descriptor);
+  const blocked = run();
+  assert.ifError(blocked.error);
+  assert.equal(blocked.status, 1);
+  assert.equal(blocked.stdout, '');
+  assert.match(blocked.stderr, /POCKET_STARTUP_ERROR:DESCRIPTOR:(EISDIR|EEXIST|EPERM|EACCES)/);
+});
 
 test('invitations require admin authorization, expire, revoke, redeem once and remain durable', async t => {
   const f = await fixture(); t.after(() => f.close());

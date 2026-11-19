@@ -10,7 +10,7 @@ import { relayRequest } from '../companion.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { startConnector } from '../connector.mjs';
+import { startConnector } from '../connector-server.mjs';
 import { ConnectorRuntime } from '../connector-runtime.mjs';
 
 const pass = 'Test-only-long-password-429';

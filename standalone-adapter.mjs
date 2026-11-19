@@ -15,6 +15,9 @@ const modes = { 'read-only': { permissions: ':read-only', approvalPolicy: 'on-re
 const string = (value, label, length = 100000) => { if (typeof value !== 'string' || !value.trim() || value.length > length) throw new Error(`${label}无效`); return value; };
 const writerConflict = error => /^thread [\w-]+ already has an active writer[.!]?$/i.test(error.message);
 const notSubmitted = error => Object.assign(error, { notSubmitted: true, uncertain: false });
+const threadHasActiveWork = state => state.status?.type === 'active' ||
+  (state.status?.type !== 'idle' && state.turns?.some(turn => turn.status === 'inProgress')) ||
+  state.requests?.some(request => !request.completed);
 
 export class StandaloneAdapter extends DesktopAdapter {
   constructor(options = {}) {
@@ -206,7 +209,7 @@ export class StandaloneAdapter extends DesktopAdapter {
         }
         await this.runtimeReader.connect();
         if (this.runtimeReader.read) {
-          runtime = await this.runtimeReader.read(catalog);
+          runtime = await this.runtimeReader.read({ ...catalog, threads: catalog.threads.filter(({ id }) => !this.ownedThreads.has(id)) });
         } else {
         const schema = this.runtimeReader.tools?.find(tool => tool.name === 'list_threads')?.inputSchema;
         const supportsHistory = !schema || !!schema.properties?.mode;
@@ -299,26 +302,41 @@ export class StandaloneAdapter extends DesktopAdapter {
     const pending = previous.catch(() => {}).then(operation); this.threadQueues.set(threadId, pending);
     try { return await pending; } finally { if (this.threadQueues.get(threadId) === pending) this.threadQueues.delete(threadId); }
   }
+  hasPendingApproval(threadId) {
+    return [...this.approvals.values()].some(request => request.params?.threadId === threadId && !request.completed);
+  }
   async releaseThread(threadId) {
     return this.withThread(threadId, () => this.releaseThreadLocked(threadId));
   }
-  async releaseThreadLocked(threadId, notify = true) {
-      if (!this.ownedThreads.has(threadId)) return false;
-      if (this.ownerBridge.retain(threadId)) return false;
-      const state = await this.storedState(threadId);
-      // Runtime status is authoritative. Interrupted historical turns may
-      // retain an old inProgress flag even though the loaded thread is idle.
-      if (state.status?.type === 'active' || (state.status?.type !== 'idle' && state.turns.some(turn => turn.status === 'inProgress')) || [...this.approvals.values()].some(request => request.params?.threadId === threadId)) return false;
-      if (this.ownerBridge.retain(threadId)) return false;
-      const client = this.serverFor(threadId);
-      // Unsubscribe alone retains the engine's writer lock. A separate process
-      // per mobile-owned thread lets an idle chat release it without stopping
-      // another running chat. The catalog process never resumes threads.
-      if (client.closeAndWait) await client.closeAndWait(); else client.close();
-      this.threadServers.delete(threadId); this.ownedThreads.delete(threadId); this.ownerBridge.forget(threadId); if (notify) this.announceThread(threadId); return true;
+  async releaseThreadLocked(threadId) {
+    if (!this.ownedThreads.has(threadId)) return false;
+    if (!this.serverFor(threadId).closing) {
+      // A follower is a reader, not proof of active work. Even an open
+      // desktop view must not leave an idle writer locked indefinitely.
+      if (this.hasPendingApproval(threadId)) return false;
+      const { thread } = await this.serverFor(threadId).request('thread/read', { threadId, includeTurns: false });
+      if (thread.status?.type === 'active') return false;
+      // Known-idle status is authoritative; don't load pages of history just
+      // to release a writer on a completed turn.
+      if (thread.status?.type !== 'idle' && threadHasActiveWork(await this.storedState(threadId))) return false;
+      if (this.hasPendingApproval(threadId)) return false;
+    }
+    await this.closeThreadWriter(threadId);
+    this.announceThread(threadId);
+    return true;
   }
-  scheduleRelease(threadId, attempt = 0) {
-    if (this.releaseTimers.has(threadId)) return;
+  async closeThreadWriter(threadId) {
+    const client = this.serverFor(threadId);
+    // Unsubscribe alone does not release the engine's writer lock. Wait for
+    // the dedicated process to exit, without stopping any other conversation.
+    if (client.closeAndWait) await client.closeAndWait(); else client.close();
+    this.threadServers.delete(threadId); this.ownedThreads.delete(threadId); this.ownerBridge.forget(threadId);
+  }
+  scheduleRelease(threadId, attempt = 0, expedite = false) {
+    if (this.releaseTimers.has(threadId)) {
+      if (!expedite) return;
+      clearTimeout(this.releaseTimers.get(threadId));
+    }
     const timer = setTimeout(async () => {
       this.releaseTimers.delete(threadId);
       if (!this.ready) return;
@@ -529,10 +547,10 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.extensions?.onEvent({method,params});
     const threadId = params?.threadId ?? params?.thread?.id;
     if(method==='serverRequest/resolved')for(const [key,request]of this.approvals)if(String(request.id)===String(params?.requestId)&&request.params?.threadId===threadId)this.approvals.delete(key);
-    if (method === 'thread/status/changed' && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId);
+    if (method === 'thread/status/changed' && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId, 0, params?.status?.type === 'idle');
     if (method === 'turn/completed' && this.ownedThreads.has(threadId)) {
       for (const [id, request] of this.approvals) if (request.params?.threadId === threadId) this.approvals.delete(id);
-      this.scheduleRelease(threadId);
+      this.scheduleRelease(threadId, 0, true);
     }
     if (!threadId || !this.ownedThreads.has(threadId) || this.refreshTimers.has(threadId)) return;
     const timer = setTimeout(async () => {
@@ -554,26 +572,34 @@ export class StandaloneAdapter extends DesktopAdapter {
       let state;
       try { state = await this.storedState(threadId); }
       catch (error) {
-        if (action !== 'thread.delete') throw error;
+        if (action !== 'thread.delete') throw notSubmitted(error);
         const all = [...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: false }), ...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: true })];
-        if (all.some(thread => thread.id === threadId)) throw error;
+        if (all.some(thread => thread.id === threadId)) throw notSubmitted(error);
         const desktopNotified = this.announceThread(threadId, { removed: true });
         return { threadId, deleted: true, archived: false, alreadyDeleted: true, verified: true, desktopNotified };
       }
-      if (state.status?.type === 'active' || state.turns.some(turn => turn.status === 'inProgress')) throw new Error('请先停止正在运行的任务，再管理对话');
-      clearTimeout(this.catalogRefreshTimers.get(threadId)); this.catalogRefreshTimers.delete(threadId);
-      clearTimeout(this.releaseTimers.get(threadId)); this.releaseTimers.delete(threadId);
-      await this.releaseThreadLocked(threadId, false);
+      if (threadHasActiveWork(state) || this.hasPendingApproval(threadId)) throw notSubmitted(new Error('请先结束正在运行的任务或处理待确认请求，再管理对话。'));
       const deleted = action === 'thread.delete', archived = action === 'thread.archive';
-      if (archived || (deleted && !state.archived)) {
-        const client = await this.createThreadServer();
-        try {
-          try { await client.request('thread/resume', { threadId, excludeTurns: true }); }
-          catch { throw Object.assign(new Error('这条对话仍由电脑持有，请在电脑关闭该对话页面后重试管理操作。'), { notSubmitted: true }); }
-          await client.request('thread/archive', { threadId });
-        } finally { if (client.closeAndWait) await client.closeAndWait(); else client.close(); }
+      const owned = this.ownedThreads.has(threadId);
+      try {
+        // Use the existing Pocket writer if there is one. For persisted
+        // threads, the management RPC works without resuming the chat.
+        await (owned ? this.serverFor(threadId) : this.server).request(action.replace('.', '/'), { threadId });
+      } catch (error) {
+        // Only a positive lock refusal proves no archive/delete was submitted.
+        if (writerConflict(error)) throw notSubmitted(new Error('这条对话仍被另一个 Codex 进程占用，本次操作未执行。可在持有对话的 Codex 中归档；如需在手机删除，请在任务和审批结束后退出占用它的客户端再重试。'));
+        throw error;
       }
-      if (!archived) await this.server.request(action.replace('.', '/'), { threadId });
+      if (owned && (deleted || archived)) {
+        // The engine has removed the session; confirm the dedicated writer
+        // has stopped before notifying the desktop and verifying persistence.
+        try { await this.closeThreadWriter(threadId); }
+        catch { throw Object.assign(new Error('操作已提交，但尚未确认 Codex 进程退出，请刷新检查。'), { uncertain: true }); }
+      }
+      clearTimeout(this.catalogRefreshTimers.get(threadId)); this.catalogRefreshTimers.delete(threadId);
+      if (!this.ownedThreads.has(threadId)) {
+        clearTimeout(this.releaseTimers.get(threadId)); this.releaseTimers.delete(threadId);
+      }
       if (deleted) {
         const all = [...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: false }), ...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: true })];
         if (all.some(thread => thread.id === threadId)) throw Object.assign(new Error('删除已提交，电脑列表尚未确认，请刷新检查'), { uncertain: true });

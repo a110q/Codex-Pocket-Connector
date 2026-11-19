@@ -6,13 +6,14 @@ import org.json.JSONObject
 internal enum class ThreadActivity(val label: String, val wireStatus: String) {
     RUNNING("运行中", "active"),
     APPROVAL("等待审批", "waitingForApproval"),
-    INPUT("等待输入", "waitingForUserInput"),
+    INPUT("等待回答", "waitingForUserInput"),
     WAITING("等待操作", "waiting"),
     ERROR("出错", "systemError"),
     IDLE("可继续", "idle"),
     UNKNOWN("状态未知", "unknown");
 
-    val waiting get() = this == APPROVAL || this == INPUT || this == WAITING
+    val needsUserAction get() = this == APPROVAL || this == INPUT
+    val waiting get() = needsUserAction || this == WAITING
     val inFlight get() = this == RUNNING || waiting
     val actionable get() = inFlight || this == ERROR
 }
@@ -27,11 +28,17 @@ internal fun activityForStatus(status: String): ThreadActivity = when (status) {
     else -> ThreadActivity.UNKNOWN
 }
 
+internal fun isApprovalRequest(request: JSONObject) = request.optString("method").contains("requestApproval", true)
+
+internal fun pendingThreadRequests(requests: JSONArray?): List<JSONObject> = requests.objects().filter {
+    !it.optBoolean("completed") && it.optString("status") !in listOf("completed", "cancelled", "resolved")
+}
+
 // Runtime flags and open requests can distinguish approval/input from an active
 // turn. An explicit idle status wins over stale turn-history inProgress flags.
 internal fun threadActivity(thread: JSONObject, requests: JSONArray? = null): ThreadActivity {
-    val pending = requests.objects().filter { !it.optBoolean("completed") && it.optString("status") !in listOf("completed", "cancelled", "resolved") }
-    if (pending.any { it.optString("method").contains("requestApproval", true) }) return ThreadActivity.APPROVAL
+    val pending = pendingThreadRequests(requests)
+    if (pending.any(::isApprovalRequest)) return ThreadActivity.APPROVAL
     if (pending.isNotEmpty()) return ThreadActivity.INPUT
     val raw = thread.optJSONObject("status") ?: thread.optJSONObject("threadRuntimeStatus")
     val activity = activityForStatus(raw?.optString("type") ?: thread.optString("status"))

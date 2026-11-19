@@ -48,9 +48,8 @@ export function desktopConversation(state) {
 }
 
 export class DesktopOwnerBridge {
-  constructor(adapter) { this.adapter = adapter; this.followers = new Map(); this.interest = new Map(); this.revisions = new Map(); }
+  constructor(adapter) { this.adapter = adapter; this.followers = new Map(); this.revisions = new Map(); }
   owns(id) { return this.adapter.ready && this.adapter.ownedThreads.has(id); }
-  retain(id) { return !!this.followers.get(id)?.size || Date.now() - (this.interest.get(id) ?? 0) < 5000; }
   accepts(request) {
     const p = request?.params;
     return plain(p) && (request.hostId == null || request.hostId === 'local') && (p.hostId == null || p.hostId === 'local') && this.owns(p.conversationId) &&
@@ -60,13 +59,11 @@ export class DesktopOwnerBridge {
     const a = this.adapter;
     if (message.type === 'client-discovery-request') {
       const canHandle = this.accepts(message.request);
-      if (canHandle) this.interest.set(message.request.params.conversationId, Date.now());
       a.ipc.write({ type: 'client-discovery-response', requestId: message.requestId, response: { canHandle } }); return true;
     }
     if (message.type === 'request') {
       const reply = result => { try { a.ipc.write({ type: 'response', requestId: message.requestId, ...result }); } catch {} };
       if (!this.accepts(message)) { reply({ resultType: 'error', error: 'no-client-found: Pocket no longer owns this thread or protocol version differs' }); return true; }
-      this.interest.set(message.params.conversationId, Date.now());
       this.request(message).then(result => reply({ resultType: 'success', method: message.method, handledByClientId: a.clientId, result }), error => reply({ resultType: 'error', error: error.message })); return true;
     }
     if (message.type === 'broadcast' && message.method === 'thread-stream-following-changed' && message.version === 1) {
@@ -74,11 +71,11 @@ export class DesktopOwnerBridge {
       if (p?.hostId !== 'local' || !this.owns(p.conversationId) || !message.sourceClientId) return false;
       const clients = this.followers.get(p.conversationId) ?? new Set();
       if (p.following === true) { clients.add(message.sourceClientId); this.followers.set(p.conversationId, clients); void this.publish(p.conversationId).catch(() => {}); }
-      else if (p.following === false) { clients.delete(message.sourceClientId); if (!clients.size) { this.followers.delete(p.conversationId); this.interest.delete(p.conversationId); a.scheduleRelease(p.conversationId); } }
+      else if (p.following === false) { clients.delete(message.sourceClientId); if (!clients.size) { this.followers.delete(p.conversationId); a.scheduleRelease(p.conversationId); } }
       return true;
     }
     if (message.type === 'broadcast' && message.method === 'client-status-changed' && message.params?.status === 'disconnected') {
-      for (const [id, clients] of this.followers) { clients.delete(message.params.clientId); if (!clients.size) { this.followers.delete(id); this.interest.delete(id); a.scheduleRelease(id); } }
+      for (const [id, clients] of this.followers) { clients.delete(message.params.clientId); if (!clients.size) { this.followers.delete(id); a.scheduleRelease(id); } }
     }
     return false;
   }
@@ -138,6 +135,6 @@ export class DesktopOwnerBridge {
       await this.publish(id); a.scheduleRelease(id); return result;
     });
   }
-  reset() { this.followers.clear(); this.interest.clear(); }
-  forget(id) { this.followers.delete(id); this.interest.delete(id); this.revisions.delete(id); }
+  reset() { this.followers.clear(); }
+  forget(id) { this.followers.delete(id); this.revisions.delete(id); }
 }

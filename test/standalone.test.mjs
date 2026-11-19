@@ -60,6 +60,18 @@ test('stdio connects without a caller chat, handles partial frames, paging, erro
   assert(child.exitCode !== null || child.signalCode !== null);
 });
 
+test('an unconfirmed App Server exit is still tracked on the next handoff attempt', async () => {
+  const client = new AppServerClient();
+  const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null, signalCode: null, stdin: { end() {} }, kill() {} });
+  client.child = child;
+  await assert.rejects(client.closeAndWait({ graceMs: 5, killWaitMs: 5 }), /尚未退出/);
+  assert.equal(client.closing.child, child);
+  await assert.rejects(client.closeAndWait({ graceMs: 5, killWaitMs: 5 }), /尚未退出/);
+  child.emit('exit', 0);
+  await client.closeAndWait();
+  assert.equal(client.closing, null);
+});
+
 test('Codex discovery uses installed bundled executables and does not require tool-pipe environment', () => {
   const exe='/Applications/Codex.app/Contents/Resources/cua_node/bin/node',cli='/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex';
   assert.equal(findCodexCLI({env:{},executable:exe,platform:'darwin',exists:p=>p===cli}),cli);
@@ -377,7 +389,6 @@ test('archive, restore and delete change the backend and verify the fresh list; 
     archived=false;deleted=false;active=false;
     async request(method,params){this.calls.push({method,params});
       if(method==='thread/read'){if(this.deleted)throw Error('thread not loaded');return{thread:{id:'qa',status:{type:this.active?'active':'idle'},turns:[]}};}
-      if(method==='thread/resume')return{thread:{id:'qa'}};
       if(method==='thread/archive')this.archived=true;
       else if(method==='thread/unarchive')this.archived=false;
       else if(method==='thread/delete')this.deleted=true;
@@ -387,7 +398,7 @@ test('archive, restore and delete change the backend and verify the fresh list; 
   }
   const server=new Managed(),a=fixtureAdapter({server,catalog:false}),notifications=[];a.ready=true;t.after(()=>a.close());
   a.ipcAvailable=true;a.ipc={write:value=>notifications.push(value),close(){}};
-  server.active=true;await assert.rejects(a.call('thread.delete',{threadId:'qa'}),/停止/);assert(!server.deleted);server.active=false;
+  server.active=true;await assert.rejects(a.call('thread.delete',{threadId:'qa'}),e=>e.notSubmitted===true&&/正在运行/.test(e.message));assert(!server.deleted);server.active=false;
   assert.equal((await a.call('thread.archive',{threadId:'qa'})).verified,true);assert(server.archived);
   assert.equal((await a.call('thread.unarchive',{threadId:'qa'})).verified,true);assert(!server.archived);
   assert.equal((await a.call('thread.delete',{threadId:'qa'})).verified,true);assert(server.deleted);
@@ -395,6 +406,61 @@ test('archive, restore and delete change the backend and verify the fresh list; 
   assert.equal((await a.call('thread.delete',{threadId:'qa'})).alreadyDeleted,true);
   assert.equal(notifications.at(-1).method,'thread-archived');
   await assert.rejects(a.call('thread.archive',{threadId:'qa',hostId:'other'}),/本机/);
+});
+
+test('mobile management uses the already owned worker and protects pending approvals', async t => {
+  const catalog = new Server(), writer = new Server();
+  catalog.pages = async () => [];
+  const a = fixtureAdapter({ server: catalog, catalog: false, createThreadServer() { throw Error('must not open a second writer'); } });
+  a.ready = true; t.after(() => a.close());
+  a.threadServers.set('qa', writer); a.ownedThreads.add('qa');
+  writer.request = async (method, params) => {
+    writer.calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'qa', status: { type: 'idle' }, turns: [] } };
+    if (method === 'thread/delete') return {};
+    throw Error('unexpected ' + method);
+  };
+  let exited = false;
+  writer.closeAndWait = async () => { exited = true; };
+  a.approvals.set('qa:1', { params: { threadId: 'qa' } });
+  await assert.rejects(a.call('thread.delete', { threadId: 'qa' }), e => e.notSubmitted && /待确认/.test(e.message));
+  assert(!writer.calls.some(c => c.method === 'thread/delete'));
+  a.approvals.clear();
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).verified, true);
+  assert.equal(writer.calls.filter(c => c.method === 'thread/delete').length, 1);
+  assert(exited); assert(!a.ownedThreads.has('qa'));
+});
+
+test('an externally held writer rejects management once without resuming or retrying', async t => {
+  const server = new Server();
+  const a = fixtureAdapter({ server, catalog: false, createThreadServer() { throw Error('must not open a competing writer'); } });
+  a.ready = true; t.after(() => a.close());
+  server.request = async (method, params) => {
+    server.calls.push({ method, params });
+    if (method === 'thread/read') return { thread: { id: 'qa', status: { type: 'notLoaded' }, turns: [] } };
+    if (method === 'thread/archive') throw new Error('thread qa already has an active writer');
+    throw Error('unexpected ' + method);
+  };
+  await assert.rejects(a.call('thread.archive', { threadId: 'qa' }), e => e.notSubmitted && /本次操作未执行/.test(e.message));
+  assert.deepEqual(server.calls.map(c => c.method), ['thread/read', 'thread/archive']);
+});
+
+test('desktop runtime monitoring does not subscribe to its own Pocket-owned conversations', async t => {
+  const server = new Server();
+  const reader = { async connect() {}, async read(catalog) {
+    assert.deepEqual(catalog.threads.map(t => t.id), ['desktop']);
+    return new Map([['desktop', { status: 'idle' }]]);
+  }, close() {} };
+  const a = fixtureAdapter({ server, catalog: false, runtimeReader: reader });
+  const writer = new Server();
+  writer.request = async (method, params) => {
+    assert.equal(method, 'thread/read'); assert.deepEqual(params, { threadId: 'qa', includeTurns: false });
+    return { thread: { id: 'qa', status: { type: 'active' } } };
+  };
+  a.threadServers.set('qa', writer); a.ownedThreads.add('qa'); t.after(() => a.close());
+  const runtime = await a.readDesktopRuntime({ threads: [{ id: 'qa' }, { id: 'desktop' }] });
+  assert.equal(runtime.get('desktop').status, 'idle');
+  assert.equal(runtime.get('qa').status, 'active');
 });
 
 test('receipt reconciliation reads exact client IDs and never accepts equal text or rejected steering',async t=>{
@@ -427,7 +493,7 @@ test('desktop discovery advertises only local Pocket-owned chats and supported p
   assert(!ask('ide-context', 0));
 });
 
-test('desktop follows an active mobile writer, receives complete tool history and keeps the idle input usable', async t => {
+test('desktop follows active work with complete history; an open follower cannot keep the idle writer locked', async t => {
   const opts = { active: true }, { a, server, messages } = publicCreateFixture(t, opts);
   await a.createThread({ text: 'first' });
   a.states.set('phone-thread', { id: 'phone-thread', latestThreadSettings: { model: 'test-model', effort: 'high' } });
@@ -442,10 +508,13 @@ test('desktop follows an active mobile writer, receives complete tool history an
   assert.equal(state.resumeState, 'resumed'); assert.equal(state.latestCollaborationMode.settings.model, 'test-model');
   assert.equal(state.turns[0].turnId, 't'); assert.equal(state.turns[0].params.input[0].text, 'first');
   assert.equal(state.turns[0].items[1].aggregatedOutput, '/project');
+  assert.equal(await a.releaseThread('phone-thread'), false, 'active work cannot be released');
   opts.active = false;
-  assert.equal(await a.releaseThread('phone-thread'), false, 'desktop follower must retain its usable owner');
-  a.handleIpc({ type: 'broadcast', method: 'thread-stream-following-changed', version: 1, sourceClientId: 'desktop-window', params: { hostId: 'local', conversationId: 'phone-thread', following: false } });
   assert.equal(await a.releaseThread('phone-thread'), true);
+  assert(!a.ownerBridge.followers.has('phone-thread'));
+  assert.equal(messages.at(-1).method, 'thread-unarchived');
+  a.handleIpc({ type: 'client-discovery-request', requestId: 'after-handoff', request: { method: 'thread-owner-discovery', version: 1, params: { hostId: 'local', conversationId: 'phone-thread' } } });
+  assert.equal(messages.at(-1).response.canHandle, false);
 });
 
 test('a desktop user turn reaches the existing worker once and app-tool deliveries stay blocked', async t => {
@@ -466,16 +535,22 @@ test('idle watchdog survives more than eight active checks and a missing complet
   const options={active:true}, {a,server}=publicCreateFixture(t,options);
   a.options.releaseMaxDelayMs=10;
   await a.createThread({text:'first'});
-  await new Promise(r=>setTimeout(r,150));
-  assert(a.ownedThreads.has('phone-thread')); assert(server.calls.filter(c=>c.method==='thread/read').length>8);
+  const waitUntil = async predicate => {
+    const deadline = performance.now() + 3000;
+    while (!predicate() && performance.now() < deadline) await new Promise(r=>setTimeout(r,10));
+  };
+  const repeated = () => server.calls.filter(c=>c.method==='thread/read').length>8;
+  await waitUntil(repeated);
+  assert(a.ownedThreads.has('phone-thread')); assert(repeated(), 'watchdog kept checking an active thread');
   options.active=false;
-  await new Promise(r=>setTimeout(r,50));
+  await waitUntil(() => !a.ownedThreads.has('phone-thread'));
   assert(!a.ownedThreads.has('phone-thread'));
 });
 
-test('authoritative idle runtime releases a stale historical inProgress turn but never a pending approval', async t => {
+test('authoritative idle status hands off without loading history, but never with a pending approval', async t => {
   const { a }=publicCreateFixture(t); await a.createThread({text:'first'});
-  a.storedState=async()=>({status:{type:'idle'},turns:[{id:'old',status:'inProgress'}]});
+  a.states.set('phone-thread',{turns:[{id:'old',status:'inProgress'}]});
+  a.storedState=async()=>{throw Error('must not load history to release a known idle writer');};
   a.approvals.set('phone-thread:1',{params:{threadId:'phone-thread'}});
   assert.equal(await a.releaseThread('phone-thread'),false);
   a.approvals.clear(); assert.equal(await a.releaseThread('phone-thread'),true);
