@@ -9,6 +9,8 @@ $user = $id.User
 $isElevated = ([Security.Principal.WindowsPrincipal]::new($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $system = New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'
 $everyone = New-Object Security.Principal.SecurityIdentifier 'S-1-1-0'
+$administrators = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+$otherUser = New-Object Security.Principal.SecurityIdentifier 'S-1-5-21-999999-888888-777777-1001'
 $ownerRights = New-Object Security.Principal.SecurityIdentifier 'S-1-3-4'
 $id.Dispose()
 $sections = [Security.AccessControl.AccessControlSections]'Access,Owner'
@@ -40,8 +42,8 @@ try {
     $freshAcl = [IO.Directory]::GetAccessControl($fresh, $sections)
     Assert ($freshAcl.GetOwner([Security.Principal.SecurityIdentifier]) -eq $user) 'New directory is not owned by the user'
     Assert (Test-PocketStateAcl $freshAcl $user $system) 'New DACL is not private'
-    $freshAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
-    Assert (-not (Test-PocketStateAcl $freshAcl $user $system)) 'Administrators-owned directory must still be rejected'
+    $freshAcl.SetOwner($otherUser)
+    Assert (-not (Test-PocketStateAcl $freshAcl $user $system)) 'A foreign user owner must still be rejected'
     Assert (@(Get-ChildItem -LiteralPath $fresh -Force).Count -eq 0) 'Unexpected write probe residue'
     'PASS first launch'
 
@@ -74,6 +76,46 @@ try {
     'PASS private but unwritable directory'
 
     $worldRead = New-Object Security.AccessControl.FileSystemAccessRule($everyone, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $adminAcl = New-PocketStateAcl $user $system
+    $adminAcl.SetOwner($administrators)
+    Assert (Test-PocketStateAcl $adminAcl $user $system) 'Private legacy Administrators-owned ACL should pass'
+    Assert (-not (Test-PocketStateAcl $adminAcl $otherUser $system)) 'A different pairing user must not pass'
+    $inheritedAcl = New-PocketStateAcl $user $system
+    $inheritedAcl.SetOwner($administrators)
+    $inheritedAcl.SetAccessRuleProtection($false, $true)
+    Assert (-not (Test-PocketStateAcl $inheritedAcl $user $system)) 'An unprotected legacy ACL must not pass'
+    $inheritedOnly = New-Object Security.AccessControl.DirectorySecurity
+    $inheritedOnly.SetOwner($administrators)
+    $inheritedOnly.SetAccessRuleProtection($true, $false)
+    $childOnly = New-Object Security.AccessControl.FileSystemAccessRule($user, 'FullControl', 'ContainerInherit,ObjectInherit', 'InheritOnly', 'Allow')
+    $inheritedOnly.AddAccessRule($childOnly)
+    Assert (-not (Test-PocketStateAcl $inheritedOnly $user $system)) 'A child-only grant must not pass'
+    'PASS legacy ACL classifier'
+
+    if ($isElevated) {
+        # Assigning the group owner for the fixture requires an elevated token;
+        # startup itself must not rewrite ownership or the DACL.
+        $adminLegacy = Join-Path $fixture 'admin-owned-legacy'
+        [IO.Directory]::CreateDirectory($adminLegacy, $adminAcl) | Out-Null
+        $adminState = Join-Path $adminLegacy 'connector-state.json'
+        [IO.File]::WriteAllText($adminState, '{"fixture":true}')
+        $adminBefore = [IO.Directory]::GetAccessControl($adminLegacy, $sections)
+        Assert ($adminBefore.GetOwner([Security.Principal.SecurityIdentifier]) -eq $administrators) 'Fixture must really be Administrators-owned'
+        Assert ((Initialize-PocketStateDirectory $adminLegacy ([ref]$stage)) -eq $adminLegacy) 'Private legacy directory must start'
+        Assert ([IO.Directory]::GetAccessControl($adminLegacy, $sections).Sddl -eq $adminBefore.Sddl) 'Legacy ACL or owner was rewritten'
+        Assert ([IO.File]::ReadAllText($adminState) -ceq '{"fixture":true}') 'Legacy state was changed'
+        Assert (@(Get-ChildItem -LiteralPath $adminLegacy -Force).Count -eq 1) 'Unexpected files in legacy directory'
+        $adminAcl.AddAccessRule($worldRead)
+        [IO.Directory]::SetAccessControl($adminLegacy, $adminAcl)
+        $unsafeBefore = [IO.Directory]::GetAccessControl($adminLegacy, $sections).Sddl
+        Assert-FailureStage $adminLegacy 'STATE_ACL_LEGACY' $null
+        Assert ([IO.Directory]::GetAccessControl($adminLegacy, $sections).Sddl -eq $unsafeBefore) 'Unsafe legacy ACL was rewritten'
+        Assert ([IO.File]::ReadAllText($adminState) -ceq '{"fixture":true}') 'Blocked legacy state was changed'
+        'PASS on-disk Administrators-owned upgrade with private ACL; public ACL blocked'
+    } elseif ($env:POCKET_REQUIRE_ADMIN_OWNER_FIXTURE -eq '1') {
+        throw 'The Windows regression job must run the on-disk legacy owner fixture'
+    }
+
     $legacy = Join-Path $fixture 'legacy'
     Initialize-PocketStateDirectory $legacy ([ref]$stage) | Out-Null
     Set-FixtureAcl $legacy @($worldRead)

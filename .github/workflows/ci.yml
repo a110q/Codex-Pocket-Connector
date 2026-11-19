@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify Windows state directory startup
         shell: powershell
+        env:
+          POCKET_REQUIRE_ADMIN_OWNER_FIXTURE: "1"
         run: .\test\windows\state-directory.ps1
       - uses: actions/setup-node@v4
         with:

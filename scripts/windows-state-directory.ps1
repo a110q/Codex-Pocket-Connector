@@ -13,13 +13,19 @@
 
 function Test-PocketStateAcl($acl, $user, $system) {
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
-    if ($owner -ne $user -and $owner -ne $system) { return $false }
+    $legacyOwner = $owner.Value -eq 'S-1-5-32-544' # Built-in local Administrators, independent of Windows language.
+    if ($owner -ne $user -and $owner -ne $system -and -not $legacyOwner) { return $false }
+    # Old elevated launches could create an Administrators-owned directory and
+    # then install a protected DACL for the pairing user and SYSTEM. Accept
+    # only a private instance of that legacy layout; never take ownership.
+    if ($legacyOwner -and -not $acl.AreAccessRulesProtected) { return $false }
     $raw = New-Object Security.AccessControl.RawSecurityDescriptor($acl.GetSecurityDescriptorBinaryForm(), 0)
     # A null DACL grants access to everyone. An inheritable allow is needed so
     # that brand-new files also receive a private DACL instead of a default one.
     if ($null -eq $raw.DiscretionaryAcl) { return $false }
     $inheritableUserRule = $false
     $inherit = [Security.AccessControl.AceFlags]'ContainerInherit,ObjectInherit'
+    $fullControl = [int][Security.AccessControl.FileSystemRights]::FullControl
     foreach ($ace in $raw.DiscretionaryAcl) {
         switch ($ace.AceType) {
             'AccessDenied' { continue }
@@ -27,7 +33,11 @@ function Test-PocketStateAcl($acl, $user, $system) {
                 if ($ace.SecurityIdentifier -ne $user -and $ace.SecurityIdentifier -ne $system) { return $false }
                 if ($ace.SecurityIdentifier -eq $user -and $ace.AceFlags.HasFlag($inherit) -and
                     -not $ace.AceFlags.HasFlag([Security.AccessControl.AceFlags]::NoPropagateInherit)) {
-                    $inheritableUserRule = $true
+                    if (-not $legacyOwner -or (
+                        -not $ace.AceFlags.HasFlag([Security.AccessControl.AceFlags]::InheritOnly) -and
+                        ($ace.AccessMask -band $fullControl) -eq $fullControl)) {
+                        $inheritableUserRule = $true
+                    }
                 }
             }
             default { return $false }
@@ -60,9 +70,13 @@ function Initialize-PocketStateDirectory([string]$path, [ref]$stage) {
     if (-not (Test-PocketStateAcl $acl $user $system)) {
         # Keep the original data and ownership. Change only the DACL and only
         # when needed, without the PowerShell provider's Set-Acl owner checks.
-        $stage.Value = 'STATE_ACL_REPAIR'
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
-        if ($owner -ne $user -and $owner -ne $system) { throw 'Pocket 本地数据目录由其他账户拥有。' }
+        if ($owner -ne $user -and $owner -ne $system) {
+            $stage.Value = 'STATE_ACL_OWNER'
+            if ($owner.Value -eq 'S-1-5-32-544') { $stage.Value = 'STATE_ACL_LEGACY' }
+            throw 'Pocket 无法确认现有目录归当前配对账户安全使用。'
+        }
+        $stage.Value = 'STATE_ACL_REPAIR'
         [IO.Directory]::SetAccessControl($path, (New-PocketStateAcl $user $system))
         $stage.Value = 'STATE_ACL_VERIFY'
         if (-not (Test-PocketStateAcl ([IO.Directory]::GetAccessControl($path, $sections)) $user $system)) {
@@ -85,6 +99,8 @@ function Get-PocketStateFailureHint($stage) {
         'STATE_PATH' { 'Pocket 无法使用本地数据目录。请使用原来配对时的 Windows 账户，并确认数据目录是普通文件夹，不是链接。' }
         'STATE_CREATE' { 'Pocket 无法创建本地数据目录。请确认当前 Windows 账户可在本地应用数据目录下创建文件夹。' }
         'STATE_ACL_READ' { 'Pocket 无法读取本地数据目录权限。请使用原来配对时的 Windows 账户，或请管理员检查目录权限。' }
+        'STATE_ACL_OWNER' { 'Pocket 本地数据目录由其他 Windows 账户拥有。请切回原来配对时的账户，不要删除或重置原目录。' }
+        'STATE_ACL_LEGACY' { 'Pocket 无法确认此旧版数据目录仅对当前配对账户和系统开放。请在原来配对的 Windows 账户下打开；如果仍失败，请管理员检查原目录的权限。不要删除或重置原目录。' }
         'STATE_ACL_REPAIR' { 'Pocket 无法保护现有本地数据。请使用原来配对时的 Windows 账户，或请管理员检查目录所有者及权限。请勿删除原目录。' }
         'STATE_ACL_VERIFY' { 'Pocket 未能确认本地数据目录的隐私权限。为保护账号和配对信息，未启动连接服务。' }
         'STATE_WRITE_CHECK' { 'Pocket 本地数据目录不可写。请检查当前 Windows 账户的写入权限及磁盘剩余空间，请勿删除原目录。' }
