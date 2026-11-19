@@ -509,7 +509,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                     val previous=threads.associateBy(::threadIdentity)
                     refreshed.forEach{observeCompletion(previous[threadIdentity(it)],it)}
                     threads=refreshed
-                    selected?.let{current->threads.find{threadIdentity(it)==threadIdentity(current)}?.let{selected=mergeSummary(JSONObject(current.toString()).apply{remove("managementStatus");remove("managementAction")},it)}}
+                    selected?.let{current->threads.find{threadIdentity(it)==threadIdentity(current)}?.let{selected=mergeSummary(JSONObject(current.toString()).apply{remove("managementStatus");remove("managementAction");remove("managementReason")},it)}}
                     if(syncOpenThreadRuntime())refreshSelectedSnapshot(force=true)
                     persistSoon()
                 }
@@ -816,7 +816,10 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             val pendingAction=result.optString("pendingAction",action)
             if(threads.none{threadIdentity(it)==key}&&selected?.let(::threadIdentity)!=key)return
             threadListRequest=null;threadListQueued=false
-            fun mark(thread:JSONObject)=JSONObject(thread.toString()).put("managementAction",pendingAction).put("managementStatus","pending")
+            fun mark(thread:JSONObject)=JSONObject(thread.toString()).put("managementAction",pendingAction).put("managementStatus","pending").apply {
+                remove("managementReason")
+                result.optString("managementReason").takeIf{it.isNotEmpty()}?.let{put("managementReason",it)}
+            }
             threads=threads.map{if(threadIdentity(it)==key)mark(it)else it}
             selected?.takeIf{threadIdentity(it)==key}?.let{selected=mark(it)}
             notice=if(pendingAction==action)"已提交${managementActionLabel(action)}请求，电脑会自动处理" else "电脑正在确认上一次${managementActionLabel(pendingAction)}，尚未提交本次操作"

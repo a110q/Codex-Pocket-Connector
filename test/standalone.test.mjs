@@ -467,7 +467,7 @@ test('desktop-owned deletion is queued, survives a restart, then deletes and ref
   const options = { threadManagementPath: join(dir, 'queue.json'), createThreadServer() { throw Error('must not open a competing writer'); } };
   const { a, server, notifications } = managementFixture(t, undefined, options);
   server.held = true;
-  assert.deepEqual(await a.call('thread.delete', { threadId: 'qa', cwd: '/project' }), { threadId: 'qa', pending: true, verified: false });
+  assert.deepEqual(await a.call('thread.delete', { threadId: 'qa', cwd: '/project' }), { threadId: 'qa', pending: true, verified: false, managementReason: 'writer-busy' });
   assert.equal((await a.call('thread.delete', { threadId: 'qa' })).pending, true);
   assert.equal(server.calls.filter(c => c.method === 'thread/delete').length, 1);
   assert.equal((await a.call('threads.list', { includeArchived: true })).threads.find(t => t.id === 'qa').managementStatus, 'pending');
@@ -502,6 +502,59 @@ test('an ambiguous delete verifies without replaying, and list omissions alone a
   await a.retryThreadManagement();
   assert.equal(deleteCalls(), 1);
   assert.equal(events.find(e => e.type === 'thread.managed').deleted, true);
+});
+
+test('a release signal preempts a long retry deadline without touching other chats', async t => {
+  const { a, server } = managementFixture(t);
+  server.held = true;
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).managementReason, 'writer-busy');
+  assert.ok(a.managementTimerAt > Date.now() + 50000);
+  server.held = false;
+  const settled = once(a, 'event', { signal: AbortSignal.timeout(1000) });
+  a.onServerEvent({ method: 'turn/completed', params: { threadId: 'qa' } });
+  // The retry timer is deliberately unref'd in production.
+  const keepAlive = setTimeout(() => {}, 1100); t.after(() => clearTimeout(keepAlive));
+  const [event] = await settled;
+  assert.equal(event.type, 'thread.managed');
+  assert.equal(event.verified, true);
+  assert.deepEqual([...server.rows.keys()], ['untouched']);
+});
+
+test('retries start promptly and back off no longer than three seconds by default', async t => {
+  const { a, server } = managementFixture(t, undefined, { managementRetryMs: undefined });
+  server.held = true;
+  const base = Date.now();
+  await a.call('thread.delete', { threadId: 'qa' });
+  assert.ok(a.threadManagement.get('qa').retryAt >= base + 500);
+  assert.ok(a.threadManagement.get('qa').retryAt <= Date.now() + 500);
+  for (let i = 0; i < 6; i++) await a.retryThreadManagement();
+  assert.ok(a.threadManagement.get('qa').retryAt <= Date.now() + 3000);
+  assert.ok(a.threadManagement.get('qa').retryAt >= base + 3000);
+});
+
+test('a slow deletion verification does not delay an independent queued deletion', async t => {
+  const { a, server, events } = managementFixture(t);
+  server.cancelDelete = Object.assign(Error('receipt lost'), { uncertain: true });
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).managementReason, 'verifying');
+  assert.equal((await a.call('thread.delete', { threadId: 'untouched' })).managementReason, 'verifying');
+  server.rows.delete('untouched');
+  const { promise: blocked, resolve: unblock } = Promise.withResolvers();
+  const request = server.request.bind(server);
+  server.request = async (method, args) => {
+    if (method === 'thread/read' && args.threadId === 'qa') await blocked;
+    return request(method, args);
+  };
+  const settled = once(a, 'event', { signal: AbortSignal.timeout(1000) });
+  const keepAlive = setTimeout(() => {}, 1100); t.after(() => clearTimeout(keepAlive));
+  const retry = a.retryThreadManagement();
+  try {
+    const [event] = await settled;
+    assert.equal(event.type, 'thread.managed');
+    assert.equal(event.threadId, 'untouched');
+    assert.equal(a.threadManagement.get('qa').phase, 'verify');
+  } finally { unblock(); await retry; }
+  assert.equal(events.filter(e => e.type === 'thread.managed').length, 1);
+  assert.deepEqual(server.calls.filter(c => c.method === 'thread/delete').map(c => c.params.threadId), ['qa','untouched']);
 });
 
 test('archive and restore defer a confirmed request only while an external writer owns it', async t => {

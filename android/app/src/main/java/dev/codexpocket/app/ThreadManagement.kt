@@ -16,7 +16,12 @@ internal fun managementActionLabel(action: String) = when (action) {
 internal fun threadManagementLabel(thread: JSONObject): String? {
     val action = managementActionLabel(thread.optString("managementAction"))
     return when (thread.optString("managementStatus")) {
-        "pending" -> "等待$action"
+        "pending" -> when (thread.optString("managementReason")) {
+            "writer-busy" -> "电脑暂时占用，待$action"
+            "verifying" -> "正在确认${action}结果"
+            "retrying" -> "正在重试$action"
+            else -> "等待$action"
+        }
         "failed" -> "${action}未完成"
         else -> null
     }

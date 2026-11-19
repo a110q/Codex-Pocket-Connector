@@ -14,6 +14,8 @@ import { DesktopRuntime } from './desktop-runtime.mjs';
 const modes = { 'read-only': { permissions: ':read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, auto: { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, 'full-access': { permissions: ':danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' } };
 const string = (value, label, length = 100000) => { if (typeof value !== 'string' || !value.trim() || value.length > length) throw new Error(`${label}无效`); return value; };
 const writerConflict = error => /^thread [\w-]+ already has an active writer[.!]?$/i.test(error.message);
+const isPendingManagement = entry => entry?.phase === 'waiting' || entry?.phase === 'verify';
+const managementReason = entry => entry.phase === 'verify' ? 'verifying' : entry.reason ?? 'retrying';
 const managementActions = new Set(['thread.archive', 'thread.unarchive', 'thread.delete']);
 const missingThread = (error, id) => error.code === -32600 &&
   [`thread not loaded: ${id}`, `no rollout found for thread id ${id}`].includes(error.message);
@@ -33,6 +35,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.projectReader = options.projectReader ?? null;
     this.threadManagementPath = options.threadManagementPath;
     this.threadManagement = new Map(); this.managementGeneration = 0;
+    this.managementInFlight = new Set(); this.managementWakeups = new Set();
     if (this.threadManagementPath) {
       try {
         const entries = JSON.parse(readFileSync(this.threadManagementPath, 'utf8'));
@@ -64,7 +67,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       current();
       this.ready = true;
       this.startRuntimeMonitor();
-      this.scheduleThreadManagement();
+      this.wakeThreadManagement();
       this.emit('event', { type: 'desktop.ready', capabilities: this.diagnostics().capabilities });
       return this.diagnostics();
     };
@@ -96,6 +99,7 @@ export class StandaloneAdapter extends DesktopAdapter {
         for (const [id, server] of this.threadServers) if (server === client) {
           this.threadServers.delete(id); this.ownedThreads.delete(id);
           for (const [key, request] of this.approvals) if (request.params.threadId === id) this.approvals.delete(key);
+          this.wakeThreadManagement(id);
         }
       });
     }
@@ -123,6 +127,9 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   handleIpc(message) {
     if (!this.ownerBridge?.handle(message)) super.handleIpc(message);
+    if (message.type === 'broadcast' && message.method === 'client-status-changed' && message.params?.status === 'disconnected') {
+      for (const [id] of this.threadManagement) if (this.owners.get(`local:${id}`) === message.params.clientId) this.wakeThreadManagement(id);
+    }
   }
   announceThread(threadId, { removed = false, cwd } = {}) {
     if (!this.ipcAvailable) return false;
@@ -158,7 +165,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     let result = [...threads.values()].filter(t => (args.includeArchived || !t.archived) && (args.includeSubagents || !t.isSubagent) && (!Object.hasOwn(args, 'projectId') || t.projectId === args.projectId) && (!args.hostId || args.hostId === 'local'));
     result = result.map(thread => {
       const operation = this.threadManagement.get(thread.id);
-      return operation && operation.phase !== 'done' ? { ...thread, managementAction: operation.action, managementStatus: operation.phase === 'failed' ? 'failed' : 'pending' } : thread;
+      return operation && operation.phase !== 'done' ? { ...thread, managementAction: operation.action, managementStatus: operation.phase === 'failed' ? 'failed' : 'pending', ...(isPendingManagement(operation) ? { managementReason: managementReason(operation) } : {}) } : thread;
     });
     result.sort((a,b) => Number(!!b.isPinned) - Number(!!a.isPinned) || (Date.parse(b.recencyAt ?? b.updatedAt) || 0) - (Date.parse(a.recencyAt ?? a.updatedAt) || 0));
     return { threads: result, completedManagement, pinnedThreads: result.filter(t => t.isPinned), catalog: { localComplete: catalog.localComplete, remoteComplete: false, chatgptComplete: false, source: 'codex-app-server+desktop-membership' } };
@@ -176,6 +183,7 @@ export class StandaloneAdapter extends DesktopAdapter {
         if (previous.get(id) !== status) runtime.set(id, status);
       }
       const changed = JSON.stringify([...runtime]) !== JSON.stringify([...this.runtimeCache]);
+      for (const [id, status] of runtime) this.wakeOnRuntimeChange(id, this.runtimeCache.get(id), status);
       this.runtimeCache = runtime;
       if (changed || !this.runtimeSequence) {
         this.runtimeSequence++;
@@ -227,7 +235,10 @@ export class StandaloneAdapter extends DesktopAdapter {
           this.runtimeReader = new DesktopRuntime(this.options);
           this.runtimeReader.on('changed', statuses => {
             if (!this.runtimeMonitoring) return;
-            for (const [id, status] of statuses) if (!this.ownedThreads.has(id)) this.runtimeCache.set(id, status);
+            for (const [id, status] of statuses) if (!this.ownedThreads.has(id)) {
+              this.wakeOnRuntimeChange(id, this.runtimeCache.get(id), status);
+              this.runtimeCache.set(id, status);
+            }
             this.runtimeSequence++; this.emit('event', this.runtimeSnapshot());
           });
           this.runtimeReader.on('unavailable', () => this.emit('event', { type: 'runtime.unavailable', error: '桌面运行状态暂不可用，正在自动重试' }));
@@ -361,6 +372,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       }
     }
     this.announceThread(threadId);
+    this.wakeThreadManagement(threadId);
     return true;
   }
   async closeThreadWriter(threadId) {
@@ -585,6 +597,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.extensions?.onEvent({method,params});
     const threadId = params?.threadId ?? params?.thread?.id;
     if(method==='serverRequest/resolved')for(const [key,request]of this.approvals)if(String(request.id)===String(params?.requestId)&&request.params?.threadId===threadId)this.approvals.delete(key);
+    if (threadId && (method === 'turn/completed' || (method === 'thread/status/changed' && params?.status?.type === 'idle'))) this.wakeThreadManagement(threadId);
     if (method === 'thread/status/changed' && this.ownedThreads.has(threadId)) this.scheduleRelease(threadId, 0, params?.status?.type === 'idle');
     if (method === 'turn/completed' && this.ownedThreads.has(threadId)) {
       for (const [id, request] of this.approvals) if (request.params?.threadId === threadId) this.approvals.delete(id);
@@ -621,41 +634,74 @@ export class StandaloneAdapter extends DesktopAdapter {
       } finally { try { rmSync(temporary, { force: true }); } catch {} }
     }
     this.threadManagement = next;
+    if (!isPendingManagement(entry)) this.managementWakeups.delete(threadId);
+  }
+  wakeOnRuntimeChange(threadId, previous, next) {
+    if (previous?.status !== next.status && ['idle', 'notLoaded'].includes(next.status)) this.wakeThreadManagement(threadId);
+  }
+  wakeThreadManagement(threadId) {
+    const ids = threadId === undefined ? this.threadManagement.keys() : [threadId];
+    for (const id of ids) if (isPendingManagement(this.threadManagement.get(id))) this.managementWakeups.add(id);
+    this.scheduleThreadManagement();
+  }
+  managementDueAt(threadId, entry) {
+    return this.managementWakeups.has(threadId) ? 0 : entry.retryAt ?? 0;
   }
   scheduleThreadManagement() {
-    const pending = [...this.threadManagement.values()].filter(entry => entry.phase === 'waiting' || entry.phase === 'verify');
-    if (!this.ready || this.managementTimer || this.managementRunning || !pending.length) return;
-    const interval = this.options.managementRetryMs ?? 2500;
-    const delay = Math.max(interval, pending.reduce((soonest, entry) => Math.min(soonest, entry.retryAt ?? 0), Infinity) - Date.now());
+    const limit = 4;
+    let dueAt = Infinity;
+    if (this.ready && this.managementInFlight.size < limit) {
+      for (const [id, entry] of this.threadManagement) {
+        if (isPendingManagement(entry) && !this.managementInFlight.has(id)) dueAt = Math.min(dueAt, this.managementDueAt(id, entry));
+      }
+    }
+    if (this.managementTimer && dueAt === this.managementTimerAt) return;
+    clearTimeout(this.managementTimer); this.managementTimer = null; this.managementTimerAt = dueAt;
+    if (!Number.isFinite(dueAt)) return;
     this.managementTimer = setTimeout(() => {
       this.managementTimer = null;
       void this.retryThreadManagement({ dueOnly: true });
-    }, delay);
+    }, Math.max(0, dueAt - Date.now()));
     this.managementTimer.unref?.();
   }
   async retryThreadManagement({ dueOnly = false } = {}) {
-    if (!this.ready || this.managementRunning) return;
+    if (!this.ready) return;
     const generation = this.managementGeneration;
-    this.managementRunning = true;
-    try {
-      // Snapshot: updating a Map entry during iteration must not retry it twice.
-      for (const [threadId, saved] of [...this.threadManagement]) {
-        if (!this.ready || generation !== this.managementGeneration) break;
-        if (!['waiting', 'verify'].includes(saved.phase) || (dueOnly && saved.retryAt > Date.now())) continue;
+    const pending = [...this.threadManagement].filter(([id, entry]) =>
+      isPendingManagement(entry) && !this.managementInFlight.has(id) && (!dueOnly || this.managementDueAt(id, entry) <= Date.now()));
+    pending.sort(([a, entryA], [b, entryB]) => this.managementDueAt(a, entryA) - this.managementDueAt(b, entryB));
+    const running = pending.slice(0, Math.max(0, 4 - this.managementInFlight.size)).map(async ([threadId, saved]) => {
+      this.managementInFlight.add(threadId);
+      this.managementWakeups.delete(threadId);
+      try {
         await this.withThread(threadId, async () => {
           if (!this.ready || generation !== this.managementGeneration || this.threadManagement.get(threadId) !== saved) return;
-          try { await this.executeThreadManagement(threadId, saved, generation); }
-          catch { /* Preserve the saved operation on connection or storage failures. */ }
+          const result = await this.executeThreadManagement(threadId, saved, generation);
+          if (result.pending && result.managementReason && result.managementReason !== managementReason(saved) && this.ready && generation === this.managementGeneration) {
+            this.emit('event', { type: 'catalog.updated' });
+          }
         });
+      } catch {
+        // Preserve the saved operation on connection or storage failures;
+        // don't spin on the same expired deadline if local storage is down.
+        const entry = this.threadManagement.get(threadId);
+        if (generation === this.managementGeneration && isPendingManagement(entry)) entry.retryAt = Date.now() + 3000;
+      } finally {
+        this.managementInFlight.delete(threadId);
+        this.scheduleThreadManagement();
       }
-    } finally { this.managementRunning = false; this.scheduleThreadManagement(); }
-  }
-  pendingThreadManagement(threadId, entry, phase, extra = {}) {
-    const failures = Math.min((entry.failures ?? 0) + 1, 8);
-    const retryAt = Date.now() + Math.min((this.options.managementRetryMs ?? 2500) * 2 ** (failures - 1), 30000);
-    this.saveThreadManagement(threadId, { ...entry, ...extra, phase, failures, retryAt });
+    });
     this.scheduleThreadManagement();
-    return { threadId, pending: true, verified: false };
+    await Promise.all(running);
+  }
+  pendingThreadManagement(threadId, entry, phase, reason) {
+    const failures = Math.min((entry.failures ?? 0) + 1, 8);
+    const interval = this.options.managementRetryMs ?? 500;
+    const retryAt = Date.now() + Math.min(interval * 2 ** (failures - 1), this.options.managementRetryMaxMs ?? Math.max(interval, 3000));
+    const next = { ...entry, phase, reason, failures, retryAt };
+    this.saveThreadManagement(threadId, next);
+    this.scheduleThreadManagement();
+    return { threadId, pending: true, verified: false, managementReason: managementReason(next) };
   }
   async managementReached(threadId, action, acknowledged) {
     if (action === 'thread.delete') {
@@ -699,7 +745,7 @@ export class StandaloneAdapter extends DesktopAdapter {
         if (writerConflict(error) || error.notSubmitted) {
           // Some builds refuse management even on the owning worker. Try to
           // release only our own idle writer on the normal handoff path.
-          const result = this.pendingThreadManagement(threadId, entry, 'waiting');
+          const result = this.pendingThreadManagement(threadId, entry, 'waiting', writerConflict(error) ? 'writer-busy' : 'retrying');
           if (this.ownedThreads.has(threadId)) this.scheduleRelease(threadId, 0, true);
           return result;
         }
@@ -747,13 +793,13 @@ export class StandaloneAdapter extends DesktopAdapter {
     return this.withThread(threadId, async () => {
       if (!this.ready || generation !== this.managementGeneration) throw notSubmitted(new Error('电脑已断开，请重新连接。'));
       const pending = this.threadManagement.get(threadId);
-      if (pending?.action === action && ['waiting', 'verify'].includes(pending.phase)) {
+      if (pending?.action === action && isPendingManagement(pending)) {
         this.scheduleThreadManagement();
-        return { threadId, verified: false, pending: true };
+        return { threadId, verified: false, pending: true, managementReason: managementReason(pending) };
       }
       // Permanent deletion dominates a pending archive or restore: it removes
       // the thread from either location and neither operation can recreate it.
-      if (pending?.phase === 'verify' && (action !== 'thread.delete' || pending.action === 'thread.delete')) return { threadId, verified: false, pending: true, pendingAction: pending.action };
+      if (pending?.phase === 'verify' && (action !== 'thread.delete' || pending.action === 'thread.delete')) return { threadId, verified: false, pending: true, pendingAction: pending.action, managementReason: managementReason(pending) };
       const entry = { action, phase: 'waiting', cwd: typeof args.cwd === 'string' && args.cwd.length <= 4096 && !args.cwd.includes('\0') ? args.cwd : undefined };
       this.saveThreadManagement(threadId, entry);
       const result = await this.executeThreadManagement(threadId, entry, generation);
@@ -816,7 +862,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     }
   }
   close() {
-    this.managementGeneration++; clearTimeout(this.managementTimer); this.managementTimer = null;
+    this.managementGeneration++; clearTimeout(this.managementTimer); this.managementTimer = null; this.managementWakeups.clear();
     this.initializationAttempt = null;
     this.stopRuntimeMonitor();
     this.runtimeReader?.close(); this.runtimeRetryAt = 0;

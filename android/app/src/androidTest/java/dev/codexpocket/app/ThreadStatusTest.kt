@@ -159,8 +159,8 @@ class ThreadStatusTest {
                 Assert.assertEquals("run", args.getString("threadId"))
                 Assert.assertEquals("local", args.getString("hostId"))
                 catalog = catalog.map { if(it.optString("id")=="run") JSONObject(it.toString())
-                    .put("managementAction","thread.delete").put("managementStatus","pending") else it }
-                JSONObject().put("pending", true).put("verified", false)
+                    .put("managementAction","thread.delete").put("managementStatus","pending").put("managementReason","writer-busy") else it }
+                JSONObject().put("pending", true).put("verified", false).put("managementReason", "writer-busy")
             }
             else -> original?.invoke(action, args)
         } }
@@ -185,8 +185,13 @@ class ThreadStatusTest {
         compose.onNodeWithText("删除对话").performClick()
         compose.onNodeWithText("确认删除").performClick()
         until { model.selected?.optString("managementStatus")=="pending" && !model.busy }
-        compose.onNodeWithText("等待删除 · 电脑连接器会自动处理").assertIsDisplayed()
+        compose.onNodeWithText("电脑暂时占用，待删除 · 电脑连接器会自动处理").assertIsDisplayed()
         compose.runOnUiThread { Assert.assertEquals("run", model.selected?.optString("id")) }
+
+        catalog = catalog.map { if(it.optString("id")=="run") JSONObject(it.toString()).put("managementReason","verifying") else it }
+        peer.event(JSONObject().put("type","catalog.updated"))
+        until { model.selected?.optString("managementReason")=="verifying" }
+        compose.onNodeWithText("正在确认删除结果").assertIsDisplayed()
 
         catalog = catalog.filterNot { it.optString("id") == "run" }
         peer.event(JSONObject().put("type","thread.managed").put("threadId","run").put("action","thread.delete").put("verified",true))

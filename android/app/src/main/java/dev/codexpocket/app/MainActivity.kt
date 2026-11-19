@@ -488,7 +488,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
         HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
         ChatConnectionNotice(model)
         threadManagementLabel(thread)?.let{label->
-            Text(if(thread.optString("managementStatus")=="pending")"$label · 电脑连接器会自动处理" else label,
+            Text(if(thread.optString("managementStatus")=="pending"&&thread.optString("managementReason")!="verifying")"$label · 电脑连接器会自动处理" else label,
                 Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if(model.loadingThread)LinearProgressIndicator(Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.secondary)
