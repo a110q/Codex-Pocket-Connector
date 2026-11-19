@@ -15,7 +15,9 @@ function launch(t) {
   const descriptor = resolve(state, 'ready.json');
   const config = resolve(state, 'connector.json');
   const run = entry => {
-    const child = spawnSync(process.execPath, [entry, '--native', '--descriptor', descriptor], {
+    // Node 22 labels SQLite experimental. Keep the stderr assertion focused
+    // on the app's diagnostic without ignoring other child-process warnings.
+    const child = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', entry, '--native', '--descriptor', descriptor], {
       cwd: fixture, env: { ...process.env, POCKET_STATE_DIR: state, POCKET_MANAGER_PORT: '43787' }, encoding: 'utf8', timeout: 15000,
     });
     assert.ifError(child.error);

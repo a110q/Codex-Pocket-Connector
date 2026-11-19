@@ -1,5 +1,8 @@
-﻿function New-PocketStateAcl($user, $system) {
+﻿function New-PocketStateAcl($user, $system, [switch]$ForCreation) {
     $acl = New-Object Security.AccessControl.DirectorySecurity
+    # An elevated token may default to the Administrators group as owner.
+    # Set an explicit owner only on creation; repairs must never change it.
+    if ($ForCreation) { $acl.SetOwner($user) }
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($sid in @($user, $system)) {
         $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
@@ -44,7 +47,7 @@ function Initialize-PocketStateDirectory([string]$path, [ref]$stage) {
     if (-not [IO.Directory]::Exists($path)) {
         $stage.Value = 'STATE_CREATE'
         # Create the directory with its private DACL from the start.
-        [IO.Directory]::CreateDirectory($path, (New-PocketStateAcl $user $system)) | Out-Null
+        [IO.Directory]::CreateDirectory($path, (New-PocketStateAcl $user $system -ForCreation)) | Out-Null
     }
     $stage.Value = 'STATE_PATH'
     if ([IO.File]::GetAttributes($path).HasFlag([IO.FileAttributes]::ReparsePoint)) {

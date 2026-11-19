@@ -33,10 +33,14 @@ function Assert-FailureStage($path, $expected, $expectedHResult) {
     throw "Expected failure at $expected"
 }
 try {
-    [IO.Directory]::CreateDirectory($fixture, (New-PocketStateAcl $user $system)) | Out-Null
+    [IO.Directory]::CreateDirectory($fixture, (New-PocketStateAcl $user $system -ForCreation)) | Out-Null
     $fresh = Join-Path $fixture 'fresh'
     Assert ((Initialize-PocketStateDirectory $fresh ([ref]$stage)) -eq $fresh) 'First launch failed'
-    Assert (Test-PocketStateAcl ([IO.Directory]::GetAccessControl($fresh, $sections)) $user $system) 'New DACL is not private'
+    $freshAcl = [IO.Directory]::GetAccessControl($fresh, $sections)
+    Assert ($freshAcl.GetOwner([Security.Principal.SecurityIdentifier]) -eq $user) 'New directory is not owned by the user'
+    Assert (Test-PocketStateAcl $freshAcl $user $system) 'New DACL is not private'
+    $freshAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
+    Assert (-not (Test-PocketStateAcl $freshAcl $user $system)) 'Administrators-owned directory must still be rejected'
     Assert (@(Get-ChildItem -LiteralPath $fresh -Force).Count -eq 0) 'Unexpected write probe residue'
     'PASS first launch'
 
