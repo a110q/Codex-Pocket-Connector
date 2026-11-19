@@ -148,8 +148,14 @@ export class StandaloneAdapter extends DesktopAdapter {
     if (!fresh && this.runtimeMonitoring && this.runtimeSequence) return new Map(this.runtimeCache);
     if (this.runtimeRefresh) return this.runtimeRefresh;
     const generation = this.runtimeGeneration;
+    const previous = new Map(this.runtimeCache);
     const operation = this.readDesktopRuntime(catalog).then(runtime => {
       if (generation !== this.runtimeGeneration) return new Map();
+      // A status pushed while this sample was in flight is newer than the
+      // sample's original cache, including an idle writer that just exited.
+      for (const [id, status] of this.runtimeCache) {
+        if (previous.get(id) !== status) runtime.set(id, status);
+      }
       const changed = JSON.stringify([...runtime]) !== JSON.stringify([...this.runtimeCache]);
       this.runtimeCache = runtime;
       if (changed || !this.runtimeSequence) {
@@ -202,7 +208,7 @@ export class StandaloneAdapter extends DesktopAdapter {
           this.runtimeReader = new DesktopRuntime(this.options);
           this.runtimeReader.on('changed', statuses => {
             if (!this.runtimeMonitoring) return;
-            for (const [id, status] of statuses) this.runtimeCache.set(id, status);
+            for (const [id, status] of statuses) if (!this.ownedThreads.has(id)) this.runtimeCache.set(id, status);
             this.runtimeSequence++; this.emit('event', this.runtimeSnapshot());
           });
           this.runtimeReader.on('unavailable', () => this.emit('event', { type: 'runtime.unavailable', error: '桌面运行状态暂不可用，正在自动重试' }));
@@ -310,6 +316,7 @@ export class StandaloneAdapter extends DesktopAdapter {
   }
   async releaseThreadLocked(threadId) {
     if (!this.ownedThreads.has(threadId)) return false;
+    let idle;
     if (!this.serverFor(threadId).closing) {
       // A follower is a reader, not proof of active work. Even an open
       // desktop view must not leave an idle writer locked indefinitely.
@@ -318,10 +325,22 @@ export class StandaloneAdapter extends DesktopAdapter {
       if (thread.status?.type === 'active') return false;
       // Known-idle status is authoritative; don't load pages of history just
       // to release a writer on a completed turn.
-      if (thread.status?.type !== 'idle' && threadHasActiveWork(await this.storedState(threadId))) return false;
+      if (thread.status?.type === 'idle') idle = thread.status;
+      else if (threadHasActiveWork(await this.storedState(threadId))) return false;
       if (this.hasPendingApproval(threadId)) return false;
     }
+    const generation = this.runtimeGeneration;
     await this.closeThreadWriter(threadId);
+    // After the writer exits, a separate App Server can only report notLoaded.
+    // Publish the observed idle evidence before losing the runtime source.
+    if (idle && generation === this.runtimeGeneration) {
+      const status = { status: 'idle', threadRuntimeStatus: idle };
+      if (JSON.stringify(this.runtimeCache.get(threadId)) !== JSON.stringify(status)) {
+        this.runtimeCache.set(threadId, status);
+        this.runtimeSequence++;
+        this.emit('event', this.runtimeSnapshot());
+      }
+    }
     this.announceThread(threadId);
     return true;
   }

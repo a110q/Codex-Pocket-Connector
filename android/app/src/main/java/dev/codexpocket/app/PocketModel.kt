@@ -620,9 +620,18 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private fun reconcileReadSnapshot(value:JSONObject,version:Long,preserveRuntime:Boolean=false):JSONObject{
         val thread=value.optJSONObject("thread")?:return value
         val key=threadIdentity(thread);val update=summaryUpdates[key]
-        // Desktop runtime is authoritative for owner conversations; a read can
-        // return older stored content even when it began after completion.
-        val metadata=if(preserveRuntime)summaryRuntime[key] else update?.takeIf{it.source=="desktop-runtime"||it.version>version}?.metadata
+        // A fresh live read can confirm completion even if the previous
+        // runtime sample was active. A stored fallback cannot, and an event
+        // observed while the read was in flight takes precedence.
+        val cached=summaryRuntime[key]
+        val liveCompletion=value.optBoolean("live",true) && activityForStatus(thread.optJSONObject("status")?.optString("type")
+            ?: thread.optJSONObject("threadRuntimeStatus")?.optString("type") ?: thread.optString("status"))==ThreadActivity.IDLE &&
+            pendingThreadRequests(value.optJSONArray("requests")).isEmpty() && cached?.let { threadActivity(it).inFlight }==true
+        val metadata=update?.takeIf{it.version>version}?.metadata ?: when {
+            liveCompletion -> null
+            preserveRuntime -> cached
+            else -> update?.takeIf{it.source=="desktop-runtime"}?.metadata
+        }
         if(metadata==null)return value
         return JSONObject(value.toString()).put("thread",mergeSnapshotRuntime(thread,metadata)).also{
             if(!threadActivity(metadata).inFlight)it.put("requests",JSONArray())
@@ -717,7 +726,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                 if(fileIds.isNotEmpty()){outgoingFiles.values.flatten().filter{it.id in fileIds}.forEach{File(it.path).delete()};outgoingFiles=outgoingFiles.mapValues{(_,files)->files.filter{it.id !in fileIds}};persist()}
                 if(op.optString("action") in listOf("message.send","thread.create")){val key=if(op.optString("action")=="thread.create")"__new__"else op.optJSONObject("args")?.optString("threadId").orEmpty();referenceDrafts=referenceDrafts-key;persist()}
                 error = null
-                if(completion!=null)completion(result)
+                if(op.optString("action") in listOf("thread.archive","thread.unarchive","thread.delete"))finishThreadManagement(op,result)
+                else if(completion!=null)completion(result)
                 else if(op.optString("action")=="thread.create")result.optString("threadId").takeIf{it.isNotBlank()}?.let{id->openThread(JSONObject().put("id",id).put("hostId",result.optString("hostId","local")).put("title",op.optJSONObject("args")?.optString("text").orEmpty().take(40)))}
                 refresh(); selected?.let { openThread(it) } }
     }
@@ -777,13 +787,30 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         mutate("thread.settings.update", args) { result -> if (!result.optBoolean("verified")) error = result.optString("error", "电脑已接收设置，但重新读取尚未确认，请刷新检查") else notice = "设置已保存，应用到后续消息" }
     }
     fun toggleArchived(){showArchived=!showArchived;refresh()}
+    internal fun deleteThreadBlock(activity:ThreadActivity):String? = when {
+        !connected -> "连接电脑后才能删除"
+        pendingOperation!=null || busy -> "请先确认上一条操作的结果"
+        activity.waiting -> "请先处理待确认请求"
+        activity.inFlight -> "任务运行中，结束后可删除"
+        else -> null
+    }
     fun manageThread(thread:JSONObject,action:String){
-        if(!connected||busy||action !in listOf("archive","unarchive","delete"))return
-        mutate("thread.$action",JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local"))){result->
-            if(!result.optBoolean("verified")){error="操作结果尚未确认，请刷新电脑列表";return@mutate}
-            if(selected?.optString("id")==thread.optString("id")){selected=null;snapshot=null}
-            notice=when(action){"archive"->"对话已归档";"unarchive"->"对话已恢复";else->"对话已从电脑删除"}
+        if(action !in listOf("archive","unarchive","delete"))return
+        if(!connected){error="连接电脑后才能管理对话";return}
+        if(busy||pendingOperation!=null){error="请先确认上一条操作的结果";return}
+        mutate("thread.$action",JSONObject().put("threadId",thread.getString("id")).put("hostId",thread.optString("hostId","local")))
+    }
+    private fun finishThreadManagement(op:JSONObject,result:JSONObject){
+        if(!result.optBoolean("verified")){error="操作结果尚未确认，请刷新电脑列表";return}
+        val args=op.getJSONObject("args")
+        val key=args.optString("hostId","local")+":"+args.getString("threadId")
+        threadBackStack.removeAll{threadIdentity(it.first)==key}
+        if(selected?.let(::threadIdentity)==key){
+            closeMessage();closePreview();resetHistoryRequest();chatSyncRequest=null;chatSyncIssue=null;loadingThread=false
+            selected=null;snapshot=null;threadBackStack.clear()
         }
+        notice=when(op.optString("action")){"thread.archive"->"对话已归档";"thread.unarchive"->"对话已恢复";else->"对话已从电脑删除"}
+        persistSoon()
     }
     suspend fun rpc(action: String, args: JSONObject): JSONObject = suspendCancellableCoroutine { continuation ->
         handler.post { request(action, args) { r, e ->

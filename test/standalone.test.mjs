@@ -547,6 +547,31 @@ test('idle watchdog survives more than eight active checks and a missing complet
   assert(!a.ownedThreads.has('phone-thread'));
 });
 
+test('completed Pocket writer publishes idle at handoff even if the monitor missed completion', async t => {
+  const options = { active: true }, { a } = publicCreateFixture(t, options);
+  await a.createThread({ text: 'first' });
+  const catalog = { threads: [{ id: 'phone-thread' }] };
+  await a.desktopRuntime(catalog, { fresh: true });
+  assert.equal(a.runtimeCache.get('phone-thread').status, 'active');
+
+  // The next desktop sample started before release and has no fresh evidence.
+  let finishPoll;
+  a.readDesktopRuntime = () => new Promise(resolve => { finishPoll = resolve; });
+  const polling = a.desktopRuntime(catalog, { fresh: true });
+  const events = [];
+  a.on('event', event => { if (event.type === 'threads.status') events.push(event); });
+  options.active = false;
+  assert.equal(await a.releaseThread('phone-thread'), true);
+  assert.equal(events.at(-1)?.threads.find(t => t.id === 'phone-thread')?.status, 'idle');
+  finishPoll(new Map([['phone-thread', { status: 'active' }]]));
+  assert.equal((await polling).get('phone-thread').status, 'idle');
+  assert.equal(a.runtimeCache.get('phone-thread').status, 'idle');
+
+  // A new, authoritative observation can start the next turn normally.
+  a.readDesktopRuntime = async () => new Map([['phone-thread', { status: 'active' }]]);
+  assert.equal((await a.desktopRuntime(catalog, { fresh: true })).get('phone-thread').status, 'active');
+});
+
 test('authoritative idle status hands off without loading history, but never with a pending approval', async t => {
   const { a }=publicCreateFixture(t); await a.createThread({text:'first'});
   a.states.set('phone-thread',{turns:[{id:'old',status:'inProgress'}]});

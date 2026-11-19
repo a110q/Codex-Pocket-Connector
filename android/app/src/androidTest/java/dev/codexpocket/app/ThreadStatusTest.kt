@@ -129,6 +129,78 @@ class ThreadStatusTest {
         until{threadActivity(model.snapshot!!.getJSONObject("thread"))==ThreadActivity.IDLE}
         compose.onNodeWithContentDescription("任务实时进度").assertDoesNotExist()
     }
+    @Test fun liveReadConfirmsCompletionAfterTheLastRuntimeSampleWasActive() {
+        catalog = catalog.map { JSONObject(it.toString()).put("status", "notLoaded") }
+        peer.threadStatuses = runtimeEvent(1)
+        val original = peer.extra
+        peer.extra = { action, args ->
+            if (action == "thread.read") data(args.getString("threadId"), "idle", 2).put("live", true)
+            else original?.invoke(action, args)
+        }
+        start()
+        Assert.assertEquals(ThreadActivity.RUNNING, activity("run"))
+        compose.runOnUiThread { model.openThread(model.threads.first { it.optString("id") == "run" }) }
+        until { !model.loadingThread && activity("run") == ThreadActivity.IDLE }
+        Assert.assertEquals(ThreadActivity.IDLE, threadActivity(model.snapshot!!.getJSONObject("thread")))
+        compose.runOnUiThread { model.refresh() }
+        peer.event(runtimeEvent(2, "notLoaded"))
+        until { activity("run") == ThreadActivity.IDLE }
+        // A later real start and pending approval are not masked by the completion.
+        peer.event(runtimeEvent(3, "active"))
+        until { activity("run") == ThreadActivity.RUNNING }
+        peer.event(runtimeEvent(4, "waitingForApproval"))
+        until { activity("run") == ThreadActivity.APPROVAL }
+    }
+
+    @Test fun detailDeleteIsGuardedAndOnlyClosesAfterConfirmedRemoval() {
+        val original = peer.extra
+        val arrived = CountDownLatch(1)
+        val confirm = CountDownLatch(1)
+        releaseList = confirm
+        peer.extra = { action, args -> when (action) {
+            "thread.delete" -> {
+                Assert.assertEquals("run", args.getString("threadId"))
+                Assert.assertEquals("local", args.getString("hostId"))
+                arrived.countDown()
+                check(confirm.await(8, TimeUnit.SECONDS))
+                catalog = catalog.filterNot { it.optString("id") == "run" }
+                JSONObject().put("deleted", true).put("verified", true)
+            }
+            else -> original?.invoke(action, args)
+        } }
+        start(); show()
+        compose.runOnUiThread { model.openThread(model.threads.first { it.optString("id") == "run" }) }
+        until { !model.loadingThread && model.snapshot != null }
+        fun openDeleteMenu() {
+            compose.onNodeWithContentDescription("对话更多操作").performClick()
+            compose.onNodeWithText("删除对话").performScrollTo().assertIsDisplayed()
+        }
+        openDeleteMenu()
+        compose.onNodeWithText("删除对话").assertIsNotEnabled()
+        compose.onNodeWithText("任务运行中，结束后可删除").assertIsDisplayed()
+        push("run", "active", 1, requests = JSONArray().put(JSONObject().put("id", "ask").put("method", "item/tool/requestUserInput")))
+        until { activity("run") == ThreadActivity.INPUT }
+        compose.onNodeWithText("删除对话").assertIsNotEnabled()
+        compose.onNodeWithText("请先处理待确认请求").assertIsDisplayed()
+        push("run", "idle", 2)
+        until { activity("run") == ThreadActivity.IDLE }
+        compose.onNodeWithText("删除对话").performClick()
+        compose.onNodeWithText("删除对话？").assertIsDisplayed()
+        compose.onNodeWithText("项目文件不会删除。", substring = true).assertIsDisplayed()
+        screenshot("thread-delete-confirmation")
+        compose.onNodeWithText("取消").performClick()
+        Assert.assertFalse(peer.actions.contains("thread.delete"))
+
+        openDeleteMenu()
+        compose.onNodeWithText("删除对话").performClick()
+        compose.onNodeWithText("确认删除").performClick()
+        Assert.assertTrue(arrived.await(5, TimeUnit.SECONDS))
+        compose.runOnUiThread { Assert.assertEquals("run", model.selected?.optString("id")) }
+        confirm.countDown()
+        until { model.selected == null && model.threads.none { it.optString("id") == "run" } }
+        Assert.assertEquals(1, peer.actions.count { it == "thread.delete" })
+    }
+
     @Test fun storedFallbackRecoversWithoutReopeningChatAndStopsPollingInBackground(){
         var restored=false
         peer.extra={action,args->when(action){
