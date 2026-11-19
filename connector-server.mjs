@@ -10,13 +10,14 @@ import { openBrowser } from './platform.mjs';
 import { lanAddresses, prepareLan } from './lan.mjs';
 import { secret, digest, equalHash } from './protocol.mjs';
 import { CodexInstallation } from './codex-installation.mjs';
+import { DesktopSharing } from './desktop-sharing.mjs';
 import { RelayProfiles } from './relay-profiles.mjs';
 import { ConnectorRuntime } from './connector-runtime.mjs';
 import { UpdateManager, loadUpdateConfig } from './updates.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const hashScript = html => createHash('sha256').update(html.match(/<script>([\s\S]*?)<\/script>/)[1]).digest('base64');
-export async function startConnector({ paths = connectorPaths(), defaults, port = 43786, managerPort = 43787, root = ROOT, request, status = companionStatus, runtime = new ConnectorRuntime(), installation = new CodexInstallation(paths.state), updates = new UpdateManager({ config:loadUpdateConfig(root), directory:resolve(paths.state,'updates') }), onShutdown } = {}) {
+export async function startConnector({ paths = connectorPaths(), defaults, port = 43786, managerPort = 43787, root = ROOT, request, status = companionStatus, runtime = new ConnectorRuntime(), installation = new CodexInstallation(paths.state), desktopSharing = new DesktopSharing(installation), updates = new UpdateManager({ config:loadUpdateConfig(root), directory:resolve(paths.state,'updates') }), onShutdown } = {}) {
   const profiles = new RelayProfiles(paths, defaults);
   const enrollments=new Map(), accounts=new Map();
   const enrollment = () => { const key=profiles.paths().state; if(!enrollments.has(key))enrollments.set(key,new Enrollment({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return enrollments.get(key); };
@@ -98,6 +99,7 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
         else { const prepared=prepareLan(paths.state); if(prepared.pairingChanged){lanPairingChanged=true;await runtime.stop();} }
         return res.end(JSON.stringify(await runtime.connect(activePaths(), {binary:installation.binary()})));
       }
+      if (url.pathname === '/api/codex/open-shared') return res.end(JSON.stringify(await desktopSharing.open()));
       if(url.pathname === '/api/codex/pick') return res.end(JSON.stringify(await installation.pick()));
       if(url.pathname === '/api/codex/installation') {
         if(runtime.busy) throw new Error('正在连接，请稍后更改安装位置');

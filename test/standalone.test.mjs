@@ -415,7 +415,7 @@ class ManagementServer extends Server {
 }
 
 function managementFixture(t, server = new ManagementServer(), options = {}) {
-  const a = fixtureAdapter({ server, catalog: false, managementRetryMs: 60000, ...options });
+  const a = fixtureAdapter({ server, catalog: false, codexHome: '/codex-pocket-tests/no-codex-home', managementRetryMs: 60000, ...options });
   const notifications = [], events = [];
   a.ready = true; a.ipcAvailable = true;
   a.ipc = { write: value => notifications.push(value), close() {} };
@@ -483,6 +483,82 @@ test('desktop-owned deletion is queued, survives a restart, then deletes and ref
   const list = await restarted.a.call('threads.list', { includeArchived: true });
   assert.deepEqual(list.completedManagement, [{ threadId: 'qa', action: 'thread.delete' }]);
   assert.deepEqual(list.threads.map(t => t.id), ['untouched']);
+});
+
+function sharedManagementFixture(t, loaded) {
+  const fix = managementFixture(t);
+  fix.server.held = true;
+  const methods = [];
+  const desktop = {
+    async connect() {},
+    async pages(method) { assert.equal(method, 'thread/loaded/list'); return loaded; },
+    async request(method, params) {
+      methods.push([method, params]);
+      fix.server.rows.delete(params.threadId);
+    },
+    close() {},
+  };
+  fix.a.desktopManagementClient = () => desktop;
+  return { ...fix, desktop, methods };
+}
+
+test('an external writer conflict routes deletion to the shared server holding the exact chat', async t => {
+  const { a, server, methods, events } = sharedManagementFixture(t, ['untouched', 'qa']);
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).verified, true);
+  assert.equal(server.held, true);
+  assert.deepEqual(methods, [['thread/delete', { threadId: 'qa' }]]);
+  assert.deepEqual([...server.rows.keys()], ['untouched']);
+  assert.equal(events.find(e => e.type === 'thread.managed').deleted, true);
+});
+
+test('a running daemon does not receive deletion unless it already holds the target', async t => {
+  const { a, server, methods, events } = sharedManagementFixture(t, ['untouched']);
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).managementReason, 'writer-busy');
+  assert.deepEqual(methods, []);
+  assert.equal(server.rows.size, 2);
+  assert.equal(events.some(e => e.type === 'thread.managed'), false);
+});
+
+test('desktop archive and restore notifications update mobile without invoking a mutation', { skip: !process.getuid }, async t => {
+  const { a, server, events } = managementFixture(t);
+  const observer = new EventEmitter();
+  const connected = Promise.withResolvers();
+  observer.connect = async () => connected.resolve();
+  observer.close = () => {};
+  a.desktopManagementClient = () => observer;
+  a.startDesktopManagementMonitor();
+  await connected.promise;
+  for (const method of ['thread/archived', 'thread/unarchived']) observer.emit('notification', { method, params: { threadId: 'qa' } });
+  assert.deepEqual(events.filter(e => e.type === 'thread.managed').map(e => [e.action, e.verified]), [['thread.archive', true], ['thread.unarchive', true]]);
+  assert(!server.calls.some(c => /^thread\/(archive|unarchive|delete)$/.test(c.method)));
+  a.stopDesktopManagementMonitor();
+  observer.emit('notification', { method: 'thread/deleted', params: { threadId: 'qa' } });
+  assert.equal(events.filter(e => e.type === 'thread.managed').length, 2);
+});
+
+test('closing the connector during a shared ownership probe cancels submission', async t => {
+  const { a, desktop, methods } = sharedManagementFixture(t, ['qa']);
+  const entered = Promise.withResolvers(), finish = Promise.withResolvers();
+  desktop.pages = async () => { entered.resolve(); return finish.promise; };
+  const deletion = a.call('thread.delete', { threadId: 'qa' });
+  await entered.promise;
+  a.close(); finish.resolve(['qa']);
+  assert.equal((await deletion).pending, true);
+  assert.equal(a.threadManagement.get('qa').phase, 'waiting');
+  assert.deepEqual(methods, []);
+});
+
+test('disconnect after a shared-server submission never replays the deletion', async t => {
+  const { a, server, desktop, methods, events } = sharedManagementFixture(t, ['qa']);
+  desktop.request = async (method, params) => {
+    methods.push([method, params]);
+    throw Object.assign(Error('连接已断开'), { uncertain: true });
+  };
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).managementReason, 'verifying');
+  await a.retryThreadManagement();
+  assert.deepEqual(methods, [['thread/delete', { threadId: 'qa' }]]);
+  assert.equal(server.calls.filter(c => c.method === 'thread/delete').length, 1);
+  assert.equal(events.some(e => e.type === 'thread.managed'), false);
 });
 
 test('an ambiguous delete verifies without replaying, and list omissions alone are not proof', async t => {

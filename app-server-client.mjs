@@ -1,19 +1,17 @@
 import { PRODUCT_VERSION } from './version.mjs';
 import { spawn } from 'node:child_process';
-import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { EventEmitter, once } from 'node:events';
+import net from 'node:net';
+import WebSocket from 'ws';
 
 export { resolveCodexCLI as findCodexCLI } from './codex-installation.mjs';
 import { resolveCodexCLI as findCodexCLI } from './codex-installation.mjs';
 
-// The official stdio transport stays inside the desktop process; no TCP port,
-// caller chat ID, tool pipe or inherited Codex terminal is needed.
+// JSON-RPC over a private stdio process or the local daemon’s Unix socket.
 export class AppServerClient extends EventEmitter {
-  constructor({ binary, env = process.env, cwd = process.cwd(), timeoutMs = 20000, spawnProcess = spawn } = {}) {
-    super(); Object.assign(this, { binary, env, cwd, timeoutMs, spawnProcess });
-    this.pending = new Map(); this.serial = 0; this.child = null; this.connecting = null; this.closing = null;
+  constructor({ binary, env = process.env, cwd = process.cwd(), timeoutMs = 20000, spawnProcess = spawn, controlSocket } = {}) {
+    super(); Object.assign(this, { binary, env, cwd, timeoutMs, spawnProcess, controlSocket });
+    this.pending = new Map(); this.serial = 0; this.child = null; this.socket = null; this.connecting = null; this.closing = null;
   }
   async connect() {
     if (this.connecting) return this.connecting;
@@ -21,6 +19,7 @@ export class AppServerClient extends EventEmitter {
     try { return await this.connecting; } finally { this.connecting = null; }
   }
   async start() {
+    if (this.controlSocket) return this.startSocket();
     if (this.child) return;
     if (this.closing) await this.closeAndWait();
     const env = { ...this.env };
@@ -53,23 +52,56 @@ export class AppServerClient extends EventEmitter {
         const line = fragments.join(''); fragments = []; bufferedBytes = 0; offset = end + 1;
         if (!line.trim()) continue;
         try {
-          const value = JSON.parse(line);
-          const waiter = value.method ? null : this.pending.get(value.id);
-          if (waiter) {
-            clearTimeout(waiter.timer); this.pending.delete(value.id);
-            if (value.error) waiter.reject(Object.assign(new Error(value.error.message), { code: value.error.code }));
-            else waiter.resolve(value.result);
-          } else if (value.method && value.id != null) this.emit('request', value);
-          else if (value.method) this.emit('notification', value);
+          this.receive(JSON.parse(line));
         } catch { ended('Codex 返回了无效的数据。'); child.kill(); return; }
       }
     });
-    try {
-      await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: PRODUCT_VERSION }, capabilities: { experimentalApi: true } });
-      this.send({ method: 'initialized', params: {} });
-    } catch (error) { this.close(); throw error; }
+    try { await this.initialize(); } catch (error) { this.close(); throw error; }
+  }
+  async startSocket() {
+    if (this.socket?.readyState === WebSocket.OPEN) return;
+    // The URL selects the daemon's HTTP route; the connection is only AF_UNIX.
+    const socket = new WebSocket('ws://localhost/rpc', {
+      createConnection: () => net.createConnection(this.controlSocket),
+      handshakeTimeout: this.timeoutMs, maxPayload: 64 * 1024 * 1024, perMessageDeflate: false,
+    });
+    this.socket = socket;
+    const ended = () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      const message = 'Codex 桌面共享服务连接已断开。';
+      for (const waiter of this.pending.values()) {
+        clearTimeout(waiter.timer);
+        waiter.reject(Object.assign(new Error(message), { uncertain: /^thread\/(archive|unarchive|delete)$/.test(waiter.method) }));
+      }
+      this.pending.clear();
+      this.emit('disconnect', new Error(message));
+    };
+    socket.on('error', ended);
+    socket.on('close', ended);
+    socket.on('message', data => {
+      if (this.socket !== socket) return;
+      try { this.receive(JSON.parse(data.toString())); }
+      catch { socket.terminate(); ended(); }
+    });
+    try { await once(socket, 'open'); await this.initialize(); }
+    catch (error) { this.close(); throw error; }
+  }
+  async initialize() {
+    await this.request('initialize', { clientInfo: { name: 'codex_pocket', title: 'Codex Pocket', version: PRODUCT_VERSION }, capabilities: { experimentalApi: true } });
+    this.send({ method: 'initialized', params: {} });
+  }
+  receive(value) {
+    const waiter = value.method ? null : this.pending.get(value.id);
+    if (waiter) {
+      clearTimeout(waiter.timer); this.pending.delete(value.id);
+      if (value.error) waiter.reject(Object.assign(new Error(value.error.message), { code: value.error.code }));
+      else waiter.resolve(value.result);
+    } else if (value.method && value.id != null) this.emit('request', value);
+    else if (value.method) this.emit('notification', value);
   }
   send(value) {
+    if (this.socket?.readyState === WebSocket.OPEN) { this.socket.send(JSON.stringify(value)); return; }
     if (!this.child?.stdin.writable) throw new Error('Codex 尚未连接。');
     this.child.stdin.write(JSON.stringify(value) + '\n');
   }
@@ -108,9 +140,10 @@ export class AppServerClient extends EventEmitter {
     } finally { clearTimeout(timer); clearTimeout(hardTimer); }
   }
   close() {
-    const child = this.child; if (!child) return;
+    const socket = this.socket; this.socket = null; socket?.terminate();
+    const child = this.child; if (!child && !socket) return;
     this.child = null;
-    if (child.pid && child.exitCode === null && child.signalCode === null) {
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
       // Keep an exit receipt even if closeAndWait times out. A subsequent
       // handoff must not interpret a detached stdin as a released writer.
       this.closing = { child, exited: new Promise(resolve => child.once('exit', resolve)) };

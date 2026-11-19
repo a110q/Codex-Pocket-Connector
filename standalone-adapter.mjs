@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { DesktopAdapter, FramedSocket, normalizeSnapshot, orderedTurns } from './desktop-adapter.mjs';
 import { AppServerClient } from './app-server-client.mjs';
+import { localCodexHome, localControlSocket } from './desktop-sharing.mjs';
 import { DesktopOwnerBridge } from './desktop-owner-bridge.mjs';
 import { DesktopRuntime } from './desktop-runtime.mjs';
 
@@ -16,6 +17,9 @@ const string = (value, label, length = 100000) => { if (typeof value !== 'string
 const writerConflict = error => /^thread [\w-]+ already has an active writer[.!]?$/i.test(error.message);
 const isPendingManagement = entry => entry?.phase === 'waiting' || entry?.phase === 'verify';
 const managementReason = entry => entry.phase === 'verify' ? 'verifying' : entry.reason ?? 'retrying';
+const nativeManagementEvents = new Map([
+  ['thread/archived', 'thread.archive'], ['thread/unarchived', 'thread.unarchive'], ['thread/deleted', 'thread.delete'],
+]);
 const managementActions = new Set(['thread.archive', 'thread.unarchive', 'thread.delete']);
 const missingThread = (error, id) => error.code === -32600 &&
   [`thread not loaded: ${id}`, `no rollout found for thread id ${id}`].includes(error.message);
@@ -49,6 +53,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.server.on('request', message => this.onServerRequest(message));
     this.server.on('disconnect', error => {
       this.stopRuntimeMonitor();
+      this.stopDesktopManagementMonitor();
       for (const id of this.ownedThreads) if (!this.threadServers.has(id)) this.ownedThreads.delete(id);
       if (this.ready) { this.ready = false; this.emit('event', { type: 'desktop.disconnected', error: error.message }); }
     });
@@ -67,6 +72,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       current();
       this.ready = true;
       this.startRuntimeMonitor();
+      this.startDesktopManagementMonitor();
       this.wakeThreadManagement();
       this.emit('event', { type: 'desktop.ready', capabilities: this.diagnostics().capabilities });
       return this.diagnostics();
@@ -720,6 +726,52 @@ export class StandaloneAdapter extends DesktopAdapter {
     const isActive = active.some(t => t.id === threadId), isArchived = archived.some(t => t.id === threadId);
     return action === 'thread.delete' ? !isActive && !isArchived : action === 'thread.archive' ? isArchived && !isActive : isActive && !isArchived;
   }
+  desktopManagementClient() {
+    const controlSocket = localControlSocket(this.options.codexHome ?? localCodexHome(this.options.env));
+    if (!controlSocket) return null;
+    return new AppServerClient({ ...this.options, controlSocket, timeoutMs: Math.min(this.options.timeoutMs ?? 2000, 2000) });
+  }
+  startDesktopManagementMonitor() {
+    if (!process.getuid || this.desktopManagementMonitor) return;
+    const monitor = { client: null, timer: null };
+    this.desktopManagementMonitor = monitor;
+    const retry = () => {
+      if (this.desktopManagementMonitor !== monitor) return;
+      monitor.timer = setTimeout(connect, 2500); monitor.timer.unref?.();
+    };
+    const connect = async () => {
+      if (this.desktopManagementMonitor !== monitor) return;
+      let client;
+      try { client = this.desktopManagementClient(); } catch {}
+      if (!client) { retry(); return; }
+      monitor.client = client;
+      const disconnected = () => {
+        if (monitor.client !== client) return;
+        monitor.client = null; client.close(); retry();
+      };
+      client.once('disconnect', disconnected);
+      client.on('notification', ({ method, params }) => {
+        if (this.desktopManagementMonitor !== monitor || monitor.client !== client || !this.ready) return;
+        const action = nativeManagementEvents.get(method), threadId = params?.threadId;
+        if (!action || typeof threadId !== 'string') return;
+        if (isPendingManagement(this.threadManagement.get(threadId))) {
+          // Leave our own operations to their authoritative readback and
+          // wake any waiting phone operation after a desktop-side change.
+          this.wakeThreadManagement(threadId); return;
+        }
+        this.states.delete(threadId); this.snapshots.delete(`local:${threadId}`);
+        this.emit('event', { type: 'thread.managed', action, threadId, deleted: action === 'thread.delete', archived: action === 'thread.archive', verified: true });
+      });
+      try { await client.connect(); } catch { disconnected(); }
+    };
+    void connect();
+  }
+  stopDesktopManagementMonitor() {
+    const monitor = this.desktopManagementMonitor;
+    this.desktopManagementMonitor = null;
+    if (!monitor) return;
+    clearTimeout(monitor.timer); monitor.client?.close();
+  }
   async executeThreadManagement(threadId, entry, generation) {
     const { action } = entry;
     const deleted = action === 'thread.delete', archived = action === 'thread.archive';
@@ -729,14 +781,42 @@ export class StandaloneAdapter extends DesktopAdapter {
     if (!current()) return pending();
     if (entry.phase === 'waiting') {
       const owner = this.serverFor(threadId);
-      // Save before submission. A restart in this window can only read back
-      // an ambiguous request, not silently lose or replay a destructive RPC.
-      entry = { ...entry, phase: 'verify' };
-      this.saveThreadManagement(threadId, entry);
+      const submitted = server => {
+        // Save only at the mutation boundary. An interrupted read-only probe
+        // is safe to retry; an uncertain mutation may only be read back.
+        const attempt = { ...entry, phase: 'verify' };
+        this.saveThreadManagement(threadId, attempt);
+        entry = attempt;
+        return server.request(method, { threadId });
+      };
       try {
-        // If Pocket owns this exact thread, its worker can perform the native
-        // operation, even during a turn. Never resume a second writer to do it.
-        await owner.request(method, { threadId });
+        try {
+          // A Pocket-owned thread goes to its own writer. Never resume a
+          // second writer while trying to delete or archive the thread.
+          await submitted(owner);
+        } catch (error) {
+          if (!writerConflict(error) || this.ownedThreads.has(threadId) || !current()) throw error;
+          let desktop;
+          try { desktop = this.desktopManagementClient(); } catch { throw error; }
+          if (!desktop) throw error;
+          try {
+            // The first server definitively refused the mutation.
+            const rejected = { ...entry, phase: 'waiting' };
+            this.saveThreadManagement(threadId, rejected);
+            entry = rejected;
+            let loaded;
+            try {
+              await desktop.connect();
+              loaded = await desktop.pages('thread/loaded/list');
+            } catch { throw error; }
+            // A socket's existence isn't proof: Desktop may be using stdio.
+            if (!loaded.includes(threadId) || !current()) throw error;
+            await submitted(desktop);
+          } finally {
+            // Disconnect only this client; the daemon and desktop stay online.
+            desktop.close();
+          }
+        }
         if (!current()) return pending();
         entry = { ...entry, acknowledged: true };
         this.saveThreadManagement(threadId, entry);
@@ -865,6 +945,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.managementGeneration++; clearTimeout(this.managementTimer); this.managementTimer = null; this.managementWakeups.clear();
     this.initializationAttempt = null;
     this.stopRuntimeMonitor();
+    this.stopDesktopManagementMonitor();
     this.runtimeReader?.close(); this.runtimeRetryAt = 0;
     this.projectReader?.close();
     for (const timer of this.refreshTimers?.values() ?? []) clearTimeout(timer);
