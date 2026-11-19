@@ -6,6 +6,7 @@ Set-StrictMode -Version Latest
 . $Helper
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $user = $id.User
+$isElevated = ([Security.Principal.WindowsPrincipal]::new($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $system = New-Object Security.Principal.SecurityIdentifier 'S-1-5-18'
 $everyone = New-Object Security.Principal.SecurityIdentifier 'S-1-1-0'
 $ownerRights = New-Object Security.Principal.SecurityIdentifier 'S-1-3-4'
@@ -51,14 +52,19 @@ try {
     $denyAclWrite = New-Object Security.AccessControl.FileSystemAccessRule($ownerRights, 'ChangePermissions', 'Deny')
     Set-FixtureAcl $existing @($denyAclWrite)
     $before = [IO.Directory]::GetAccessControl($existing, $sections).Sddl
-    $legacyBlocked = $false
-    try { Set-Acl -LiteralPath $existing -AclObject (New-PocketStateAcl $user $system) }
-    catch { $legacyBlocked = (Get-PocketStartupHResult $_) -eq '0x80070005' }
-    Assert $legacyBlocked 'Legacy Set-Acl should fail with access denied'
+    # The historical provider failure is specific to an ordinary user token.
+    # An elevated Set-Acl can use privileges that the old user did not have.
+    if (-not $isElevated) {
+        $legacyBlocked = $false
+        try { Set-Acl -LiteralPath $existing -AclObject (New-PocketStateAcl $user $system) }
+        catch { $legacyBlocked = (Get-PocketStartupHResult $_) -eq '0x80070005' }
+        Assert $legacyBlocked 'Legacy Set-Acl should fail with access denied'
+        'PASS historical Set-Acl access denial under ordinary token'
+    }
     Assert ((Initialize-PocketStateDirectory $existing ([ref]$stage)) -eq $existing) 'Safe directory should still open'
     Assert ([IO.Directory]::GetAccessControl($existing, $sections).Sddl -eq $before) 'Safe DACL was rewritten'
     Assert ([IO.File]::ReadAllText($state) -ceq '{"fixture":true}') 'Existing state was changed'
-    'PASS legacy access denied, safe rerun and state preservation'
+    'PASS safe rerun and state preservation'
 
     $unwritable = Join-Path $fixture 'unwritable'
     Initialize-PocketStateDirectory $unwritable ([ref]$stage) | Out-Null
