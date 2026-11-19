@@ -7,6 +7,21 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import org.json.JSONObject
 
+internal fun managementActionLabel(action: String) = when (action) {
+    "thread.archive" -> "归档"
+    "thread.unarchive" -> "恢复"
+    else -> "删除"
+}
+
+internal fun threadManagementLabel(thread: JSONObject): String? {
+    val action = managementActionLabel(thread.optString("managementAction"))
+    return when (thread.optString("managementStatus")) {
+        "pending" -> "等待$action"
+        "failed" -> "${action}未完成"
+        else -> null
+    }
+}
+
 @Composable
 internal fun DeleteThreadDialog(model: PocketModel, thread: JSONObject, blocked: String?, onDismiss: () -> Unit) {
     val computer = model.profile?.computerName() ?: "电脑"
@@ -14,7 +29,7 @@ internal fun DeleteThreadDialog(model: PocketModel, thread: JSONObject, blocked:
         onDismissRequest = onDismiss,
         title = { Text("删除对话？") },
         text = {
-            Text("将从 $computer 删除“${thread.label()}”及其对话记录，无法恢复。项目文件不会删除。" +
+            Text("将从 $computer 删除“${thread.label()}”及其对话记录，无法恢复。项目文件不会删除。若电脑暂时无法删除，连接器会自动重试。" +
                 (blocked?.let { "\n\n$it" } ?: ""))
         },
         confirmButton = {

@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { AppServerClient, findCodexCLI } from '../app-server-client.mjs';
 import { StandaloneAdapter } from '../standalone-adapter.mjs';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Unit fixtures must never discover or subscribe to the user's real desktop.
 const fixtureAdapter = options => new StandaloneAdapter({ ipcPath: '/codex-pocket-tests/no-ipc.sock', runtimeCatalog: false, ...options });
@@ -384,65 +385,135 @@ test('connector UI has no dangling controls or manually entered caller chat ID',
   assert(!ids.has('context'));assert(ids.has('connect'));assert(ids.has('qr'));
 });
 
-test('archive, restore and delete change the backend and verify the fresh list; active tasks are protected',async t=>{
-  class Managed extends Server{
-    archived=false;deleted=false;active=false;
-    async request(method,params){this.calls.push({method,params});
-      if(method==='thread/read'){if(this.deleted)throw Error('thread not loaded');return{thread:{id:'qa',status:{type:this.active?'active':'idle'},turns:[]}};}
-      if(method==='thread/archive')this.archived=true;
-      else if(method==='thread/unarchive')this.archived=false;
-      else if(method==='thread/delete')this.deleted=true;
-      else throw Error(method);return{};
+class ManagementServer extends Server {
+  rows = new Map([['qa', false], ['untouched', false]]);
+  held = false;
+  readError = null;
+  cancelDelete = null;
+  async request(method, params) {
+    this.calls.push({method, params});
+    const { threadId } = params;
+    if (method === 'thread/read') {
+      if (this.readError) throw this.readError;
+      if (!this.rows.has(threadId)) throw Object.assign(Error('thread not loaded: ' + threadId), { code: -32600 });
+      return { thread: { id: threadId, status: { type: 'notLoaded' }, cwd: '/project' } };
     }
-    async pages(method,params){assert.equal(method,'thread/list');return !this.deleted&&params.archived===this.archived?[{id:'qa'}]:[]}
+    if (this.held && threadId === 'qa') throw Object.assign(Error('thread qa already has an active writer'), { code: -32600 });
+    if (method === 'thread/archive') this.rows.set(threadId, true);
+    else if (method === 'thread/unarchive') this.rows.set(threadId, false);
+    else if (method === 'thread/delete') {
+      if (this.cancelDelete) throw this.cancelDelete;
+      this.rows.delete(threadId);
+    } else throw Error('unexpected ' + method);
+    return {};
   }
-  const server=new Managed(),a=fixtureAdapter({server,catalog:false}),notifications=[];a.ready=true;t.after(()=>a.close());
-  a.ipcAvailable=true;a.ipc={write:value=>notifications.push(value),close(){}};
-  server.active=true;await assert.rejects(a.call('thread.delete',{threadId:'qa'}),e=>e.notSubmitted===true&&/正在运行/.test(e.message));assert(!server.deleted);server.active=false;
-  assert.equal((await a.call('thread.archive',{threadId:'qa'})).verified,true);assert(server.archived);
-  assert.equal((await a.call('thread.unarchive',{threadId:'qa'})).verified,true);assert(!server.archived);
-  assert.equal((await a.call('thread.delete',{threadId:'qa'})).verified,true);assert(server.deleted);
-  assert.deepEqual(notifications.map(n=>[n.method,n.version,n.params.conversationId]),[['thread-archived',2,'qa'],['thread-unarchived',1,'qa'],['thread-archived',2,'qa']]);
-  assert.equal((await a.call('thread.delete',{threadId:'qa'})).alreadyDeleted,true);
-  assert.equal(notifications.at(-1).method,'thread-archived');
-  await assert.rejects(a.call('thread.archive',{threadId:'qa',hostId:'other'}),/本机/);
+  async pages(method, params) {
+    assert.equal(method, 'thread/list');
+    return [...this.rows].filter(([, archived]) => archived === (params.archived ?? false))
+      .map(([id]) => ({ id, name: id, updatedAt: 1 }));
+  }
+}
+
+function managementFixture(t, server = new ManagementServer(), options = {}) {
+  const a = fixtureAdapter({ server, catalog: false, managementRetryMs: 60000, ...options });
+  const notifications = [], events = [];
+  a.ready = true; a.ipcAvailable = true;
+  a.ipc = { write: value => notifications.push(value), close() {} };
+  a.on('event', e => events.push(e));
+  t.after(() => a.close());
+  return { a, server, notifications, events };
+}
+
+test('archive, restore and delete update the real catalogs and notify the desktop', async t => {
+  const { a, server, notifications } = managementFixture(t);
+  assert.equal((await a.call('thread.archive', { threadId: 'qa', cwd: '/project' })).verified, true);
+  assert.equal(server.rows.get('qa'), true);
+  assert.equal((await a.call('thread.unarchive', { threadId: 'qa' })).verified, true);
+  assert.equal(server.rows.get('qa'), false);
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).verified, true);
+  assert.deepEqual([...server.rows.keys()], ['untouched']);
+  assert.deepEqual(notifications.map(n => [n.method, n.version, n.params.conversationId, n.params.cwd]),
+    [['thread-archived', 2, 'qa', '/project'], ['thread-unarchived', 1, 'qa', undefined], ['thread-archived', 2, 'qa', '/']]);
+  assert.equal((await a.call('threads.list', { includeArchived: true })).threads[0].id, 'untouched');
+  await assert.rejects(a.call('thread.archive', { threadId: 'qa', hostId: 'other' }), /本机/);
 });
 
-test('mobile management uses the already owned worker and protects pending approvals', async t => {
-  const catalog = new Server(), writer = new Server();
-  catalog.pages = async () => [];
-  const a = fixtureAdapter({ server: catalog, catalog: false, createThreadServer() { throw Error('must not open a second writer'); } });
-  a.ready = true; t.after(() => a.close());
+test('delete uses its Pocket-owned worker even during a turn or pending approval', async t => {
+  const { a, server } = managementFixture(t);
+  const writer = new Server();
   a.threadServers.set('qa', writer); a.ownedThreads.add('qa');
+  a.approvals.set('qa:1', { params: { threadId: 'qa' } });
+  a.approvals.set('untouched:2', { params: { threadId: 'untouched' } });
   writer.request = async (method, params) => {
     writer.calls.push({ method, params });
-    if (method === 'thread/read') return { thread: { id: 'qa', status: { type: 'idle' }, turns: [] } };
-    if (method === 'thread/delete') return {};
-    throw Error('unexpected ' + method);
+    assert.equal(method, 'thread/delete');
+    assert.equal(params.threadId, 'qa');
+    server.rows.delete(params.threadId);
+    return {};
   };
   let exited = false;
   writer.closeAndWait = async () => { exited = true; };
-  a.approvals.set('qa:1', { params: { threadId: 'qa' } });
-  await assert.rejects(a.call('thread.delete', { threadId: 'qa' }), e => e.notSubmitted && /待确认/.test(e.message));
-  assert(!writer.calls.some(c => c.method === 'thread/delete'));
-  a.approvals.clear();
   assert.equal((await a.call('thread.delete', { threadId: 'qa' })).verified, true);
-  assert.equal(writer.calls.filter(c => c.method === 'thread/delete').length, 1);
+  assert.deepEqual(writer.calls.map(c => c.method), ['thread/delete']);
   assert(exited); assert(!a.ownedThreads.has('qa'));
+  assert.deepEqual([...a.approvals.keys()], ['untouched:2']);
 });
 
-test('an externally held writer rejects management once without resuming or retrying', async t => {
-  const server = new Server();
-  const a = fixtureAdapter({ server, catalog: false, createThreadServer() { throw Error('must not open a competing writer'); } });
-  a.ready = true; t.after(() => a.close());
-  server.request = async (method, params) => {
-    server.calls.push({ method, params });
-    if (method === 'thread/read') return { thread: { id: 'qa', status: { type: 'notLoaded' }, turns: [] } };
-    if (method === 'thread/archive') throw new Error('thread qa already has an active writer');
-    throw Error('unexpected ' + method);
-  };
-  await assert.rejects(a.call('thread.archive', { threadId: 'qa' }), e => e.notSubmitted && /本次操作未执行/.test(e.message));
-  assert.deepEqual(server.calls.map(c => c.method), ['thread/read', 'thread/archive']);
+test('desktop-owned deletion is queued, survives a restart, then deletes and refreshes both clients', async t => {
+  const root = new URL('../.private/tests/', import.meta.url).pathname;
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(join(root, 'management-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const options = { threadManagementPath: join(dir, 'queue.json'), createThreadServer() { throw Error('must not open a competing writer'); } };
+  const { a, server, notifications } = managementFixture(t, undefined, options);
+  server.held = true;
+  assert.deepEqual(await a.call('thread.delete', { threadId: 'qa', cwd: '/project' }), { threadId: 'qa', pending: true, verified: false });
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).pending, true);
+  assert.equal(server.calls.filter(c => c.method === 'thread/delete').length, 1);
+  assert.equal((await a.call('threads.list', { includeArchived: true })).threads.find(t => t.id === 'qa').managementStatus, 'pending');
+  assert.equal(notifications.length, 0);
+  a.close();
+  const restarted = managementFixture(t, server, options);
+  server.held = false;
+  await restarted.a.retryThreadManagement();
+  assert.deepEqual([...server.rows.keys()], ['untouched']);
+  assert.equal(server.calls.filter(c => c.method === 'thread/delete').length, 2);
+  assert.deepEqual(restarted.notifications[0].params, { hostId: 'local', conversationId: 'qa', cwd: '/project' });
+  assert.equal(restarted.events.find(e => e.type === 'thread.managed').verified, true);
+  const list = await restarted.a.call('threads.list', { includeArchived: true });
+  assert.deepEqual(list.completedManagement, [{ threadId: 'qa', action: 'thread.delete' }]);
+  assert.deepEqual(list.threads.map(t => t.id), ['untouched']);
+});
+
+test('an ambiguous delete verifies without replaying, and list omissions alone are not proof', async t => {
+  const { a, server, events } = managementFixture(t);
+  const deleteCalls = () => server.calls.filter(c => c.method === 'thread/delete').length;
+  server.cancelDelete = Object.assign(Error('timeout'), { uncertain: true });
+  assert.equal((await a.call('thread.delete', { threadId: 'qa' })).pending, true);
+  server.rows.delete('qa');
+  server.readError = Error('network temporarily unavailable');
+  await a.retryThreadManagement();
+  assert.equal(events.filter(e => e.type === 'thread.managed').length, 0);
+  server.readError = null;
+  a.localCatalog = async () => ({ threads: [{ id: 'qa' }] });
+  await a.retryThreadManagement();
+  assert.equal(events.filter(e => e.type === 'thread.managed').length, 0);
+  a.localCatalog = async () => ({ threads: [] });
+  await a.retryThreadManagement();
+  assert.equal(deleteCalls(), 1);
+  assert.equal(events.find(e => e.type === 'thread.managed').deleted, true);
+});
+
+test('archive and restore defer a confirmed request only while an external writer owns it', async t => {
+  const { a, server } = managementFixture(t);
+  for (const [action, archived] of [['thread.archive', true], ['thread.unarchive', false]]) {
+    server.held = true;
+    assert.equal((await a.call(action, { threadId: 'qa' })).pending, true);
+    assert.equal(server.rows.get('qa'), !archived);
+    server.held = false;
+    await a.retryThreadManagement();
+    assert.equal(server.rows.get('qa'), archived);
+  }
 });
 
 test('desktop runtime monitoring does not subscribe to its own Pocket-owned conversations', async t => {

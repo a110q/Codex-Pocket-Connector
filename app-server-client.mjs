@@ -30,7 +30,7 @@ export class AppServerClient extends EventEmitter {
     const ended = message => {
       if (this.child !== child) return;
       this.child = null;
-      for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(message)); }
+      for (const waiter of this.pending.values()) { clearTimeout(waiter.timer); waiter.reject(Object.assign(new Error(message), { uncertain: /^thread\/(archive|unarchive|delete)$/.test(waiter.method) })); }
       this.pending.clear(); this.emit('disconnect', new Error(message));
     };
     child.on('error', () => ended('Codex 运行程序启动失败，请检查安装。'));
@@ -77,8 +77,8 @@ export class AppServerClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const id = ++this.serial;
       const timer = setTimeout(() => { this.pending.delete(id); const error = new Error(`Codex 请求超时：${method}`); error.uncertain = /^(turn\/|review\/start|thread\/(start|archive|unarchive|delete|name\/set)|skills\/config\/write|plugin\/(install|uninstall)|config\/value\/write|mcpServer\/oauth\/login)/.test(method); reject(error); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      try { this.send({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
+      this.pending.set(id, { method, resolve, reject, timer });
+      try { this.send({ id, method, params }); } catch (error) { clearTimeout(timer); this.pending.delete(id); if (/^thread\/(archive|unarchive|delete)$/.test(method)) error.notSubmitted = true; reject(error); }
     });
   }
   async pages(method, params = {}) {

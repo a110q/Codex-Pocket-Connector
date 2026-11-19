@@ -19,7 +19,7 @@ export class ConnectorRuntime {
     try {
       await this.stop();
       if (config.mode === 'lan') this.lan = await this.lanRelay(config, { dbPath: resolve(paths.state, 'lan-relay.sqlite') });
-      this.app = await this.companion(config, { adapter: this.createAdapter(options), port: 0, statePath: resolve(paths.state, 'commands.sqlite'), configPath: paths.config });
+      this.app = await this.companion(config, { adapter: this.createAdapter({ ...options, threadManagementPath: resolve(paths.state, 'thread-management.json') }), port: 0, statePath: resolve(paths.state, 'commands.sqlite'), configPath: paths.config });
       this.hostId = config.hostId;
       if (config.pairExpires < Date.now()) {
         // Expiry should not force a new user through a dead QR. Never rotate

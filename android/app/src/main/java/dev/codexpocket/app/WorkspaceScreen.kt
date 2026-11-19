@@ -226,7 +226,8 @@ private enum class WorkspaceFilter(val label:String){
 @Composable private fun WorkspaceThread(thread:JSONObject,model:PocketModel,nested:Boolean,onOpen:()->Unit){
     var menu by remember{mutableStateOf(false)};var deleting by remember{mutableStateOf(false)};var rename by remember{mutableStateOf(false)}
     val activity=threadActivity(thread);val running=activity==ThreadActivity.RUNNING
-    val deleteBlock=model.deleteThreadBlock(activity)
+    val deleteBlock=model.threadManagementBlock()
+    val managementLabel=threadManagementLabel(thread)
     val accent=when{!model.connected->MaterialTheme.colorScheme.onSurfaceVariant;running->MaterialTheme.colorScheme.primary;activity.waiting->MaterialTheme.colorScheme.tertiary;else->MaterialTheme.colorScheme.error}
     Row(Modifier.fillMaxWidth().heightIn(min=48.dp),verticalAlignment=Alignment.CenterVertically){
         if(nested){Spacer(Modifier.width(12.dp));Box(Modifier.width(1.dp).height(48.dp).background(MaterialTheme.colorScheme.outlineVariant));Spacer(Modifier.width(8.dp))}
@@ -236,13 +237,14 @@ private enum class WorkspaceFilter(val label:String){
                 ThreadActivityMarker(activity,model.connected)
                 if(model.hasUnseenCompletion(thread)){Spacer(Modifier.width(4.dp));CompletionDot("${thread.label()}：任务已完成，未查看")}
                 Spacer(Modifier.width(8.dp));Text(thread.label(),Modifier.weight(1f),fontSize=14.sp,fontWeight=if(activity.inFlight)FontWeight.Medium else FontWeight.Normal,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(activity.actionable){Spacer(Modifier.width(8.dp));Text((if(model.connected)""else"上次")+activity.label,fontSize=11.sp,fontWeight=FontWeight.Medium,color=accent)}
+                if(managementLabel!=null){Spacer(Modifier.width(8.dp));Text(managementLabel,fontSize=11.sp,fontWeight=FontWeight.Medium,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                else if(activity.actionable){Spacer(Modifier.width(8.dp));Text((if(model.connected)""else"上次")+activity.label,fontSize=11.sp,fontWeight=FontWeight.Medium,color=accent)}
                 else{val time=threadTime(thread);if(time.isNotBlank()){Spacer(Modifier.width(10.dp));Text(time,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
             }
         }
         DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
             DropdownMenuItem(text={Text("重命名对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null,onClick={menu=false;rename=true})
-            DropdownMenuItem(text={Text(if(thread.optBoolean("archived"))"恢复对话"else"归档对话")},enabled=model.connected&&!model.busy&&model.pendingOperation==null&&!activity.inFlight,onClick={menu=false;model.manageThread(thread,if(thread.optBoolean("archived"))"unarchive"else"archive")})
+            DropdownMenuItem(text={Text(if(thread.optBoolean("archived"))"恢复对话"else"归档对话")},enabled=deleteBlock==null,onClick={menu=false;model.manageThread(thread,if(thread.optBoolean("archived"))"unarchive"else"archive")})
             DropdownMenuItem(text={Text("删除对话",color=MaterialTheme.colorScheme.error)},enabled=deleteBlock==null,onClick={menu=false;deleting=true})
         }
         }

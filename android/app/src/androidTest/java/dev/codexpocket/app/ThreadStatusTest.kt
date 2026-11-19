@@ -152,19 +152,15 @@ class ThreadStatusTest {
         until { activity("run") == ThreadActivity.APPROVAL }
     }
 
-    @Test fun detailDeleteIsGuardedAndOnlyClosesAfterConfirmedRemoval() {
+    @Test fun detailDeleteAcceptsRunningAndWaitingThreadsAndOnlyClosesWhenComputerDeletes() {
         val original = peer.extra
-        val arrived = CountDownLatch(1)
-        val confirm = CountDownLatch(1)
-        releaseList = confirm
         peer.extra = { action, args -> when (action) {
             "thread.delete" -> {
                 Assert.assertEquals("run", args.getString("threadId"))
                 Assert.assertEquals("local", args.getString("hostId"))
-                arrived.countDown()
-                check(confirm.await(8, TimeUnit.SECONDS))
-                catalog = catalog.filterNot { it.optString("id") == "run" }
-                JSONObject().put("deleted", true).put("verified", true)
+                catalog = catalog.map { if(it.optString("id")=="run") JSONObject(it.toString())
+                    .put("managementAction","thread.delete").put("managementStatus","pending") else it }
+                JSONObject().put("pending", true).put("verified", false)
             }
             else -> original?.invoke(action, args)
         } }
@@ -173,17 +169,9 @@ class ThreadStatusTest {
         until { !model.loadingThread && model.snapshot != null }
         fun openDeleteMenu() {
             compose.onNodeWithContentDescription("对话更多操作").performClick()
-            compose.onNodeWithText("删除对话").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("删除对话").performScrollTo().assertIsDisplayed().assertIsEnabled()
         }
         openDeleteMenu()
-        compose.onNodeWithText("删除对话").assertIsNotEnabled()
-        compose.onNodeWithText("任务运行中，结束后可删除").assertIsDisplayed()
-        push("run", "active", 1, requests = JSONArray().put(JSONObject().put("id", "ask").put("method", "item/tool/requestUserInput")))
-        until { activity("run") == ThreadActivity.INPUT }
-        compose.onNodeWithText("删除对话").assertIsNotEnabled()
-        compose.onNodeWithText("请先处理待确认请求").assertIsDisplayed()
-        push("run", "idle", 2)
-        until { activity("run") == ThreadActivity.IDLE }
         compose.onNodeWithText("删除对话").performClick()
         compose.onNodeWithText("删除对话？").assertIsDisplayed()
         compose.onNodeWithText("项目文件不会删除。", substring = true).assertIsDisplayed()
@@ -191,12 +179,17 @@ class ThreadStatusTest {
         compose.onNodeWithText("取消").performClick()
         Assert.assertFalse(peer.actions.contains("thread.delete"))
 
+        push("run", "active", 2, requests = JSONArray().put(JSONObject().put("id", "ask").put("method", "item/tool/requestUserInput")))
+        until { activity("run") == ThreadActivity.INPUT }
         openDeleteMenu()
         compose.onNodeWithText("删除对话").performClick()
         compose.onNodeWithText("确认删除").performClick()
-        Assert.assertTrue(arrived.await(5, TimeUnit.SECONDS))
+        until { model.selected?.optString("managementStatus")=="pending" && !model.busy }
+        compose.onNodeWithText("等待删除 · 电脑连接器会自动处理").assertIsDisplayed()
         compose.runOnUiThread { Assert.assertEquals("run", model.selected?.optString("id")) }
-        confirm.countDown()
+
+        catalog = catalog.filterNot { it.optString("id") == "run" }
+        peer.event(JSONObject().put("type","thread.managed").put("threadId","run").put("action","thread.delete").put("verified",true))
         until { model.selected == null && model.threads.none { it.optString("id") == "run" } }
         Assert.assertEquals(1, peer.actions.count { it == "thread.delete" })
     }

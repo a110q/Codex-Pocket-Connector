@@ -338,7 +338,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     var expandedGroups by rememberSaveable(model.profile?.optString("relay"),model.profile?.optString("hostId"),thread.optString("id")){mutableStateOf(emptyList<String>())}
     val runtimeThread=snapshot?.optJSONObject("thread")?:thread
     val activity=threadActivity(runtimeThread,snapshot?.optJSONArray("requests"))
-    val deleteBlock=if(model.loadingThread) "正在读取对话状态" else model.deleteThreadBlock(activity)
+    val deleteBlock=model.threadManagementBlock()
     var deleting by remember(threadIdentity(thread)){mutableStateOf(false)}
     val artifacts=snapshot?.optJSONArray("artifacts").objects()
     val changes=recentChanges(snapshot)
@@ -481,12 +481,16 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
                 ChatMenuAction("刷新","刷新对话",model.connected){menu=false;model.openThread(thread)}
                 ChatMenuAction("电脑","连接诊断"){menu=false;connectionDetails=true}
                 HorizontalDivider(Modifier.padding(vertical=6.dp))
-                ChatMenuAction("删除","删除对话",deleteBlock==null,destructive=true,supportingText=deleteBlock){menu=false;deleting=true}
+                ChatMenuAction("删除","删除对话",deleteBlock==null,destructive=true,supportingText=deleteBlock?:threadManagementLabel(thread)){menu=false;deleting=true}
             }
         }
         if(connectionDetails)ConnectionDetailsDialog(model){connectionDetails=false}
         HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
         ChatConnectionNotice(model)
+        threadManagementLabel(thread)?.let{label->
+            Text(if(thread.optString("managementStatus")=="pending")"$label · 电脑连接器会自动处理" else label,
+                Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=8.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if(model.loadingThread)LinearProgressIndicator(Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.secondary)
         if(previewExpanded&&model.previewKind!=null&&!browserFullscreen&&requests.isNotEmpty())TextButton(onClick=::revealPending,modifier=Modifier.fillMaxWidth()){
             Text("${requests.size} 项待处理 · 回到对话查看",fontSize=12.sp)

@@ -5,7 +5,7 @@ import { attachmentText } from './file-uploads.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { DesktopAdapter, FramedSocket, normalizeSnapshot, orderedTurns } from './desktop-adapter.mjs';
 import { AppServerClient } from './app-server-client.mjs';
 import { DesktopOwnerBridge } from './desktop-owner-bridge.mjs';
@@ -14,6 +14,9 @@ import { DesktopRuntime } from './desktop-runtime.mjs';
 const modes = { 'read-only': { permissions: ':read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, auto: { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'user' }, 'full-access': { permissions: ':danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' } };
 const string = (value, label, length = 100000) => { if (typeof value !== 'string' || !value.trim() || value.length > length) throw new Error(`${label}无效`); return value; };
 const writerConflict = error => /^thread [\w-]+ already has an active writer[.!]?$/i.test(error.message);
+const managementActions = new Set(['thread.archive', 'thread.unarchive', 'thread.delete']);
+const missingThread = (error, id) => error.code === -32600 &&
+  [`thread not loaded: ${id}`, `no rollout found for thread id ${id}`].includes(error.message);
 const notSubmitted = error => Object.assign(error, { notSubmitted: true, uncertain: false });
 const threadHasActiveWork = state => state.status?.type === 'active' ||
   (state.status?.type !== 'idle' && state.turns?.some(turn => turn.status === 'inProgress')) ||
@@ -28,6 +31,14 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.runtimeCache = new Map(); this.runtimeRefresh = null; this.runtimeTimer = null; this.runtimeMonitoring = false;
     this.runtimeStream = randomUUID(); this.runtimeSequence = 0; this.runtimeGeneration = 0;
     this.projectReader = options.projectReader ?? null;
+    this.threadManagementPath = options.threadManagementPath;
+    this.threadManagement = new Map(); this.managementGeneration = 0;
+    if (this.threadManagementPath) {
+      try {
+        const entries = JSON.parse(readFileSync(this.threadManagementPath, 'utf8'));
+        for (const [id, entry] of entries) if (typeof id === 'string' && managementActions.has(entry?.action) && ['waiting', 'verify', 'failed', 'done'].includes(entry.phase)) this.threadManagement.set(id, entry);
+      } catch (error) { if (error.code !== 'ENOENT') throw new Error('无法读取电脑已保存的对话操作。', { cause: error }); }
+    }
     this.ownerBridge = new DesktopOwnerBridge(this);
     this.workspace = new WorkspaceTools(this);
     this.extensions = new ExtensionTools(this);
@@ -53,6 +64,7 @@ export class StandaloneAdapter extends DesktopAdapter {
       current();
       this.ready = true;
       this.startRuntimeMonitor();
+      this.scheduleThreadManagement();
       this.emit('event', { type: 'desktop.ready', capabilities: this.diagnostics().capabilities });
       return this.diagnostics();
     };
@@ -140,9 +152,16 @@ export class StandaloneAdapter extends DesktopAdapter {
       const thread = threads.get(id);
       if (thread) threads.set(id, { ...thread, ...status });
     }
+    // A catalog read started before a verified delete must not resurrect it.
+    const completedManagement = [...this.threadManagement].filter(([, entry]) => entry.phase === 'done').map(([threadId, entry]) => ({ threadId, action: entry.action }));
+    for (const { threadId, action } of completedManagement) if (action === 'thread.delete') threads.delete(threadId);
     let result = [...threads.values()].filter(t => (args.includeArchived || !t.archived) && (args.includeSubagents || !t.isSubagent) && (!Object.hasOwn(args, 'projectId') || t.projectId === args.projectId) && (!args.hostId || args.hostId === 'local'));
+    result = result.map(thread => {
+      const operation = this.threadManagement.get(thread.id);
+      return operation && operation.phase !== 'done' ? { ...thread, managementAction: operation.action, managementStatus: operation.phase === 'failed' ? 'failed' : 'pending' } : thread;
+    });
     result.sort((a,b) => Number(!!b.isPinned) - Number(!!a.isPinned) || (Date.parse(b.recencyAt ?? b.updatedAt) || 0) - (Date.parse(a.recencyAt ?? a.updatedAt) || 0));
-    return { threads: result, pinnedThreads: result.filter(t => t.isPinned), catalog: { localComplete: catalog.localComplete, remoteComplete: false, chatgptComplete: false, source: 'codex-app-server+desktop-membership' } };
+    return { threads: result, completedManagement, pinnedThreads: result.filter(t => t.isPinned), catalog: { localComplete: catalog.localComplete, remoteComplete: false, chatgptComplete: false, source: 'codex-app-server+desktop-membership' } };
   }
   async desktopRuntime(catalog, { fresh = false } = {}) {
     if (!fresh && this.runtimeMonitoring && this.runtimeSequence) return new Map(this.runtimeCache);
@@ -585,53 +604,161 @@ export class StandaloneAdapter extends DesktopAdapter {
     this.approvals.set(`${message.params.threadId}:${message.id}`, { ...message, completed: false });
     this.onServerEvent({ params: message.params });
   }
+  saveThreadManagement(threadId, entry) {
+    const next = new Map(this.threadManagement);
+    next.delete(threadId);
+    if (entry) next.set(threadId, entry);
+    const completed = [...next].filter(([, value]) => value.phase === 'done');
+    for (const [id] of completed.slice(0, Math.max(0, completed.length - 128))) next.delete(id);
+    if (this.threadManagementPath) {
+      const temporary = `${this.threadManagementPath}.${randomUUID()}.tmp`;
+      try {
+        mkdirSync(path.dirname(temporary), { recursive: true, mode: 0o700 });
+        writeFileSync(temporary, JSON.stringify([...next]), { flag: 'wx', mode: 0o600, flush: true });
+        renameSync(temporary, this.threadManagementPath);
+      } catch (error) {
+        throw new Error('电脑无法保存待处理的对话操作，请检查连接器本地存储。', { cause: error });
+      } finally { try { rmSync(temporary, { force: true }); } catch {} }
+    }
+    this.threadManagement = next;
+  }
+  scheduleThreadManagement() {
+    const pending = [...this.threadManagement.values()].filter(entry => entry.phase === 'waiting' || entry.phase === 'verify');
+    if (!this.ready || this.managementTimer || this.managementRunning || !pending.length) return;
+    const interval = this.options.managementRetryMs ?? 2500;
+    const delay = Math.max(interval, pending.reduce((soonest, entry) => Math.min(soonest, entry.retryAt ?? 0), Infinity) - Date.now());
+    this.managementTimer = setTimeout(() => {
+      this.managementTimer = null;
+      void this.retryThreadManagement({ dueOnly: true });
+    }, delay);
+    this.managementTimer.unref?.();
+  }
+  async retryThreadManagement({ dueOnly = false } = {}) {
+    if (!this.ready || this.managementRunning) return;
+    const generation = this.managementGeneration;
+    this.managementRunning = true;
+    try {
+      // Snapshot: updating a Map entry during iteration must not retry it twice.
+      for (const [threadId, saved] of [...this.threadManagement]) {
+        if (!this.ready || generation !== this.managementGeneration) break;
+        if (!['waiting', 'verify'].includes(saved.phase) || (dueOnly && saved.retryAt > Date.now())) continue;
+        await this.withThread(threadId, async () => {
+          if (!this.ready || generation !== this.managementGeneration || this.threadManagement.get(threadId) !== saved) return;
+          try { await this.executeThreadManagement(threadId, saved, generation); }
+          catch { /* Preserve the saved operation on connection or storage failures. */ }
+        });
+      }
+    } finally { this.managementRunning = false; this.scheduleThreadManagement(); }
+  }
+  pendingThreadManagement(threadId, entry, phase, extra = {}) {
+    const failures = Math.min((entry.failures ?? 0) + 1, 8);
+    const retryAt = Date.now() + Math.min((this.options.managementRetryMs ?? 2500) * 2 ** (failures - 1), 30000);
+    this.saveThreadManagement(threadId, { ...entry, ...extra, phase, failures, retryAt });
+    this.scheduleThreadManagement();
+    return { threadId, pending: true, verified: false };
+  }
+  async managementReached(threadId, action, acknowledged) {
+    if (action === 'thread.delete') {
+      // A state-db list may omit an existing rollout. For an uncertain RPC,
+      // require a specific not-found response, never a timeout or disconnect.
+      try {
+        await this.server.request('thread/read', { threadId, includeTurns: false });
+        return false;
+      } catch (error) {
+        if (!missingThread(error, threadId)) return false;
+      }
+      if (!acknowledged && (await this.localCatalog()).threads.some(t => t.id === threadId)) return false;
+    }
+    const query = { useStateDbOnly: true, modelProviders: [] };
+    const [active, archived] = await Promise.all([false, true].map(archived => this.server.pages('thread/list', { ...query, archived })));
+    const isActive = active.some(t => t.id === threadId), isArchived = archived.some(t => t.id === threadId);
+    return action === 'thread.delete' ? !isActive && !isArchived : action === 'thread.archive' ? isArchived && !isActive : isActive && !isArchived;
+  }
+  async executeThreadManagement(threadId, entry, generation) {
+    const { action } = entry;
+    const deleted = action === 'thread.delete', archived = action === 'thread.archive';
+    const method = action.replace('.', '/');
+    const current = () => this.ready && this.managementGeneration === generation;
+    const pending = () => ({ threadId, pending: true, verified: false });
+    if (!current()) return pending();
+    if (entry.phase === 'waiting') {
+      const owner = this.serverFor(threadId);
+      // Save before submission. A restart in this window can only read back
+      // an ambiguous request, not silently lose or replay a destructive RPC.
+      entry = { ...entry, phase: 'verify' };
+      this.saveThreadManagement(threadId, entry);
+      try {
+        // If Pocket owns this exact thread, its worker can perform the native
+        // operation, even during a turn. Never resume a second writer to do it.
+        await owner.request(method, { threadId });
+        if (!current()) return pending();
+        entry = { ...entry, acknowledged: true };
+        this.saveThreadManagement(threadId, entry);
+      } catch (error) {
+        if (!current()) return pending();
+        if (writerConflict(error) || error.notSubmitted) {
+          // Some builds refuse management even on the owning worker. Try to
+          // release only our own idle writer on the normal handoff path.
+          const result = this.pendingThreadManagement(threadId, entry, 'waiting');
+          if (this.ownedThreads.has(threadId)) this.scheduleRelease(threadId, 0, true);
+          return result;
+        }
+        if (deleted && missingThread(error, threadId)) {
+          // Check both catalogs before treating an already absent ID as done.
+        } else if (!error.uncertain && Number.isInteger(error.code)) {
+          // The API may reject an archive/restore that another client already
+          // applied. Reconcile once before surfacing a definite failure.
+          let reached = false;
+          try { reached = await this.managementReached(threadId, action, false); } catch {}
+          if (!current()) return pending();
+          if (!reached) {
+            this.saveThreadManagement(threadId, { ...entry, phase: 'failed' });
+            this.emit('event', { type: 'catalog.updated' });
+            return { threadId, verified: false, failed: true, error: '电脑上的 Codex 未能完成这次对话操作。你可以重试。' };
+          }
+        }
+      }
+    }
+    let verified = false;
+    try { verified = await this.managementReached(threadId, action, entry.acknowledged); } catch {}
+    if (!current()) return pending();
+    if (!verified) return this.pendingThreadManagement(threadId, entry, 'verify');
+    if (this.ownedThreads.has(threadId)) {
+      try { await this.closeThreadWriter(threadId); } catch { this.scheduleRelease(threadId, 0, true); }
+      if (!current()) return pending();
+    }
+    this.saveThreadManagement(threadId, { action, phase: 'done' });
+    for (const timers of [this.catalogRefreshTimers, this.refreshTimers, this.releaseTimers]) {
+      if (timers === this.releaseTimers && this.ownedThreads.has(threadId)) continue;
+      clearTimeout(timers.get(threadId)); timers.delete(threadId);
+    }
+    for (const [key, request] of this.approvals) if (request.params?.threadId === threadId) this.approvals.delete(key);
+    this.states.delete(threadId); this.snapshots.delete(`local:${threadId}`); this.owners.delete(`local:${threadId}`); this.subscriptions.delete(`local:${threadId}`);
+    if (deleted) { this.createdThreads.delete(threadId); this.runtimeCache.delete(threadId); }
+    const desktopNotified = this.announceThread(threadId, { removed: deleted || archived, cwd: entry.cwd });
+    const result = { threadId, deleted, archived, verified: true, desktopNotified };
+    this.emit('event', { type: 'thread.managed', action, ...result });
+    this.emit('event', { type: 'catalog.updated' });
+    return result;
+  }
   async manageThread(action, args) {
     const threadId = string(args.threadId, '对话 ID', 200);
+    const generation = this.managementGeneration;
     return this.withThread(threadId, async () => {
-      let state;
-      try { state = await this.storedState(threadId); }
-      catch (error) {
-        if (action !== 'thread.delete') throw notSubmitted(error);
-        const all = [...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: false }), ...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: true })];
-        if (all.some(thread => thread.id === threadId)) throw notSubmitted(error);
-        const desktopNotified = this.announceThread(threadId, { removed: true });
-        return { threadId, deleted: true, archived: false, alreadyDeleted: true, verified: true, desktopNotified };
+      if (!this.ready || generation !== this.managementGeneration) throw notSubmitted(new Error('电脑已断开，请重新连接。'));
+      const pending = this.threadManagement.get(threadId);
+      if (pending?.action === action && ['waiting', 'verify'].includes(pending.phase)) {
+        this.scheduleThreadManagement();
+        return { threadId, verified: false, pending: true };
       }
-      if (threadHasActiveWork(state) || this.hasPendingApproval(threadId)) throw notSubmitted(new Error('请先结束正在运行的任务或处理待确认请求，再管理对话。'));
-      const deleted = action === 'thread.delete', archived = action === 'thread.archive';
-      const owned = this.ownedThreads.has(threadId);
-      try {
-        // Use the existing Pocket writer if there is one. For persisted
-        // threads, the management RPC works without resuming the chat.
-        await (owned ? this.serverFor(threadId) : this.server).request(action.replace('.', '/'), { threadId });
-      } catch (error) {
-        // Only a positive lock refusal proves no archive/delete was submitted.
-        if (writerConflict(error)) throw notSubmitted(new Error('这条对话仍被另一个 Codex 进程占用，本次操作未执行。可在持有对话的 Codex 中归档；如需在手机删除，请在任务和审批结束后退出占用它的客户端再重试。'));
-        throw error;
-      }
-      if (owned && (deleted || archived)) {
-        // The engine has removed the session; confirm the dedicated writer
-        // has stopped before notifying the desktop and verifying persistence.
-        try { await this.closeThreadWriter(threadId); }
-        catch { throw Object.assign(new Error('操作已提交，但尚未确认 Codex 进程退出，请刷新检查。'), { uncertain: true }); }
-      }
-      clearTimeout(this.catalogRefreshTimers.get(threadId)); this.catalogRefreshTimers.delete(threadId);
-      if (!this.ownedThreads.has(threadId)) {
-        clearTimeout(this.releaseTimers.get(threadId)); this.releaseTimers.delete(threadId);
-      }
-      if (deleted) {
-        const all = [...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: false }), ...await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived: true })];
-        if (all.some(thread => thread.id === threadId)) throw Object.assign(new Error('删除已提交，电脑列表尚未确认，请刷新检查'), { uncertain: true });
-      } else {
-        const list = await this.server.pages('thread/list', { useStateDbOnly: true, modelProviders: [], archived });
-        if (!list.some(thread => thread.id === threadId)) throw Object.assign(new Error('归档状态尚未确认，请刷新检查'), { uncertain: true });
-      }
-      this.states.delete(threadId); this.snapshots.delete(`local:${threadId}`); this.owners.delete(`local:${threadId}`); this.subscriptions.delete(`local:${threadId}`);
-      if (deleted) this.createdThreads.delete(threadId);
-      // Deletion also evicts the desktop's cached sidebar entry. The installed
-      // IPC exposes archive/unarchive cache events, not a delete broadcast.
-      const desktopNotified = this.announceThread(threadId, { removed: deleted || archived, cwd: state.cwd });
-      return { threadId, deleted, archived, verified: true, desktopNotified };
+      // Permanent deletion dominates a pending archive or restore: it removes
+      // the thread from either location and neither operation can recreate it.
+      if (pending?.phase === 'verify' && (action !== 'thread.delete' || pending.action === 'thread.delete')) return { threadId, verified: false, pending: true, pendingAction: pending.action };
+      const entry = { action, phase: 'waiting', cwd: typeof args.cwd === 'string' && args.cwd.length <= 4096 && !args.cwd.includes('\0') ? args.cwd : undefined };
+      this.saveThreadManagement(threadId, entry);
+      const result = await this.executeThreadManagement(threadId, entry, generation);
+      if (result.pending && this.ready && generation === this.managementGeneration) this.emit('event', { type: 'catalog.updated' });
+      return result;
     });
   }
   async renameThread(args) {
@@ -689,6 +816,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     }
   }
   close() {
+    this.managementGeneration++; clearTimeout(this.managementTimer); this.managementTimer = null;
     this.initializationAttempt = null;
     this.stopRuntimeMonitor();
     this.runtimeReader?.close(); this.runtimeRetryAt = 0;
