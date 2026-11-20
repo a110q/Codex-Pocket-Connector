@@ -34,7 +34,7 @@ node scripts/configure-updates.mjs \
 ```sh
 npm run package:mac
 npm run package:windows
-./scripts/build-android.sh release
+POCKET_OFFICIAL_RELEASE=1 ./scripts/build-android.sh release
 node scripts/prepare-update.mjs \
   --key .private/update-signing-private.pem \
   --notes PATH_TO_RELEASE_NOTES.txt
@@ -47,7 +47,9 @@ node scripts/prepare-update.mjs \
 - `release.json`：可读的清单原文，供审核版本、说明、地址、大小和哈希。
 - `HOLD.txt`：标明尚未发布。
 
-工具校验签名私钥与客户端公钥匹配、Mac App 签名及复制完整性，并自行验签输出清单。同版本已有候选时会拒绝覆盖，须先人工复查。该工具没有上传、部署或 GitHub 发布功能。
+`POCKET_OFFICIAL_RELEASE=1` 会从成品 APK 读取默认中继地址和证书指纹，与 `.private/companion.json` 中的官方构建配置核对。打包前应检查 `android/app/src/main/assets/server.json` 是公网配置，不能沿用调试目录的同名文件。自建用户只构建自己的 APK 时不需要设置该变量。
+
+准备更新时，工具还会校验 APK 的默认中继与已签名的 Mac App 一致，以及签名私钥、Mac App 签名和文件复制完整性，并自行验签输出清单。同版本已有候选时会拒绝覆盖，须先人工复查。该工具没有上传、部署或 GitHub 发布功能。
 
 ## 确认发布后
 

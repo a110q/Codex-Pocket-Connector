@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PRODUCT_VERSION, BUILD_NUMBER } from '../version.mjs';
 import { assetName, loadUpdateConfig, verifyRelease } from '../updates.mjs';
+import { readJson, validateDefaults } from '../connector-core.mjs';
+import { verifyAndroidRelay } from './verify-android-relay.mjs';
 
 const root=resolve(import.meta.dirname,'..');
 const args=process.argv.slice(2);
@@ -25,6 +27,8 @@ try{
   const bundle=resolve(sources.macos,'Contents/Resources/connector/package.json');
   const packaged=JSON.parse(readFileSync(bundle,'utf8'));if(packaged.pocketVersion!==PRODUCT_VERSION||packaged.pocketBuild!==BUILD_NUMBER)throw Error('Mac package version does not match source');
   const verified=spawnSync('/usr/bin/codesign',['--verify','--deep','--strict',sources.macos],{encoding:'utf8'});if(verified.status!==0)throw Error('Mac package signature verification failed');
+  const desktopDefaults=readJson(resolve(bundle,'../connector-defaults.json'));
+  verifyAndroidRelay(sources.android,validateDefaults(desktopDefaults));
   stage=mkdtempSync(resolve(base,'.preparing-'));
   const packages=resolve(stage,'packages',PRODUCT_VERSION);mkdirSync(packages,{recursive:true});
   const assets=[];
