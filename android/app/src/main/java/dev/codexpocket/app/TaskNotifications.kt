@@ -93,7 +93,7 @@ class TaskMonitorService:Service() {
             uiVisible=true
             foregroundSelection=try{
                 val local=context.getSharedPreferences("connection-mode",MODE_PRIVATE).getBoolean("lan",false)
-                SecureStore(context,if(local)"pocket-lan-state.enc"else"pocket-state${AccountApi.suffix(context)}.enc").load().optJSONObject("profile")?.let{TaskNotifications.namespace(it)}
+                SecureStore(context,if(local)"pocket-lan-state.enc"else AccountApi.workspaceFile(context)).load().optJSONObject("profile")?.let{TaskNotifications.namespace(it)}
             }catch(_:Exception){null}
             instance?.removeReserved();instance?.refresh();ensure(context)
         }
@@ -115,10 +115,12 @@ class TaskMonitorService:Service() {
     private fun refresh(){job?.cancel();job=null;removeReserved();monitor()}
     private suspend fun profiles():List<JSONObject> {
         val lan=SecureStore(this,"pocket-lan-state.enc").load().let{saved->saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(saved.optJSONObject("profile"))}}.filter{it.optBoolean("approved")&&PocketConnection.isLanPairing(it)}
-        val saved=SecureStore(this,"pocket-state${AccountApi.suffix(this)}.enc").load()
+        val current=AccountApi.defaults(this)
+        val saved=SecureStore(this,AccountApi.workspaceFile(this,current)).load()
         val values=saved.optJSONArray("computers").objects().ifEmpty{listOfNotNull(saved.optJSONObject("profile"))}.filter{it.optBoolean("approved")&&!PocketConnection.isLanPairing(it)}
         if(values.isEmpty())return lan
-        val api=AccountApi(AccountApi.defaults(this));val account=SecureStore(this,"pocket-account${AccountApi.suffix(this)}.enc").load();val token=account.optString("token")
+        if(!AccountApi.same(current,AccountApi.bundled(this)))return lan+values.filter{it.optString("mode")=="selfhost"&&AccountApi.same(it,current)}.map{JSONObject(it.toString()).apply{remove("accountToken")}}
+        val api=AccountApi(current);val account=SecureStore(this,"pocket-account.enc").load();val token=account.optString("token")
         if(token.isBlank()||token=="null"||account.optJSONObject("user")?.optString("accessState")!="active")return lan
         val me=try{withContext(Dispatchers.IO){api.post("/api/account/me",token=token)}}catch(e:CancellationException){throw e}catch(e:Exception){
             if(e is AccountException&&(e.status==401||e.status==403))return lan

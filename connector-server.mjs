@@ -20,7 +20,7 @@ const hashScript = html => createHash('sha256').update(html.match(/<script>([\s\
 export async function startConnector({ paths = connectorPaths(), defaults, port = 43786, managerPort = 43787, root = ROOT, request, status = companionStatus, runtime = new ConnectorRuntime(), installation = new CodexInstallation(paths.state), desktopSharing = new DesktopSharing(installation), updates = new UpdateManager({ config:loadUpdateConfig(root), directory:resolve(paths.state,'updates') }), onShutdown } = {}) {
   const profiles = new RelayProfiles(paths, defaults);
   const enrollments=new Map(), accounts=new Map();
-  const enrollment = () => { const key=profiles.paths().state; if(!enrollments.has(key))enrollments.set(key,new Enrollment({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return enrollments.get(key); };
+  const enrollment = () => { const key=profiles.paths().state; if(!enrollments.has(key))enrollments.set(key,new Enrollment({ paths:profiles.paths(), defaults:profiles.defaults(), pairingOnly:!profiles.info().builtin, ...(request ? { request } : {}) }));return enrollments.get(key); };
   const account = () => { const key=profiles.paths().state;if(!accounts.has(key))accounts.set(key,new ConnectorAccount({ paths:profiles.paths(), defaults:profiles.defaults(), ...(request ? { request } : {}) }));return accounts.get(key); };
   let rebindHostId='', lanPairingChanged=false;
   const prepareCloud = async options => {
@@ -114,6 +114,7 @@ export async function startConnector({ paths = connectorPaths(), defaults, port 
       if (url.pathname === '/api/login') return res.end(JSON.stringify(await account().login(body)));
       if (url.pathname === '/api/logout') return res.end(JSON.stringify(await account().logout()));
       if (url.pathname === '/api/register-account') {
+        if (!profiles.info().builtin) throw new Error('自建中继无需登录账号，请使用扫码配对');
         const current = await account().state();
         if (!current.loggedIn || current.verified === false || current.user?.accessState !== 'active') throw new Error('请先登录已批准的账号');
         return res.end(JSON.stringify(await enrollment().registerAccount({name:body.name,token:readJson(profiles.paths().account).token,user:current.user})));

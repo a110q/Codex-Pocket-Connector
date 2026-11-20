@@ -26,18 +26,25 @@ export function validateDefaults(defaults) {
   return { relay: url.origin, caCert: defaults.caCert, pin: certificate.fingerprint256.replaceAll(':', '').toLowerCase() };
 }
 export class Enrollment {
-  constructor({ paths = connectorPaths(), defaults, request = relayRequest }) {
-    this.paths = paths; this.defaults = validateDefaults(defaults); this.request = request; this.busy = false;
+  constructor({ paths = connectorPaths(), defaults, request = relayRequest, pairingOnly = false }) {
+    this.paths = paths; this.defaults = validateDefaults(defaults); this.request = request; this.busy = false; this.pairingOnly = pairingOnly;
   }
   async prepare({ name = hostname() } = {}) {
     if (this.busy) throw new Error('正在准备连接，请稍候');
     this.busy = true;
     try {
+      const prepare = config => this.request(config, '/api/desktop/prepare', {
+        ...Object.fromEntries(['hostId','desktopToken','pairCode','name'].map(k=>[k,config[k]])),
+        ...(this.pairingOnly ? { pairingOnly:true } : {})
+      });
       let previous = null;
       if (existsSync(this.paths.config)) {
         const config=readJson(this.paths.config);
         try {
-          if(config.mobileClaim===true) await this.request(config,'/api/desktop/prepare',Object.fromEntries(['hostId','desktopToken','pairCode','name'].map(k=>[k,config[k]])));
+          if (this.pairingOnly || config.mobileClaim === true) {
+            const result = await prepare(config);
+            if (this.pairingOnly && result.pairingOnly !== true) throw new Error('自建中继尚未启用免账号配对');
+          }
           else await this.request(config,'/api/hosts/status',{hostId:config.hostId});
           return {registered:true};
         } catch (error) {
@@ -51,14 +58,15 @@ export class Enrollment {
       let pending = existsSync(this.paths.enrollment) ? readJson(this.paths.enrollment) : null;
       if (!pending?.config || (previous && pending.replacesHostId!==previous.hostId)) pending = {
         ...(previous ? {replacesHostId:previous.hostId} : {}),
-        config: { ...this.defaults, name: String(previous?.name ?? name).trim().slice(0,80) || hostname(), hostId: secret().slice(0,32), desktopToken: secret(), pairCode: secret(), key: secret(), managerToken: secret(), pairExpires: Date.now()+10*60_000, mobileClaim: true }
+        config: { ...this.defaults, name: String(previous?.name ?? name).trim().slice(0,80) || hostname(), hostId: secret().slice(0,32), desktopToken: secret(), pairCode: secret(), key: secret(), managerToken: secret(), pairExpires: Date.now()+10*60_000, mobileClaim: !this.pairingOnly, ...(this.pairingOnly ? { mode:'selfhost' } : {}) }
       };
       if (pending.config.relay !== this.defaults.relay || pending.config.pin !== this.defaults.pin) throw new Error('连接配置与当前版本不匹配，请联系管理员');
       writePrivate(this.paths.enrollment, pending);
       const config = pending.config;
-      const registered = await this.request(config, '/api/desktop/prepare', Object.fromEntries(['hostId','desktopToken','pairCode','name'].map(k=>[k,config[k]])));
+      const registered = await prepare(config);
       const verified = await this.request(config, '/api/hosts/status', { hostId: config.hostId });
       if (!verified.registered) throw new Error('连接准备尚未确认，请重试');
+      if (this.pairingOnly && verified.pairingOnly !== true) throw new Error('自建中继尚未启用免账号配对');
       config.mobileClaim = verified.mobileClaim === true || registered.mobileClaim === true;
       // Keep the revoked local file until the replacement is verified. The
       // durable pending identity is reused if a response is lost or the app quits.

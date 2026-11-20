@@ -353,7 +353,7 @@ export async function startCompanion(config, { adapter = new DesktopAdapter({ ca
     try {
       if (req.method === 'GET' && url.pathname === '/api/status') return res.end(JSON.stringify({ name: config.name, relayOnline: link.online, relayState: link.state, mobileOnline, desktopReady: adapter.ready, desktopConnecting: !!desktopConnecting, error: relayError || lastError, pairRequest, capabilities: { ...adapter.diagnostics().capabilities, 'file.upload': true, 'automations.list': true } }));
       if (req.method === 'GET' && url.pathname === '/api/pairing') {
-        const pairing = { claimFromMobile:config.mobileClaim === true, v:1, mode:config.mode==='lan'?'lan':'cloud', relay:config.relay, hostId:config.hostId, name:config.name, pairCode:config.pairCode, key:config.key, pin:config.pin, expiresAt:config.pairExpires };
+        const pairing = { claimFromMobile:config.mobileClaim === true, v:1, mode:['lan','selfhost'].includes(config.mode)?config.mode:'cloud', relay:config.relay, hostId:config.hostId, name:config.name, pairCode:config.pairCode, key:config.key, pin:config.pin, expiresAt:config.pairExpires };
         const link = 'codexpocket://pair?data=' + Buffer.from(JSON.stringify(pairing)).toString('base64url');
         return res.end(JSON.stringify({ link, qr: await QRCode.toDataURL(link, { width: 420, margin: 2 }), expiresAt: config.pairExpires }));
       }

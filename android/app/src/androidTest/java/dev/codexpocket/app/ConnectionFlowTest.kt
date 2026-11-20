@@ -2,12 +2,15 @@ package dev.codexpocket.app
 
 import android.Manifest
 import android.content.Intent
+import android.view.View
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.Espresso.pressBackUnconditionally
-import androidx.test.espresso.action.ViewActions.click
+import androidx.test.espresso.UiController
+import androidx.test.espresso.ViewAction
+import androidx.test.espresso.matcher.ViewMatchers.isDisplayed
 import androidx.test.espresso.matcher.ViewMatchers.withId
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
@@ -37,6 +40,17 @@ class ConnectionFlowTest {
         listOf("公网使用","局域网使用","自建中继").forEach{compose.onNodeWithText(it).assertIsDisplayed().assertHasClickAction()}
         compose.onNodeWithText("登录账号").assertDoesNotExist()
     }
+    private fun waitForScanButton(label:String){
+        compose.waitUntil(10000){runCatching{compose.onAllNodesWithText(label).fetchSemanticsNodes().isNotEmpty()}.getOrDefault(false)}
+        compose.onNodeWithText(label).assertIsDisplayed()
+    }
+    private fun closeScanner(){
+        onView(withId(R.id.close_scanner)).perform(object:ViewAction{
+            override fun getConstraints()=isDisplayed()
+            override fun getDescription()="关闭扫码"
+            override fun perform(controller:UiController,view:View){Assert.assertTrue(view.performClick());controller.loopMainThreadUntilIdle()}
+        })
+    }
     @Test fun firstLaunchHasThreeChoicesAndEachOpensItsOwnScreen(){
         choices()
         compose.onNodeWithText("公网使用").performClick()
@@ -59,18 +73,18 @@ class ConnectionFlowTest {
     @Test fun cancellingScannerReturnsToSelfHostingGuideAndRecreationKeepsThatPage(){
         compose.onNodeWithText("自建中继").performClick()
         compose.onNodeWithText("扫码配置服务").performClick()
-        onView(withId(R.id.close_scanner)).perform(click())
-        compose.onNodeWithText("扫码配置服务").assertIsDisplayed()
+        closeScanner()
+        waitForScanButton("扫码配置服务")
         scenario.recreate()
-        compose.onNodeWithText("扫码配置服务").assertIsDisplayed()
+        waitForScanButton("扫码配置服务")
         compose.onNodeWithContentDescription("返回选择连接方式").performClick()
         choices()
     }
     @Test fun cancellingLanScannerKeepsModeSelectionWithoutStartingAnAccountLogin(){
         compose.onNodeWithText("局域网使用").performClick()
         compose.onNodeWithText("扫码连接电脑").performClick()
-        onView(withId(R.id.close_scanner)).perform(click())
-        compose.onNodeWithText("扫码连接电脑").assertIsDisplayed()
+        closeScanner()
+        waitForScanButton("扫码连接电脑")
         compose.onNodeWithText("登录账号").assertDoesNotExist()
         Assert.assertFalse(context.getSharedPreferences("connection-mode",0).getBoolean("lan",false))
     }

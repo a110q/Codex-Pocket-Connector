@@ -22,7 +22,7 @@ fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else 
 fun JSONObject.label(): String = optString("title").ifBlank { optString("label").ifBlank { "未命名会话" } }
 fun JSONObject.computerName():String=optString("alias").takeIf{it.isNotBlank()&&it!="null"}?:optString("name").takeIf{it.isNotBlank()&&it!="null"}?:"我的电脑"
 
-class PocketModel(private val context: Context,filename:String="pocket-state.enc",private val requireLan:Boolean=false) {
+class PocketModel(private val context: Context,filename:String="pocket-state.enc",private val requireLan:Boolean=false,private val selfHostedService:JSONObject?=null) {
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
     private val store = SecureStore(context,filename)
@@ -261,6 +261,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     fun start() {
         foreground = true
         if(requireLan&&profile!=null&&!PocketConnection.isLanPairing(profile!!)){error="局域网模式只允许连接私有 IPv4 地址，请重新扫码";return}
+        if(selfHostedService!=null&&profile?.let{!matchesSelfHostedService(it)}==true){error="请重新扫描当前自建中继的配对码";return}
         if (profile != null) {
             if (profile?.optBoolean("approved") == true) {
                 TaskMonitorService.claimUi(context,this,profile!!)
@@ -375,13 +376,16 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         if(saved.optString("lastPairingIntent")==fingerprint)return null
         saved.put("lastPairingIntent",fingerprint);persist();return text
     }
+    private fun matchesSelfHostedService(next:JSONObject)=selfHostedService?.let{next.optString("mode")=="selfhost"&&AccountApi.same(next,it)}==true
     fun pair(text: String) {
         if (busy) return
         if (pendingOperation != null) { error = "请先检查并确认上一条操作的结果，再更换配对"; return }
         try {
             val next = PocketConnection.validatePairing(text)
             if(requireLan)require(PocketConnection.isLanPairing(next)){"请扫描局域网配对码；公网远程连接需要登录已批准的账号"}
-            if(!PocketConnection.isLanPairing(next))require(account!=null){"请先登录已批准的账号，再扫描公网配对码"}
+            if(selfHostedService!=null)require(matchesSelfHostedService(next)){"请重新扫描当前自建中继的配对码"}
+            if(!PocketConnection.isLanPairing(next)&&selfHostedService==null)require(account!=null){"请先登录已批准的账号，再扫描公网配对码"}
+            next.remove("accountToken")
             account?.let { auth ->
                 require(next.getString("relay").trimEnd('/')==auth.relay.trimEnd('/')&&next.getString("pin")==auth.pin){"请使用当前服务的电脑配对码"}
                 require(next.getString("hostId") in auth.hostIds||next.optBoolean("claimFromMobile")){"这台电脑不属于当前账号，请使用新的电脑配对码"}
@@ -405,7 +409,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         } catch (e: Exception) { error = e.message ?: "配对内容无效，请重新扫码" }
     }
     fun scannedPair(text:String){
-        if(requireLan||account!=null){pair(text);return}
+        if(requireLan||selfHostedService!=null||account!=null){pair(text);return}
         try{
             PocketConnection.validatePairing(text)
             pendingScannedPair=text;error=null;status="正在验证登录状态，扫码结果已保留";persist()

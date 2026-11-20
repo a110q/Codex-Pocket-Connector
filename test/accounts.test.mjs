@@ -159,7 +159,9 @@ test('desktop prepares without login; only an active Android account can claim a
   const pair={hostId:h.hostId,pairCode:h.pairCode,mobileToken:secret()};
   assert.equal((await f.post('/api/pair',pair)).status,401);
   assert.equal((await f.post('/api/pair',pair,alice.phone.token)).status,403);
-  await f.approve(alice.user);await f.call('/api/account/me',{},alice.phone.token);
+  assert.equal((await f.call('/api/account/me',{},alice.phone.token)).user.accessState,'pending');
+  await f.approve(alice.user);
+  assert.equal((await f.call('/api/account/me',{},alice.phone.token)).user.accessState,'active');
   assert.equal((await f.post('/api/pair',pair,(await f.desktop('mobileclaim')).token)).status,403);
   assert.equal((await f.post('/api/pair',{...pair,pairCode:secret()},alice.phone.token)).status,401);
   await f.call('/api/pair',pair,alice.phone.token);

@@ -108,14 +108,14 @@ class AccountFlowTest {
         val args=InstrumentationRegistry.getArguments();val pairing=args.getString("cloudPairing")!!
         val username="claim_${System.currentTimeMillis()}"
         val registered=api.post("/api/account/register",JSONObject().put("username",username).put("password",password).put("displayName","手机绑定验收").put("reason","隔离公网配对测试"))
-        compose.runOnUiThread{account.login(username,password);pocket.start()}
+        compose.runOnUiThread{account.start();account.login(username,password);pocket.start()}
         until{account.verified&&!account.busy}
         compose.runOnUiThread{pocket.pair(pairing)}
         Assert.assertNull(pocket.profile)
         Assert.assertTrue(pocket.error!!.contains("登录已批准"))
         val admin=api.post("/api/account/login",JSONObject().put("username","owner").put("password",password).put("client","desktop").put("deviceId",Encoding.secret())).getString("token")
         api.post("/api/admin/users/decision",JSONObject().put("userId",registered.getJSONObject("user").getString("id")).put("action","approve").put("days",7),admin)
-        compose.runOnUiThread{account.refresh()};until{account.canUse&&!account.busy}
+        until{account.canUse&&!account.busy}
         Assert.assertNull(account.hostId)
         // Opening the scanner stops MainActivity and temporarily revokes its
         // in-memory grant. The result can arrive before /me finishes on resume.
@@ -207,7 +207,7 @@ class AccountFlowTest {
     @Test fun lanEntryPairsAndConnectsWithoutLoginAndRejectsPublicAddresses(){
         val args=InstrumentationRegistry.getArguments();val pairing=args.getString("lanPairing")!!
         val config=JSONObject(pairing);Assert.assertTrue(PocketConnection.isLanPairing(config))
-        Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://203.0.113.10:24443")))
+        Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://82.157.186.24:24443")))
         Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://192.168.1.300:24444")))
         compose.onNodeWithContentDescription("返回选择连接方式").performClick()
         compose.onNodeWithText("局域网使用").performClick()

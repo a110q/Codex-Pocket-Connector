@@ -72,7 +72,7 @@ import androidx.compose.ui.unit.sp
     }
 }
 
-@Composable fun ConnectionGuide(local:Boolean,onBack:()->Unit,onScan:()->Unit,currentService:String?=null,onLoginCurrent:(()->Unit)?=null){
+@Composable fun ConnectionGuide(local:Boolean,onBack:()->Unit,onScan:()->Unit,currentService:String?=null,onUseCurrent:(()->Unit)?=null){
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()){
         ConnectionSetupHeader(if(local)"局域网使用"else"自建中继",onBack)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(20.dp)){
@@ -81,7 +81,7 @@ import androidx.compose.ui.unit.sp
             }
             Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
                 Text(if(local)"同一网络，即刻连接。"else"你的服务器，随身连接。",fontSize=27.sp,lineHeight=38.sp,fontWeight=FontWeight.Bold)
-                Text(if(local)"无需登录或账号审批，扫码后由电脑确认。"else"先在电脑配置服务，手机扫码自动获取地址和证书。",fontSize=14.sp,lineHeight=23.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("无需登录或账号审批，扫码后由电脑确认。",fontSize=14.sp,lineHeight=23.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val steps=if(local)listOf(
                 "连接同一个 Wi-Fi" to "让手机和电脑接入同一局域网。",
@@ -90,7 +90,7 @@ import androidx.compose.ui.unit.sp
             )else listOf(
                 "在电脑选择「自建中继」" to "点击「配置服务」，填写中继地址并导入公开证书。",
                 "连接 Codex，显示配对码" to "服务验证通过后，在电脑进入「配对手机」。",
-                "手机扫码，登录该服务" to "确认地址与证书指纹，使用该中继的账号完成配对。"
+                "手机扫码，电脑确认" to "核对中继地址，在电脑上确认配对请求。"
             )
             steps.forEachIndexed{index,(title,description)->
                 Row(horizontalArrangement=Arrangement.spacedBy(12.dp)){
@@ -114,7 +114,7 @@ import androidx.compose.ui.unit.sp
             Button(onClick=onScan,modifier=Modifier.fillMaxWidth().heightIn(min=52.dp),shape=RoundedCornerShape(13.dp)){
                 PocketIcon("扫码",Modifier.size(22.dp));Spacer(Modifier.width(10.dp));Text(if(local)"扫码连接电脑"else"扫码配置服务",fontSize=16.sp,fontWeight=FontWeight.SemiBold)
             }
-            if(!local&&currentService!=null&&onLoginCurrent!=null)OutlinedButton(onClick=onLoginCurrent,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(13.dp)){Text("使用已配置服务")}
+            if(!local&&currentService!=null&&onUseCurrent!=null)OutlinedButton(onClick=onUseCurrent,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp),shape=RoundedCornerShape(13.dp)){Text("使用已配对电脑")}
         }
     }
 }

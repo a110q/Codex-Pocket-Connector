@@ -83,10 +83,13 @@ class MainActivity : ComponentActivity() {
     private var connectionPage by mutableStateOf<String?>(null)
     private lateinit var lanModel:PocketModel
     private var lanMode by mutableStateOf(false)
+    private var selfHostedRelay by mutableStateOf<JSONObject?>(null)
     private val activeModel get()=if(lanMode)lanModel else model
+    private val usesPublicAccount get()=!lanMode&&selfHostedRelay==null
+    private fun startActive(){if(usesPublicAccount)account.start()else activeModel.start()}
     private fun switchMode(local:Boolean){
         activeModel.stop();account.stop();lanMode=local;getSharedPreferences("connection-mode",MODE_PRIVATE).edit().putBoolean("lan",local).apply()
-        if(local)lanModel.start()else account.start()
+        startActive()
     }
     private var imagePickKey:String?=null
     private var imagePickLan=false
@@ -117,21 +120,31 @@ class MainActivity : ComponentActivity() {
     private fun scan(){scanner.launch(ScanOptions().setCaptureActivity(PocketCaptureActivity::class.java).setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(if(connectionPage=="lan"||(connectionPage==null&&lanMode))"扫描电脑上的局域网配对码"else"扫描电脑上的 Codex Pocket 配对码").setBeepEnabled(false).setOrientationLocked(true))}
     private fun selectPublic(){
         val bundled=AccountApi.bundled(applicationContext)
-        if(!AccountApi.same(account.api.defaults,bundled))changeService(bundled)
+        if(selfHostedRelay!=null)changeService(bundled)
         else{if(lanMode)switchMode(false);connectionPage=if(account.canUse)null else"account"}
     }
     private fun receivePair(text:String){
         try{
             val pair=PocketConnection.validatePairing(text)
-            if(!PocketConnection.isLanPairing(pair)&&!AccountApi.same(pair,account.api.defaults)){pendingService=text;return}
-            if(PocketConnection.isLanPairing(pair)!=lanMode)switchMode(PocketConnection.isLanPairing(pair))
-            connectionPage=if(!lanMode&&!account.canUse)"account"else null
+            val public=AccountApi.same(pair,account.api.defaults)
+            val local=!public&&PocketConnection.isLanPairing(pair)
+            if(!public&&!local){
+                require(pair.optString("mode")=="selfhost"){"请升级电脑连接器和自建中继，再扫描免账号配对码"}
+                if(selfHostedRelay?.let{AccountApi.same(pair,it)}!=true){pendingService=text;return}
+            }
+            if(public&&selfHostedRelay!=null){changeService(account.api.defaults,text);return}
+            if(local!=lanMode)switchMode(local)
+            connectionPage=if(usesPublicAccount&&!account.canUse)"account"else null
             activeModel.scannedPair(text)
         }catch(e:Exception){scanError=e.message?:"配对码无效"}
     }
     private fun loadCloud(){
-        model=PocketModel(applicationContext,"pocket-state${AccountApi.suffix(applicationContext)}.enc")
-        account=AccountModel(applicationContext){authorization->
+        val bundled=AccountApi.bundled(applicationContext)
+        val current=AccountApi.defaults(applicationContext)
+        selfHostedRelay=current.takeUnless{AccountApi.same(it,bundled)}
+        model=PocketModel(applicationContext,AccountApi.workspaceFile(applicationContext,current),selfHostedService=selfHostedRelay)
+        account=AccountModel(applicationContext,AccountApi(bundled)){authorization->
+            if(!usesPublicAccount)return@AccountModel
             if(authorization==null)model.clearAccountAccess()
             else{model.authorizeAccount(authorization);if(lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED))model.start()}
         }
@@ -140,7 +153,7 @@ class MainActivity : ComponentActivity() {
         activeModel.stop();account.close();AccountNotifications.cancel(applicationContext)
         AccountApi.select(applicationContext,server);lanMode=false;getSharedPreferences("connection-mode",MODE_PRIVATE).edit().putBoolean("lan",false).apply()
         TaskMonitorService.configurationChanged(applicationContext)
-        loadCloud();connectionPage="account";pair?.let{model.scannedPair(it)};serviceRevision++;account.start()
+        loadCloud();connectionPage=if(usesPublicAccount)"account"else null;pair?.let{model.scannedPair(it)};serviceRevision++;startActive()
     }
     private val scanner = registerForActivityResult(ScanContract()) { result -> result.contents?.let(::receivePair) }
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -152,6 +165,7 @@ class MainActivity : ComponentActivity() {
         imagePickKey=savedInstanceState?.getString("imagePickKey");imagePickLan=savedInstanceState?.getBoolean("imagePickLan")?:false
         incoming = activeModel.consumePairingIntent(intent?.dataString)
         openAdmin = intent?.getBooleanExtra("openAdmin",false)==true
+        if(openAdmin)selectPublic()
         receiveTaskIntent(intent)
         intent?.data = null
         setContent { PocketTheme(activeModel.appearance) {
@@ -166,23 +180,23 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(pendingTask,activeModel.connected){pendingTask?.let{target->if(activeModel.connected&&activeModel.profile?.optString("hostId")==target.optString("hostId")){activeModel.openThread(JSONObject().put("id",target.getString("id")).put("hostId","local").put("title","任务通知"));pendingTask=null}}}
                 LaunchedEffect(incoming){incoming?.let{receivePair(it);incoming=null}}
                 LaunchedEffect(account.canUse,connectionPage){if(account.canUse&&connectionPage=="account")connectionPage=null}
-                val hasWorkspace=if(lanMode)lanModel.profile!=null else account.canUse
-                val page=connectionPage?:if(hasWorkspace)"workspace"else if(account.loggedIn&&!lanMode)"account"else"choose"
+                val hasWorkspace=if(usesPublicAccount)account.canUse else activeModel.profile!=null
+                val page=connectionPage?.takeUnless{it=="account"&&!usesPublicAccount}?:if(hasWorkspace)"workspace"else if(usesPublicAccount&&account.loggedIn)"account"else if(!lanMode&&selfHostedRelay!=null)"selfhost"else"choose"
                 BackHandler(page!="workspace"&&(page!="choose"||hasWorkspace)){connectionPage=if(page=="choose")null else"choose"}
                 when(page){
                     "choose"->ConnectionChooser(onCloud=::selectPublic,onLan={connectionPage="lan"},onSelfHost={connectionPage="selfhost"},onBack=if(hasWorkspace){{connectionPage=null}}else null)
                     "lan"->ConnectionGuide(local=true,onBack={connectionPage="choose"},onScan=::scan)
-                    "selfhost"->ConnectionGuide(local=false,onBack={connectionPage="choose"},onScan=::scan,currentService=account.api.defaults.getString("relay").takeUnless{AccountApi.same(account.api.defaults,AccountApi.bundled(applicationContext))},onLoginCurrent={if(lanMode)switchMode(false);connectionPage=if(account.canUse)null else"account"})
+                    "selfhost"->ConnectionGuide(local=false,onBack={connectionPage="choose"},onScan=::scan,currentService=selfHostedRelay?.getString("relay"),onUseCurrent=if(selfHostedRelay!=null&&model.profile!=null){{if(lanMode)switchMode(false);connectionPage=null}}else null)
                     "account"->AccountGate(account,onBack={connectionPage="choose"})
-                    else->PocketApp(activeModel,scan=::scan,incoming=null,dismissIncoming={incoming=null},account=if(lanMode)null else account,openAdmin=openAdmin,consumeAdmin={openAdmin=false},onExitLan=if(lanMode){{selectPublic()}}else null,onEnterLan=if(!lanMode){{connectionPage="lan"}}else null,onSwitchService={connectionPage="choose"})
+                    else->PocketApp(activeModel,scan=::scan,incoming=null,dismissIncoming={incoming=null},account=if(usesPublicAccount)account else null,openAdmin=openAdmin,consumeAdmin={openAdmin=false},onExitLan=if(lanMode){{selectPublic()}}else null,onEnterLan=if(!lanMode){{connectionPage="lan"}}else null,onSwitchService={connectionPage="choose"})
                 }
             }
             pendingService?.let{raw->
                 val server=remember(raw){PocketConnection.validatePairing(raw)}
                 AlertDialog(onDismissRequest={pendingService=null},title={Text("连接这个中继服务？")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
                     Text(server.getString("relay"));Text("证书指纹：${server.getString("pin").take(16)}…",fontSize=12.sp)
-                    Text("仅连接你信任的电脑所提供的服务。切换后需登录该服务的账号，原服务的登录信息不会发送过去。",fontSize=14.sp)
-                }},confirmButton={TextButton(onClick={pendingService=null;changeService(server,raw)}){Text("切换并登录")}},dismissButton={TextButton(onClick={pendingService=null}){Text("取消")}})
+                    Text("仅连接你信任的服务。连接请求需在电脑上确认，无需登录账号。",fontSize=14.sp)
+                }},confirmButton={TextButton(onClick={pendingService=null;changeService(server,raw)}){Text("发起配对")}},dismissButton={TextButton(onClick={pendingService=null}){Text("取消")}})
             }
             AutomaticUpdateHost(updates)
             taskError?.let{message->AlertDialog(onDismissRequest={taskError=null},title={Text("暂时无法打开提醒")},text={Text(message)},confirmButton={TextButton(onClick={taskError=null}){Text("知道了")}})}
@@ -191,8 +205,8 @@ class MainActivity : ComponentActivity() {
         } } }
     }
     override fun onSaveInstanceState(outState:Bundle){super.onSaveInstanceState(outState);outState.putString("filePickKey",filePickKey);outState.putBoolean("filePickLan",filePickLan);outState.putString("imagePickKey",imagePickKey);outState.putBoolean("imagePickLan",imagePickLan);outState.putString("connectionPage",connectionPage)}
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent);receiveTaskIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin){connectionPage=null;if(lanMode)switchMode(false)}; intent.data = null; setIntent(intent) }
-    override fun onStart() { super.onStart();updates.startAutomaticChecks();TaskMonitorService.foreground(this); if (::account.isInitialized){if(lanMode)lanModel.start()else account.start()} }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent);receiveTaskIntent(intent); incoming = activeModel.consumePairingIntent(intent.dataString);openAdmin=intent.getBooleanExtra("openAdmin",false);if(openAdmin)selectPublic(); intent.data = null; setIntent(intent) }
+    override fun onStart() { super.onStart();updates.startAutomaticChecks();TaskMonitorService.foreground(this); if (::account.isInitialized)startActive() }
     override fun onStop() { updates.stopAutomaticChecks();if (::account.isInitialized) account.stop();if (::model.isInitialized) model.stop();if(::lanModel.isInitialized)lanModel.stop();TaskMonitorService.background(this); super.onStop() }
     override fun onDestroy(){updates.close();super.onDestroy()}
 }

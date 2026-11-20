@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.Debug
 import androidx.compose.runtime.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -35,6 +37,10 @@ class AccountApi(val defaults:JSONObject) {
         fun defaults(context:Context)=try{SecureStore(context,"pocket-service.enc").load().optJSONObject("selected")?:bundled(context)}catch(_:Exception){bundled(context)}
         fun same(a:JSONObject,b:JSONObject)=a.getString("relay").trimEnd('/')==b.getString("relay").trimEnd('/')&&a.getString("pin")==b.getString("pin")
         fun suffix(context:Context,defaults:JSONObject=defaults(context))=if(same(defaults,bundled(context)))"" else "-"+MessageDigest.getInstance("SHA-256").digest((defaults.getString("relay").trimEnd('/')+"|"+defaults.getString("pin")).toByteArray()).joinToString(""){"%02x".format(it)}.take(24)
+        fun workspaceFile(context:Context,server:JSONObject=defaults(context)):String {
+            val serviceSuffix=suffix(context,server)
+            return if(serviceSuffix.isEmpty())"pocket-state.enc" else "pocket-state$serviceSuffix-pairing.enc"
+        }
         fun select(context:Context,server:JSONObject){SecureStore(context,"pocket-service.enc").save(JSONObject().put("selected",JSONObject().put("relay",server.getString("relay").trimEnd('/')).put("pin",server.getString("pin")).put("signingSha256",bundled(context).optString("signingSha256"))))}
     }
 }
@@ -45,6 +51,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
     private var saved=try{store.load()}catch(_:Exception){JSONObject()}
     private var generation=0
     private var polling:Job?=null
+    private val refreshLock=Mutex()
     private var foreground=false
     private var granted:AccountAuthorization?=null
     private var integrityFingerprint:String?=null
@@ -77,18 +84,18 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
         if(next!=granted){granted=next;onAccess(next)}
     }
     fun close(){generation++;stop();scope.cancel()}
-    fun start(){foreground=true;usersVerified=false;polling?.cancel();polling=scope.launch{while(isActive&&foreground){if(!busy&&token!=null)refreshNow();delay(15000)}}}
+    fun start(){foreground=true;usersVerified=false;polling?.cancel();polling=scope.launch{while(isActive&&foreground){if(!busy&&token!=null)refreshNow();delay(if(loggedIn&&!canUse)5000 else 15000)}}}
     fun stop(){foreground=false;polling?.cancel();polling=null;verified=false;usersVerified=false;grant()}
     fun refresh(){if(!busy)scope.launch{busy=true;try{refreshNow()}finally{busy=false}}}
-    private suspend fun refreshNow(){
-        val current=token?:return;val epoch=generation
+    private suspend fun refreshNow()=refreshLock.withLock {
+        val current=token?:return@withLock;val epoch=generation
         try {
             val result=withContext(Dispatchers.IO){api.post("/api/account/me",token=current)}
-            if(epoch!=generation)return
+            if(epoch!=generation)return@withLock
             user=result.getJSONObject("user");hostId=result.optJSONObject("host")?.optString("id");hosts=if(result.has("hosts"))result.optJSONArray("hosts").objects()else listOfNotNull(result.optJSONObject("host"));verified=true;error=null;persist();grant()
             if(isAdmin){
                 val lists=withContext(Dispatchers.IO){api.post("/api/admin/users",token=current) to api.post("/api/admin/events",token=current)}
-                if(epoch!=generation)return
+                if(epoch!=generation)return@withLock
                 users=lists.first.optJSONArray("users").objects();usersVerified=true;events=lists.second.optJSONArray("events").objects();pending=lists.second.optInt("pending");alerts=lists.second.optInt("alerts")
                 AccountNotifications.show(context,events)
                 AccountNotifications.schedule(context)
@@ -96,7 +103,7 @@ class AccountModel(private val context:Context,val api:AccountApi=AccountApi(Acc
             reportIntegrity()
         } catch(e:CancellationException){throw e}
         catch(e:Exception){
-            if(epoch!=generation)return
+            if(epoch!=generation)return@withLock
             verified=false;usersVerified=false;error=e.message?:"无法验证账号状态"
             if(e is AccountException&&e.status==401){token=null;user=null;persist();AccountNotifications.cancel(context)}
             grant()

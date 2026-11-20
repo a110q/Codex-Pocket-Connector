@@ -17,7 +17,7 @@ async function jsonBody(req, limit = 8192) {
   try { return JSON.parse(body); } catch { throw error(400, 'Invalid JSON'); }
 }
 
-export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowInsecureLocal = false, clock = Date.now, androidCertificate = '', allowPeer = () => true } = {}) {
+export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowInsecureLocal = false, clock = Date.now, androidCertificate = '', allowPeer = () => true, allowPairingOnly = false } = {}) {
   if (!checkSecret(adminToken)) throw new Error('A 32-byte RELAY_ADMIN_TOKEN is required');
   if (!cert && !allowInsecureLocal) throw new Error('TLS certificate required');
   if (dbPath !== ':memory:') mkdirSync(dirname(resolve(dbPath)), { recursive: true, mode: 0o700 });
@@ -35,10 +35,17 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
     );`);
   db.exec(`CREATE TABLE IF NOT EXISTS mobile_claim_hosts (
     host_id TEXT PRIMARY KEY, pending_user_id TEXT, pending_session_hash TEXT,
-    created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);`);
+    created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS pairing_only_hosts (host_id TEXT PRIMARY KEY);`);
   const routes = new Map(), limits = new Map(), preparations = new Map();
   const claimHost = id => db.prepare('SELECT * FROM mobile_claim_hosts WHERE host_id=?').get(id);
+  function pairingOnlyHost(id) {
+    const pairingOnly = !!db.prepare('SELECT 1 FROM pairing_only_hosts WHERE host_id=?').get(id);
+    if (pairingOnly && !allowPairingOnly) throw error(403, '中继未启用免账号配对');
+    return pairingOnly;
+  }
   function claimPhone(req, hostId) {
+    if (pairingOnlyHost(hostId) && !accounts.owner(hostId)) return;
     if (!claimHost(hostId)) return accounts.requireHostOwner(req, hostId);
     const current = accounts.androidSession(req);
     accounts.assertComputerCapacity(current.user.id, hostId);
@@ -63,6 +70,7 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
     const host = getHost(hostId);
     const hash = role === 'desktop' ? host?.desktop_hash : host?.mobile_hash;
     if (!checkSecret(token) || !hash || !equalHash(digest(token), hash)) throw error(401, 'Unauthorized');
+    pairingOnlyHost(hostId);
     accounts.assertHostAllowed(hostId);
     if (role === 'mobile') { if (claimHost(hostId)) throw error(403, '请先在手机登录并完成配对'); accounts.requireMobileSession(req, hostId, hash); }
     return host;
@@ -95,7 +103,7 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
       if (!allowPeer(req.socket.remoteAddress)) throw error(403, 'Only local network peers are allowed');
       rateLimit(req);
       const path = new URL(req.url, 'http://relay').pathname;
-      if (req.method === 'GET' && path === '/healthz') return res.end(JSON.stringify({ ok: true, protocol: 1, service: 'codex-pocket', enrollment: 'invite-v1', accounts: 'approval-v1', desktopEnrollment: 'mobile-claim-v1', computers:'multi-v1', deviceRemoval:'selected-v1', accountDeletion:'confirmed-v1' }));
+      if (req.method === 'GET' && path === '/healthz') return res.end(JSON.stringify({ ok: true, protocol: 1, service: 'codex-pocket', enrollment: 'invite-v1', accounts: 'approval-v1', desktopEnrollment: 'mobile-claim-v1', computers:'multi-v1', deviceRemoval:'selected-v1', accountDeletion:'confirmed-v1', ...(allowPairingOnly ? { pairingOnly:'desktop-confirm-v1' } : {}) }));
       if (req.method !== 'POST') throw error(404, 'Not found');
       if (path === '/api/admin/contacts') accounts.session(req, { admin:true });
       const body = await jsonBody(req, path === '/api/admin/contacts' ? 1450000 : 8192);
@@ -106,11 +114,14 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
       }
       if (path === '/api/desktop/prepare') {
         validateHost(body);
+        const pairingOnly = body.pairingOnly === true;
+        if (pairingOnly && !allowPairingOnly) throw error(403, '中继未启用免账号配对');
         const existing = getHost(body.hostId);
         if (existing) {
           authenticate(req, 'desktop', body.hostId);
+          if (pairingOnly !== pairingOnlyHost(body.hostId)) throw error(409, '已有电脑不能切换账号配对方式');
           db.prepare('UPDATE mobile_claim_hosts SET last_seen=? WHERE host_id=?').run(clock(), body.hostId);
-          return res.end(JSON.stringify({ ok: true, recovered: true, mobileClaim: !!claimHost(body.hostId) }));
+          return res.end(JSON.stringify({ ok: true, recovered: true, mobileClaim: !pairingOnly && !!claimHost(body.hostId), pairingOnly }));
         }
         const ip = req.socket.remoteAddress, now = clock();
         const budget = preparations.get(ip);
@@ -123,13 +134,18 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
         const stale = db.prepare('SELECT c.host_id FROM mobile_claim_hosts c JOIN hosts h ON h.id=c.host_id WHERE c.last_seen<? AND c.pending_user_id IS NULL AND h.mobile_hash IS NULL').all(now - 7*86400_000);
         for (const row of stale) if (!routes.has(row.host_id)) {
           db.prepare('DELETE FROM mobile_claim_hosts WHERE host_id=?').run(row.host_id);
-          db.prepare('DELETE FROM hosts WHERE id=? AND mobile_hash IS NULL AND NOT EXISTS (SELECT 1 FROM account_hosts WHERE host_id=?)').run(row.host_id, row.host_id);
+          if (db.prepare('DELETE FROM hosts WHERE id=? AND mobile_hash IS NULL AND NOT EXISTS (SELECT 1 FROM account_hosts WHERE host_id=?)').run(row.host_id, row.host_id).changes) db.prepare('DELETE FROM pairing_only_hosts WHERE host_id=?').run(row.host_id);
         }
         if (db.prepare('SELECT count(*) n FROM mobile_claim_hosts').get().n >= 2000) throw error(503, '连接服务繁忙，请稍后再试');
         db.exec('BEGIN IMMEDIATE');
-        try { insertHost(body); db.prepare('INSERT INTO mobile_claim_hosts VALUES(?,NULL,NULL,?,?)').run(body.hostId, now, now); db.exec('COMMIT'); }
+        try {
+          insertHost(body);
+          db.prepare('INSERT INTO mobile_claim_hosts VALUES(?,NULL,NULL,?,?)').run(body.hostId, now, now);
+          if (pairingOnly) db.prepare('INSERT INTO pairing_only_hosts VALUES(?)').run(body.hostId);
+          db.exec('COMMIT');
+        }
         catch(e) { db.exec('ROLLBACK'); throw e; }
-        return res.end(JSON.stringify({ ok: true, mobileClaim: true }));
+        return res.end(JSON.stringify({ ok: true, mobileClaim: !pairingOnly, pairingOnly }));
       }
       if (path === '/api/account/hosts/enroll') {
         const { user, session } = accounts.session(req, { active: true });
@@ -210,7 +226,8 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
       }
       if (path === '/api/hosts/status') {
         const host = authenticate(req, 'desktop', body.hostId);
-        return res.end(JSON.stringify({ registered: true, name: host.name, mobilePaired: !!host.mobile_hash, pairExpiresAt: host.pair_expires, accountManaged: !!accounts.owner(host.id), mobileClaim: !!claimHost(host.id) }));
+        const pairingOnly = pairingOnlyHost(host.id);
+        return res.end(JSON.stringify({ registered: true, name: host.name, mobilePaired: !!host.mobile_hash, pairExpiresAt: host.pair_expires, accountManaged: !!accounts.owner(host.id), mobileClaim: !pairingOnly && !!claimHost(host.id), pairingOnly }));
       }
       if (path === '/api/pair/status') {
         const host = checkHost(body.hostId) ? getHost(body.hostId) : null;
@@ -240,7 +257,7 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
         try {
           const claim = claimHost(body.hostId);
           if (body.accept === true) {
-            if (claim) {
+            if (claim && !pairingOnlyHost(body.hostId)) {
               accounts.verifyClaimSession(claim.pending_session_hash, claim.pending_user_id);
               accounts.bindHost(claim.pending_user_id, body.hostId);
             }
@@ -312,7 +329,7 @@ export function createRelay({ adminToken, dbPath = ':memory:', cert, key, allowI
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const relay = createRelay({ adminToken: process.env.RELAY_ADMIN_TOKEN, dbPath: process.env.RELAY_DB ?? '/data/relay.sqlite', cert: readFileSync(process.env.TLS_CERT ?? '/certs/cert.pem'), key: readFileSync(process.env.TLS_KEY ?? '/certs/key.pem'), androidCertificate: process.env.RELAY_ANDROID_CERT_SHA256 ?? '' });
+  const relay = createRelay({ adminToken: process.env.RELAY_ADMIN_TOKEN, dbPath: process.env.RELAY_DB ?? '/data/relay.sqlite', cert: readFileSync(process.env.TLS_CERT ?? '/certs/cert.pem'), key: readFileSync(process.env.TLS_KEY ?? '/certs/key.pem'), androidCertificate: process.env.RELAY_ANDROID_CERT_SHA256 ?? '', allowPairingOnly: process.env.RELAY_PAIRING_ONLY === '1' });
   const port = Number(process.env.PORT ?? 8443);
   relay.server.listen(port, '0.0.0.0', () => console.log(`Codex Pocket relay listening on TLS port ${port}`));
   for (const signal of ['SIGTERM','SIGINT']) process.on(signal, () => relay.close().then(() => process.exit(0)));

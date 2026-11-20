@@ -52,13 +52,12 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
     var displayName by rememberSaveable{mutableStateOf("")};var reason by rememberSaveable{mutableStateOf("")}
     var submitted by remember{mutableStateOf(false)}
     val passwordError=if(register&&(password.isNotEmpty()||submitted))accountPasswordError(password)else null
-    val isBuiltin=AccountApi.same(account.api.defaults,AccountApi.bundled(LocalContext.current))
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()){
-        onBack?.let{ConnectionSetupHeader(if(isBuiltin)"公网使用"else"自建中继账号",it)}
+        onBack?.let{ConnectionSetupHeader("公网使用",it)}
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(26.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
         Row(Modifier.padding(top=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){CodexMark(Modifier.size(44.dp));Text("Codex Pocket",fontSize=26.sp,fontWeight=FontWeight.Bold)}
         Text("登录后，扫描电脑配对码即可连接。",fontSize=14.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(if(isBuiltin)"默认公网服务"else"自建中继：${account.api.defaults.getString("relay")}",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("默认公网服务",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
         account.error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
         account.notice?.let{Text(it,color=MaterialTheme.colorScheme.primary)}
         if(account.loggedIn){
@@ -66,7 +65,7 @@ fun accountDate(value:Long)=SimpleDateFormat("yyyy-MM-dd",Locale.getDefault()).f
             Text(user?.optString("displayName").orEmpty(),fontSize=21.sp,fontWeight=FontWeight.SemiBold)
             Text(if(!account.verified)"正在验证账号，请保持网络连接"else accountStateLabel(user?.optString("accessState").orEmpty()),fontSize=18.sp)
             user?.optString("rejectionReason")?.takeIf{it.isNotBlank()}?.let{Text("管理员说明：$it")}
-            Text("账号批准后，在电脑选择公网连接，再用手机扫码添加电脑。",fontSize=14.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("账号批准后即可扫码添加电脑，配对还需在电脑上确认。",fontSize=14.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick=account::refresh,enabled=!account.busy,modifier=Modifier.fillMaxWidth().height(50.dp)){Text(if(account.busy)"正在检查…"else"检查审批状态")}
             if(user?.optString("accessState") in listOf("rejected","expired")){
                 OutlinedTextField(reason,{reason=it},label={Text("重新申请说明")},modifier=Modifier.fillMaxWidth(),minLines=3)
