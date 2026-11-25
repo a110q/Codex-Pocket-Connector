@@ -266,13 +266,31 @@ class UiRedesignTest {
         compose.onNodeWithText("codex_android").performClick()
         compose.onNodeWithText("图片预览优化").assertDoesNotExist()
         compose.onNodeWithText("codex_android").performClick()
-        compose.onNodeWithContentDescription("在 codex_android 中新开对话").performClick()
+        compose.onNodeWithContentDescription("codex_android 项目选项").performClick()
+        compose.onNodeWithText("新建对话",substring=false).performClick()
         compose.onNodeWithContentDescription("新对话指令").performTextInput("本地 UI 验收新对话")
         shot("06-new-chat")
         compose.onNodeWithText("开始对话").performClick()
         try{until{peer.calls.any{it.optString("action")=="thread.create"}&&model.selected?.optString("id")=="ui-created"&&!model.loadingThread}}
         catch(e:Throwable){throw AssertionError("Create did not finish: selected=${model.selected}, loading=${model.loadingThread}, busy=${model.busy}, pending=${model.pendingOperation}, error=${model.error}, calls=${peer.calls.map{it.optString("action")}}",e)}
         Assert.assertEquals("p1",peer.calls.first{it.optString("action")=="thread.create"}.getJSONObject("args").getString("projectId"))
+    }
+    @Test fun workspaceLongNamesAndLargeTextKeepActionsAndManagementReachable(){
+        val title="检查跨设备同步与长标题排版，修复安卓和电脑端的连接状态显示"
+        peer.threads.getJSONObject(0).put("title",title)
+        compose.runOnUiThread{model.renameComputer(peer.profile.getString("hostId"),"用于开发和设计验收的工作电脑");model.notice=null;model.refresh();testFontScale=1.3f}
+        until{model.threads.any{it.label()==title}}
+        compose.onNodeWithContentDescription("快速切换电脑").assertIsDisplayed().assertHasClickAction()
+        compose.onNodeWithContentDescription("新建对话").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithContentDescription("展开搜索").assertIsDisplayed()
+        compose.onNodeWithContentDescription("$title，运行中").assertIsDisplayed()
+        shot("workspace-long-text")
+        compose.onNodeWithContentDescription("codex_android 项目选项").performClick()
+        compose.onNodeWithText("新建对话",substring=false).assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("新对话指令").assertIsDisplayed()
+        compose.onNodeWithContentDescription("取消新建对话").performClick()
+        compose.runOnUiThread{model.updateAppearance("dark")}
+        shot("workspace-long-text-dark")
     }
     @Test fun compactWorkspaceKeepsSearchAndNavigationAccessible(){
         compose.onNodeWithContentDescription("搜索项目或对话").assertDoesNotExist()
@@ -291,7 +309,7 @@ class UiRedesignTest {
         Assert.assertTrue("Expanded search must keep its touch height",bounds.height>=52*context.resources.displayMetrics.density-1)
         compose.onNodeWithText("图片预览优化").assertIsDisplayed()
         shot("12-compact-search-keyboard")
-        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithContentDescription("收起搜索").performClick()
         compose.onNodeWithText("个人网站").assertIsDisplayed()
     }
@@ -356,8 +374,8 @@ class UiRedesignTest {
         compose.onNodeWithContentDescription("聊天输入框").performTextInput("补充测试要求")
         compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
         until{peer.calls.any{it.optString("action")=="message.send"}&&!model.busy}
-        instrumentation.uiAutomation.executeShellCommand("input keyevent KEYCODE_BACK").close()
-        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("允许本次"))
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("chat-history").performScrollToNode(hasText("允许本次"))
         compose.onNodeWithText("允许本次").performClick()
         until{peer.calls.any{it.optString("action")=="approval.respond"}&&!model.busy}
         compose.runOnUiThread{model.updateAppearance("dark")}
@@ -367,6 +385,17 @@ class UiRedesignTest {
         executionTranscript(listOf(execution("running","检查连接","inProgress")),reply=false)
         peer.active=true;peer.reference=true;chat()
         compose.runOnUiThread{testFontScale=1.5f}
+        val title=compose.onNodeWithTag("chat-title").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val computer=compose.onNodeWithContentDescription("快速切换电脑").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val density=context.resources.displayMetrics.density
+        Assert.assertTrue("Chat title must keep at least 200 dp on narrow screens: $title",title.width>=200*density-1)
+        Assert.assertTrue("Computer switching must move below the title at large font sizes",computer.top>=title.bottom)
+        compose.onNodeWithContentDescription("快速切换电脑").performClick()
+        compose.onNodeWithText("切换连接的电脑").assertIsDisplayed()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithContentDescription("对话更多操作").performClick()
+        compose.onNodeWithText("删除对话").assertIsDisplayed()
+        androidx.test.espresso.Espresso.pressBack()
         compose.onNodeWithContentDescription("打开模型与权限设置面板").assertIsDisplayed().performClick()
         compose.onNodeWithText("完全访问").performScrollTo().assertIsDisplayed()
         shot("large-text-settings")

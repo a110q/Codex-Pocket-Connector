@@ -28,11 +28,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-val PocketGreen = Color(0xFF10B981)
+val PocketGreen = Color(0xFF167D59)
 
 object PocketPalette {
     @Composable private fun tone(light:Long,dark:Long)=Color(if(MaterialTheme.colorScheme.background.luminance()>.5f)light else dark)
-    val muted:Color @Composable get()=tone(0xFF7C8496,0xFF9199AF)
+    val muted:Color @Composable get()=tone(0xFF626B7D,0xFFACB4C8)
     val subtle:Color @Composable get()=tone(0xFFF1F4FA,0xFF232737)
     val lavender:Color @Composable get()=tone(0xFFF3F0FF,0xFF302D4B)
     val lavenderBorder:Color @Composable get()=tone(0xFFE4DFFF,0xFF4A4368)

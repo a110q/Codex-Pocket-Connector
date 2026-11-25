@@ -228,11 +228,12 @@ class MainActivity : ComponentActivity() {
     BackHandler(model.selected!=null){if(model.previewKind!=null)model.closePreview()else model.back()}
     Scaffold(containerColor=MaterialTheme.colorScheme.background,snackbarHost={if(model.selected==null)SnackbarHost(snack)},
         topBar={if(model.selected==null){
-            Row(Modifier.statusBarsPadding().fillMaxWidth().heightIn(min=56.dp).padding(start=16.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
+            Row(Modifier.statusBarsPadding().fillMaxWidth().heightIn(min=76.dp).padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
                 if(tab==0){
-                    CodexMark(Modifier.size(28.dp));Spacer(Modifier.width(8.dp))
-                    Text(if(LocalConfiguration.current.screenWidthDp<400)"Pocket"else"Codex Pocket",Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis)
-                    if(model.profile!=null)ConnectionBadge(model){tab=2}
+                    Column(Modifier.weight(1f)){
+                        Text(if(model.showArchived)"已归档"else"工作空间",style=MaterialTheme.typography.titleLarge)
+                        if(model.profile!=null)ConnectionBadge(model){tab=2}
+                    }
                     PocketAction("工具","打开工作空间工具"){showTools=true}
                     PocketAction("设置","打开设置"){tab=3}
                 }else{
@@ -466,10 +467,13 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding().navigationBarsPadding()) {
         var menu by remember{mutableStateOf(false)}
         var connectionDetails by remember{mutableStateOf(false)}
-        if(!browserFullscreen)Row(Modifier.fillMaxWidth().heightIn(min=60.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
+        if(!browserFullscreen)BoxWithConstraints(Modifier.fillMaxWidth()){
+          val separateComputer=maxWidth<480.dp||LocalDensity.current.fontScale>1.2f
+          Column{
+          Row(Modifier.fillMaxWidth().heightIn(min=60.dp).padding(horizontal=6.dp),verticalAlignment=Alignment.CenterVertically){
             PocketAction("返回","返回项目"){model.back()}
             Column(Modifier.weight(1f)){
-                Text(thread.label(),fontSize=17.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(thread.label(),Modifier.fillMaxWidth().testTag("chat-title"),fontSize=17.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
                 val project=model.projects.find{it.optString("projectId")==thread.optString("projectId")}
                 Row(verticalAlignment=Alignment.CenterVertically){
                     CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary){PocketIcon("文件夹",Modifier.size(12.dp))}
@@ -480,8 +484,13 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
                     }
                 }
             }
-            Spacer(Modifier.width(6.dp));ConnectionBadge(model,onComputers)
+            if(!separateComputer){Spacer(Modifier.width(6.dp));ConnectionBadge(model,compact=true,onClick=onComputers)}
             PocketAction("更多","对话更多操作"){focus.clearFocus();menu=true}
+          }
+          if(separateComputer)Row(Modifier.fillMaxWidth().padding(start=54.dp,end=12.dp),verticalAlignment=Alignment.CenterVertically){
+              ConnectionBadge(model,compact=false,onClick=onComputers)
+          }
+          }
         }
         if(menu)ModalBottomSheet(onDismissRequest={menu=false},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),containerColor=MaterialTheme.colorScheme.surface,shape=RoundedCornerShape(topStart=18.dp,topEnd=18.dp)){
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=16.dp).padding(bottom=16.dp)){
@@ -571,7 +580,7 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
                         AttachmentPickerButton(model,thread.getString("id"),onReference={tools="files"})
                         BasicTextField(model.draft,{model.draft=it},textStyle=MaterialTheme.typography.bodyMedium.copy(fontSize=15.sp,lineHeight=22.sp,color=MaterialTheme.colorScheme.onSurface),cursorBrush=SolidColor(MaterialTheme.colorScheme.primary),
                             modifier=Modifier.weight(1f).heightIn(min=56.dp,max=136.dp).padding(vertical=6.dp).onFocusChanged{composerFocused=it.isFocused}.semantics{contentDescription="聊天输入框"},maxLines=5,decorationBox={inner->
-                                Box{if(model.draft.isEmpty())Text("向${model.profile?.computerName()?:"电脑"}发送指令，或补充任务要求…",fontSize=15.sp,lineHeight=22.sp,color=PocketPalette.muted,maxLines=2,overflow=TextOverflow.Ellipsis);inner()}
+                                Box{if(model.draft.isEmpty())Text("发送消息，或补充任务要求…",fontSize=15.sp,lineHeight=22.sp,color=PocketPalette.muted,maxLines=2,overflow=TextOverflow.Ellipsis);inner()}
                             })
                         val hasContent=model.draft.isNotBlank()||model.imagesFor(thread.getString("id")).isNotEmpty()||model.filesFor(thread.getString("id")).isNotEmpty()
                         val stop=active&&!hasContent
@@ -622,9 +631,9 @@ fun statusLabel(status:String)=when(activityForStatus(status)){ThreadActivity.RU
 @Composable fun ArtifactRow(file:JSONObject,enabled:Boolean=true,onClick:()->Unit) {
     val available=enabled&&file.optBoolean("available",true)
     val kind=artifactType(file)
-    Surface(onClick=onClick,enabled=available,color=PocketPalette.subtle,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().semantics{contentDescription="预览文件 ${file.optString("name")}"}) {
+    Surface(onClick=onClick,enabled=available,color=Color.Transparent,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().semantics{contentDescription="预览文件 ${file.optString("name")}"}) {
         Row(Modifier.heightIn(min=64.dp).padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
-            Surface(color=MaterialTheme.colorScheme.surface,contentColor=MaterialTheme.colorScheme.primary,shape=RoundedCornerShape(10.dp),modifier=Modifier.size(36.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(if(kind=="图片")"图片"else if(kind=="网页")"网页"else"文件",Modifier.size(19.dp))}}
+            Surface(color=PocketPalette.subtle,contentColor=MaterialTheme.colorScheme.onSurfaceVariant,shape=RoundedCornerShape(8.dp),modifier=Modifier.size(32.dp)){Box(contentAlignment=Alignment.Center){PocketIcon(if(kind=="图片")"图片"else if(kind=="网页")"网页"else"文件",Modifier.size(19.dp))}}
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(3.dp)){
                 Text(file.optString("name").ifBlank{file.optString("path").substringAfterLast('/').ifBlank{"未命名文件"}},fontSize=13.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
