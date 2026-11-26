@@ -14,6 +14,7 @@ import org.json.JSONObject
 import org.junit.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 // Real encrypted TLS/WebSocket transport, isolated from user computers/chats.
 class ThreadStatusTest {
@@ -133,8 +134,9 @@ class ThreadStatusTest {
         catalog = catalog.map { JSONObject(it.toString()).put("status", "notLoaded") }
         peer.threadStatuses = runtimeEvent(1)
         val original = peer.extra
+        val readStatus = AtomicReference("idle")
         peer.extra = { action, args ->
-            if (action == "thread.read") data(args.getString("threadId"), "idle", 2).put("live", true)
+            if (action == "thread.read") data(args.getString("threadId"), readStatus.get(), 2).put("live", true)
             else original?.invoke(action, args)
         }
         start()
@@ -146,8 +148,10 @@ class ThreadStatusTest {
         peer.event(runtimeEvent(2, "notLoaded"))
         until { activity("run") == ThreadActivity.IDLE }
         // A later real start and pending approval are not masked by the completion.
+        readStatus.set("active")
         peer.event(runtimeEvent(3, "active"))
         until { activity("run") == ThreadActivity.RUNNING }
+        readStatus.set("waitingForApproval")
         peer.event(runtimeEvent(4, "waitingForApproval"))
         until { activity("run") == ThreadActivity.APPROVAL }
     }
@@ -293,7 +297,7 @@ class ThreadStatusTest {
         compose.runOnUiThread { appearance.value = "light" }
         compose.onNodeWithContentDescription("工作空间选项").performClick()
         compose.onNodeWithText("任务动态").performClick()
-        compose.onNodeWithText("正在运行、等待处理或出错的对话").assertIsDisplayed()
+        compose.onNodeWithText("运行、等待处理与出错的对话").assertIsDisplayed()
         compose.onNodeWithText("整理安装说明").assertDoesNotExist()
         compose.onNodeWithContentDescription("构建项目预览页面，运行中").assertIsDisplayed()
         screenshot("task-status-active-filter")
@@ -342,7 +346,9 @@ class ThreadStatusTest {
         Assert.assertEquals(ThreadActivity.RUNNING, activity("run"))
         Assert.assertEquals(ThreadActivity.RUNNING, activity("web")) // List-only status also survives.
         compose.onNodeWithContentDescription("重构手机工作空间，运行中").assertIsDisplayed()
+        compose.onNodeWithText("codex_android").performClick()
         compose.onNodeWithContentDescription("codex_android：1 个运行中").assertIsDisplayed()
+        compose.onNodeWithText("codex_android").performClick()
         screenshot("task-status-sustained-running")
 
         peer.snapshot(data("run", "active", 12, requests = JSONArray().put(JSONObject()

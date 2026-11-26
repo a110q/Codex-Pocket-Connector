@@ -207,7 +207,7 @@ class AccountFlowTest {
     @Test fun lanEntryPairsAndConnectsWithoutLoginAndRejectsPublicAddresses(){
         val args=InstrumentationRegistry.getArguments();val pairing=args.getString("lanPairing")!!
         val config=JSONObject(pairing);Assert.assertTrue(PocketConnection.isLanPairing(config))
-        Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://82.157.186.24:24443")))
+        Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://203.0.113.10:24443")))
         Assert.assertFalse(PocketConnection.isLanPairing(JSONObject(pairing).put("relay","https://192.168.1.300:24444")))
         compose.onNodeWithContentDescription("返回选择连接方式").performClick()
         compose.onNodeWithText("局域网使用").performClick()

@@ -20,6 +20,6 @@
     "qrcode": "1.5.4",
     "ws": "8.22.0"
   },
-  "pocketVersion": "0.9.18",
-  "pocketBuild": 62
+  "pocketVersion": "0.9.18.2",
+  "pocketBuild": 64
 }

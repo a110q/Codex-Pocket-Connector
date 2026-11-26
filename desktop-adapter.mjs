@@ -47,7 +47,26 @@ function timestamp(milliseconds, seconds) {
   const value = milliseconds ?? (seconds == null ? null : seconds * 1000);
   return Number.isFinite(value) && Math.abs(value) <= 8.64e15 ? new Date(value).toISOString() : null;
 }
-function threadKey(thread) { return `${thread.kind ?? 'codex'}:${thread.hostId ?? 'local'}:${thread.id}`; }
+function emptyHost(hostId) { return hostId == null || (typeof hostId === 'string' && !hostId.trim()); }
+export function normalizeLocalProjectHost(project) {
+  return project.projectKind === 'local' && emptyHost(project.hostId) ? { ...project, hostId: 'local' } : project;
+}
+function normalizeLocalThreadHost(thread) {
+  return (thread.kind ?? 'codex') === 'codex' && (thread.projectKind ?? 'local') === 'local' && emptyHost(thread.hostId) ? { ...thread, hostId: 'local' } : thread;
+}
+function threadKey(thread) { return `${thread.kind ?? 'codex'}:${normalizeLocalThreadHost(thread).hostId ?? 'local'}:${thread.id}`; }
+
+// Use explicit desktop aliases only. A title or filesystem path is not a
+// project identity: users can keep multiple projects with the same root.
+export function normalizeProjectMembership(thread, projects = []) {
+  thread = normalizeLocalThreadHost(thread);
+  if ((thread.kind ?? 'codex') !== 'codex' || !thread.projectId) return thread;
+  const project = projects.map(normalizeLocalProjectHost).find(project => (project.projectKind ?? 'local') === 'local' &&
+    (project.hostId ?? 'local') === (thread.hostId ?? 'local') &&
+    (project.projectId === thread.projectId || project.canonicalProjectId === thread.projectId));
+  return project ? { ...thread, projectId: project.projectId,
+    ...(project.canonicalProjectId ? { canonicalProjectId: project.canonicalProjectId } : {}) } : thread;
+}
 
 // Read only catalog metadata. Conversation bodies, previews and rollout files
 // are deliberately outside this query. Legacy membership remains authoritative
@@ -731,8 +750,8 @@ export class DesktopAdapter extends EventEmitter {
       if (stored?.membershipKnown) { merged.projectId = stored.projectId; merged.membershipSource = stored.membershipSource; }
       unique.set(key, merged);
     }
-    let threads = [...unique.values()].filter(thread => (args.includeArchived === true || !thread.archived) && (args.includeSubagents === true || !thread.isSubagent));
-    if (Object.hasOwn(args, 'projectId')) threads = threads.filter(thread => thread.projectId === args.projectId);
+    let threads = [...unique.values()].map(thread => normalizeProjectMembership(thread, catalog.projects)).filter(thread => (args.includeArchived === true || !thread.archived) && (args.includeSubagents === true || !thread.isSubagent));
+    if (Object.hasOwn(args, 'projectId')) threads = threads.filter(thread => thread.projectId === args.projectId || (thread.projectId != null && args.projectId != null && thread.canonicalProjectId === args.projectId));
     if (args.hostId) threads = threads.filter(thread => (thread.hostId ?? 'local') === args.hostId);
     threads.sort((a, b) => (a.pinnedIndex ?? (a.isPinned ? 0 : Infinity)) - (b.pinnedIndex ?? (b.isPinned ? 0 : Infinity)) ||
       (a.projectId === b.projectId && a.projectIndex != null && b.projectIndex != null ? a.projectIndex - b.projectIndex : 0) ||
@@ -743,9 +762,16 @@ export class DesktopAdapter extends EventEmitter {
   async listProjects() {
     const [result, catalog] = await Promise.all([this.tool('list_projects', {}), this.localCatalog()]);
     if (!Array.isArray(result.projects)) throw new Error('桌面项目清单暂不可用，请稍后重试');
-    const projects = result.projects.map(project => {
-      const stored = catalog.projects.find(value => value.projectId === project.projectId && value.projectKind === project.projectKind && (value.hostId ?? 'local') === (project.hostId ?? 'local'));
-      return { ...stored, ...project, rootPaths: project.rootPaths ?? (stored?.path === project.path && stored?.rootPaths?.length ? stored.rootPaths : project.path ? [project.path] : []) };
+    const projects = result.projects.map(normalizeLocalProjectHost).map(project => {
+      const stored = catalog.projects.map(normalizeLocalProjectHost).find(value => (value.projectKind ?? 'local') === (project.projectKind ?? 'local') &&
+        (value.hostId ?? 'local') === (project.hostId ?? 'local') &&
+        (value.projectId === project.projectId || value.canonicalProjectId === project.projectId ||
+          (project.canonicalProjectId && (value.projectId === project.canonicalProjectId || value.canonicalProjectId === project.canonicalProjectId))));
+      // The live desktop list owns existence and order; the catalog supplies
+      // aliases so projects.list and threads.list expose the same project ID.
+      return { ...stored, ...project, projectId: stored?.projectId ?? project.projectId,
+        ...(stored?.canonicalProjectId ? { canonicalProjectId: stored.canonicalProjectId } : {}),
+        rootPaths: project.rootPaths ?? (stored?.path === project.path && stored?.rootPaths?.length ? stored.rootPaths : project.path ? [project.path] : []) };
     });
     return { ...result, projects, catalog: { source: 'desktop-visible-projects', localComplete: true, limitations: catalog.limitations } };
   }
@@ -817,7 +843,19 @@ export class DesktopAdapter extends EventEmitter {
       }
       case 'thread.create': {
         const prompt = requireString(args.text ?? args.prompt, 'text', 100000);
-        const target = args.projectId ? { type: 'project', projectId: requireString(args.projectId, 'projectId'), environment: { type: 'local' } } : { type: 'projectless' };
+        let projectId = args.projectId ? requireString(args.projectId, 'projectId') : null;
+        if (projectId) {
+          // Sidebar IDs remain stable for the phone, but App Tools must receive
+          // the exact ID currently advertised by this desktop version.
+          const [result, catalog] = await Promise.all([this.tool('list_projects', {}), this.localCatalog()]);
+          const stored = catalog.projects.map(normalizeLocalProjectHost).find(project => (project.projectKind ?? 'local') === 'local' && (project.hostId ?? 'local') === 'local' &&
+            (project.projectId === projectId || project.canonicalProjectId === projectId));
+          const aliases = new Set([projectId, stored?.projectId, stored?.canonicalProjectId].filter(Boolean));
+          const project = result.projects?.map(normalizeLocalProjectHost).find(project => (project.projectKind ?? 'local') === 'local' && (project.hostId ?? 'local') === 'local' && aliases.has(project.projectId));
+          if (!project) throw new Error('项目不存在，请刷新后重试。');
+          projectId = project.projectId;
+        }
+        const target = projectId ? { type: 'project', projectId, environment: { type: 'local' } } : { type: 'projectless' };
         return this.tool('create_thread', { prompt, target, ...(args.title ? { title: args.title } : {}), ...(args.model ? { model: args.model } : {}), ...(args.thinking ? { thinking: args.thinking } : {}) });
       }
       case 'turn.stop': {

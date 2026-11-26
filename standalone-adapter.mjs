@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { DesktopAdapter, FramedSocket, normalizeSnapshot, orderedTurns } from './desktop-adapter.mjs';
+import { DesktopAdapter, FramedSocket, normalizeSnapshot, orderedTurns, normalizeProjectMembership, normalizeLocalProjectHost } from './desktop-adapter.mjs';
 import { AppServerClient } from './app-server-client.mjs';
 import { localCodexHome, localControlSocket } from './desktop-sharing.mjs';
 import { DesktopOwnerBridge } from './desktop-owner-bridge.mjs';
@@ -168,7 +168,7 @@ export class StandaloneAdapter extends DesktopAdapter {
     // A catalog read started before a verified delete must not resurrect it.
     const completedManagement = [...this.threadManagement].filter(([, entry]) => entry.phase === 'done').map(([threadId, entry]) => ({ threadId, action: entry.action }));
     for (const { threadId, action } of completedManagement) if (action === 'thread.delete') threads.delete(threadId);
-    let result = [...threads.values()].filter(t => (args.includeArchived || !t.archived) && (args.includeSubagents || !t.isSubagent) && (!Object.hasOwn(args, 'projectId') || t.projectId === args.projectId) && (!args.hostId || args.hostId === 'local'));
+    let result = [...threads.values()].map(thread => normalizeProjectMembership(thread, catalog.projects)).filter(t => (args.includeArchived || !t.archived) && (args.includeSubagents || !t.isSubagent) && (!Object.hasOwn(args, 'projectId') || t.projectId === args.projectId || (t.projectId != null && args.projectId != null && t.canonicalProjectId === args.projectId)) && (!args.hostId || args.hostId === 'local'));
     result = result.map(thread => {
       const operation = this.threadManagement.get(thread.id);
       return operation && operation.phase !== 'done' ? { ...thread, managementAction: operation.action, managementStatus: operation.phase === 'failed' ? 'failed' : 'pending', ...(isPendingManagement(operation) ? { managementReason: managementReason(operation) } : {}) } : thread;
@@ -287,7 +287,8 @@ export class StandaloneAdapter extends DesktopAdapter {
     return runtime;
   }
   async listProjects() {
-    const catalog = await this.localCatalog();
+    let catalog = await this.localCatalog();
+    let liveUnavailable = false;
     if (this.options.catalog !== false || this.projectReader) {
       try {
         if (!this.projectReader) this.projectReader = new DesktopAdapter({ ...this.options, timeoutMs: 2000, callerThreadId: this.callerThreadId || catalog.threads[0]?.id });
@@ -295,12 +296,16 @@ export class StandaloneAdapter extends DesktopAdapter {
         return await this.projectReader.listProjects();
       } catch (error) {
         this.projectReader?.close();
-        // A current sidebar snapshot remains usable if desktop IPC is down.
-        // Never fall back to unioning project/list into this visible set.
-        if (catalog.projectAuthority !== 'desktop-state') throw error;
+        // IPC may take seconds to fail. The sidebar can add/delete projects or
+        // finish migration during that wait; discard the pre-request snapshot.
+        catalog = await this.localCatalog();
+        liveUnavailable = true;
+        if (!['desktop-state', 'canonical'].includes(catalog.projectAuthority)) throw error;
       }
     }
-    if (catalog.projectAuthority === 'desktop-state') return { projects: catalog.projects, catalog: { localComplete: true, source: 'desktop-visible-projects-state' } };
+    if (catalog.projectAuthority === 'desktop-state') return { projects: catalog.projects.map(normalizeLocalProjectHost),
+      catalog: { localComplete: !liveUnavailable && catalog.localComplete === true, live: false, source: 'desktop-visible-projects-state',
+        limitations: [...(catalog.limitations ?? []), ...(liveUnavailable ? ['桌面实时项目清单暂不可用，当前显示已保存的本地清单，完整性尚未确认。'] : [])] } };
     const values = await this.server.pages('project/list');
     const projects = catalog.projectAuthority === 'canonical' ? [] : [...catalog.projects];
     for (const value of values) {

@@ -4,7 +4,9 @@ import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { AppServerClient, findCodexCLI } from '../app-server-client.mjs';
 import { StandaloneAdapter } from '../standalone-adapter.mjs';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { DesktopAdapter } from '../desktop-adapter.mjs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 
 // Unit fixtures must never discover or subscribe to the user's real desktop.
@@ -33,6 +35,54 @@ test('desktop IPC failure uses the current sidebar state without resurrecting pr
   projects = []; assert.deepEqual((await adapter.listProjects()).projects, []);
 });
 
+test('failed live reads reload sidebar metadata instead of returning the pre-request project snapshot', async t => {
+  const server = new Server();
+  server.pages = async () => { throw new Error('must not revive canonical-only projects'); };
+  const fixtureRoot = new URL('../.private/tests/', import.meta.url).pathname;
+  mkdirSync(fixtureRoot, { recursive: true });
+  const codexHome = mkdtempSync(join(fixtureRoot, 'project-refresh-'));
+  t.after(() => rmSync(codexHome, { recursive: true, force: true }));
+  const statePath = join(codexHome, '.codex-global-state.json');
+  const state = {
+    'local-projects': Object.fromEntries(['box', 'clean', 'excel'].map(id => [id, { name: id, rootPaths: [] }])),
+    'project-order': ['yunqi', 'box', 'clean', 'excel'],
+    'app-server-projects-migration-by-host': { [`local:${codexHome}`]: { projectsMigrated: true, threadAssignmentsMigrated: false } }
+  };
+  writeFileSync(statePath, JSON.stringify(state));
+  const db = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+  db.exec('CREATE TABLE threads(id TEXT); CREATE TABLE projects(id TEXT, name TEXT, position INTEGER); CREATE TABLE project_roots(project_id TEXT, path TEXT, position INTEGER)');
+  ['yunqi', 'box', 'clean', 'excel', 'deleted-canonical-only'].forEach((id, i) => db.prepare('INSERT INTO projects VALUES (?, ?, ?)').run(id, id, i));
+  db.close();
+  let next = { yunqi: { name: 'YunqiPay', rootPaths: [] }, ...state['local-projects'] };
+  const reader = { async connect() { state['local-projects'] = next; writeFileSync(statePath, JSON.stringify(state)); throw new Error('desktop disconnected'); }, close() {} };
+  const adapter = fixtureAdapter({ server, codexHome, projectReader: reader }); t.after(() => adapter.close());
+  const result = await adapter.listProjects();
+  assert.equal(result.projects.length, 4);
+  assert.equal(result.projects[0].hostId, 'local');
+  assert.equal(result.catalog.localComplete, false);
+  assert.equal(result.catalog.live, false);
+  next = {};
+  assert.deepEqual((await adapter.listProjects()).projects, []);
+});
+
+test('completed migration during a failed live read uses current canonical projects and surviving aliases', async t => {
+  const server = new Server();
+  server.pages = async method => {
+    assert.equal(method, 'project/list');
+    return [{ id: 'yunqi-new', name: 'YunqiPay', roots: [] }];
+  };
+  let authority = 'desktop-state';
+  const reader = { async connect() { authority = 'canonical'; throw new Error('desktop disconnected'); }, close() {} };
+  const adapter = fixtureAdapter({ server, projectReader: reader }); t.after(() => adapter.close());
+  adapter.localCatalog = async () => ({ projectAuthority: authority, threads: [], projects: [
+    { projectId: 'yunqi-old', canonicalProjectId: 'yunqi-new' },
+    { projectId: 'deleted-old', canonicalProjectId: 'deleted-new' }
+  ] });
+  const result = await adapter.listProjects();
+  assert.deepEqual(result.projects.map(p => p.projectId), ['yunqi-old']);
+  assert.equal(result.projects[0].label, 'YunqiPay');
+});
+
 test('project/list controls migrated project existence and keeps legacy aliases only for surviving projects', async t => {
   const server = new Server(); const adapter = fixtureAdapter({ server, catalog: false }); t.after(() => adapter.close());
   let values = [{ id: 'keep', name: '新名称', roots: [{ path: '/new-root' }] }];
@@ -45,6 +95,47 @@ test('project/list controls migrated project existence and keeps legacy aliases 
   assert.equal(projects.length, 1); assert.equal(projects[0].projectId, 'legacy-keep');
   assert.equal(projects[0].label, '新名称'); assert.equal(projects[0].path, '/new-root');
   values = []; assert.deepEqual((await adapter.listProjects()).projects, []);
+});
+
+test('desktop projects and newly created chats keep the same grouping across canonical IDs and legacy aliases', async t => {
+  const catalog = { projectAuthority: 'desktop-state', localComplete: true,
+    projects: [{ projectId: 'box-old', canonicalProjectId: 'box-new', projectKind: 'local', hostId: 'local', label: '全能文件保管箱' }],
+    threads: [
+      { id: 'drawing', title: '创建骑车 SVG 动画', projectId: 'box-old', membershipKnown: true },
+      { id: 'greeting', title: '回应问候', projectId: 'box-old', membershipKnown: true },
+      { id: 'same-title', title: '创建骑车 SVG 动画', projectId: null, canonicalProjectId: 'box-new', membershipKnown: true },
+    ],
+  };
+  const server = new Server();
+  const serverOnly = [{ id: 'server-new', name: '刚在电脑新建', projectId: 'box-new', updatedAt: 2 }];
+  server.pages = async method => {
+    assert.equal(method, 'thread/list');
+    return [...catalog.threads.map(chat => ({ id: chat.id, name: chat.title, projectId: chat.projectId == null ? null : 'box-new', updatedAt: 1 })), ...serverOnly];
+  };
+  const reader = new DesktopAdapter({ catalog: false }); reader.connect = async () => {}; reader.localCatalog = async () => catalog;
+  let visible = [{ projectId: 'empty', projectKind: 'local', hostId: 'local', label: 'YunqiPay' },
+    { projectId: 'box-new', projectKind: 'local', hostId: 'local', label: '全能文件保管箱' }];
+  reader.tool = async () => ({ projects: visible });
+  const adapter = fixtureAdapter({ server, catalog: false, projectReader: reader }); t.after(() => adapter.close());
+  adapter.localCatalog = async () => structuredClone(catalog);
+  adapter.desktopRuntime = async () => new Map();
+  const grouped = async () => {
+    const [p, t] = await Promise.all([adapter.listProjects(), adapter.listThreads()]);
+    const ids = new Set(p.projects.map(project => project.projectId));
+    return { projects: p.projects, inProject: t.threads.filter(chat => chat.projectId === p.projects[1].projectId), standalone: t.threads.filter(chat => !ids.has(chat.projectId)) };
+  };
+  let result = await grouped();
+  assert.deepEqual(result.projects.map(p => p.label), ['YunqiPay', '全能文件保管箱']);
+  assert.deepEqual(new Set(result.inProject.map(t => t.id)), new Set(['drawing', 'greeting', 'server-new']));
+  assert.deepEqual(result.standalone.map(t => t.id), ['same-title']);
+  assert.deepEqual((await adapter.listThreads({ projectId: 'box-new' })).threads.map(t => t.id).sort(), ['drawing', 'greeting', 'server-new']);
+  assert.deepEqual((await adapter.listThreads({ projectId: null })).threads.map(t => t.id), ['same-title']);
+  catalog.threads.push({ id: 'new-chat', title: '新建问候', projectId: 'box-old', membershipKnown: true });
+  result = await grouped(); assert(result.inProject.some(t => t.id === 'new-chat'));
+  // The next read follows a desktop move out of the project, without relying on the title or cwd.
+  catalog.threads.find(t => t.id === 'greeting').projectId = null;
+  result = await grouped(); assert(result.standalone.some(t => t.id === 'greeting'));
+  visible = []; assert.deepEqual((await adapter.listProjects()).projects, []);
 });
 
 test('stdio connects without a caller chat, handles partial frames, paging, errors, timeouts and notifications', async t => {

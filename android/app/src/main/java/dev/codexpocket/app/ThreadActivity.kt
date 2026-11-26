@@ -53,4 +53,4 @@ internal fun threadActivity(thread: JSONObject, requests: JSONArray? = null): Th
     return activityForStatus(thread.optString("lastTurnStatus"))
 }
 
-internal fun threadIdentity(thread: JSONObject) = thread.optString("hostId", "local") + ":" + thread.optString("id")
+internal fun threadIdentity(thread: JSONObject) = normalizeLocalThreadHost(thread).optString("hostId", "local") + ":" + thread.optString("id")

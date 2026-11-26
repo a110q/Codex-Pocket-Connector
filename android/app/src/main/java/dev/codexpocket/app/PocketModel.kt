@@ -42,8 +42,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     private var pendingScannedPair=saved.optString("pendingScan").takeIf{it.isNotBlank()&&it!="null"}
     var status by mutableStateOf(if (profile == null) "尚未连接电脑" else "等待连接"); private set
     var connected by mutableStateOf(false); private set
-    var threads by mutableStateOf(saved.optJSONArray("threads").objects()); private set
-    var projects by mutableStateOf<List<JSONObject>>(saved.optJSONArray("projects").objects()); private set
+    var threads by mutableStateOf(saved.optJSONArray("threads").objects().map(::normalizeLocalThreadHost)); private set
+    var projects by mutableStateOf<List<JSONObject>>(localProjects(saved.optJSONArray("projects").objects())); private set
     var models by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var snapshot by mutableStateOf(saved.optJSONObject("snapshot")); private set
     var selected by mutableStateOf<JSONObject?>(null); private set
@@ -334,7 +334,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         computerGeneration++;supportsFileLinks=false;supportsHtmlPreview=false;resetHistoryRequest();supportsReceipts=false;pendingStatus="";pendingCompletion=null
         profile=next?.let{JSONObject(it.toString())};account?.let{profile?.put("accountToken",it.token)}
         val cache=next?.let{computerStates.optJSONObject(it.optString("hostId"))}?:JSONObject()
-        threads=cache.optJSONArray("threads").objects();projects=cache.optJSONArray("projects").objects();snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
+        threads=cache.optJSONArray("threads").objects().map(::normalizeLocalThreadHost);projects=localProjects(cache.optJSONArray("projects").objects());snapshot=cache.optJSONObject("snapshot");pendingOperation=cache.optJSONObject("pending")
         completedChats=cache.optJSONArray("completedChats")?.let{a->(0 until a.length()).map{a.getString(it)}.toSet()}.orEmpty()
         referenceDrafts=cache.optJSONObject("referenceDrafts")?.let{obj->obj.keys().asSequence().associateWith{key->obj.optJSONArray(key)?.let{a->(0 until a.length()).map{a.getString(it)}}.orEmpty()}}.orEmpty()
         drafts=DraftBook(cache.optJSONObject("drafts")?.let{obj->obj.keys().asSequence().associateWith{obj.optString(it)}}.orEmpty())
@@ -481,7 +481,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
             projectListRequest=null
             if(e!=null){if(reportErrors)error=e}
             else if(r?.optJSONArray("projects")!=null){
-                val next=r.optJSONArray("projects").objects().filter{it.optString("hostId","local")=="local"}
+                val next=localProjects(r.optJSONArray("projects").objects())
                 if(next.map{it.toString()}!=projects.map{it.toString()}){projects=next;persistSoon()}
             }
             if(projectListQueued){projectListQueued=false;refreshProjects(reportErrors=true)}
@@ -503,7 +503,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
                         applyThreadManagement(key,action,invalidateList=false)
                 }
                 val refreshed=(r?.optJSONArray("pinnedThreads").objects()+r?.optJSONArray("threads").objects())
-                    .filter{it.optString("kind","codex")=="codex"}.distinctBy(::threadIdentity).map{thread->
+                    .filter{it.optString("kind","codex")=="codex"}.map(::normalizeLocalThreadHost).distinctBy(::threadIdentity).map{thread->
                         // A list reply that was already in flight must not erase
                         // a newer running/completed event received on the socket.
                         val update=summaryUpdates[threadIdentity(thread)]?.takeIf{it.version>version}
@@ -527,7 +527,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
     }
     private fun applyRuntimeStatuses(event:JSONObject){
         var changed=false
-        event.optJSONArray("threads").objects().filter{it.optString("hostId","local")=="local"}.forEach { thread->
+        event.optJSONArray("threads").objects().map(::normalizeLocalThreadHost).filter{it.optString("hostId","local")=="local"}.forEach { thread->
             changed=updateThreadSummary(JSONObject().put("thread",thread).put("source",event.optString("source","desktop-runtime"))
                 .put("streamId",event.optString("streamId")).put("revision",event.opt("revision")?:JSONObject.NULL))||changed
         }
@@ -582,7 +582,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         return mergeSummary(thread,runtime)
     }
     private fun updateThreadSummary(data:JSONObject):Boolean {
-        val thread=data.optJSONObject("thread")?:return false
+        val thread=data.optJSONObject("thread")?.let(::normalizeLocalThreadHost)?:return false
         if(thread.optString("id").isBlank())return false
         val key=threadIdentity(thread);val previous=summaryUpdates[key]
         val revision=if(data.isNull("revision"))null else data.optLong("revision")
@@ -597,7 +597,8 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         selected?.takeIf{threadIdentity(it)==key}?.let{selected=mergeSummary(it,metadata)}
         return true
     }
-    fun openThread(thread: JSONObject) {
+    fun openThread(value: JSONObject) {
+        val thread=normalizeLocalThreadHost(value)
         if(selected?.optString("id")!=thread.optString("id")){closeMessage();resetHistoryRequest();chatSyncRequest=null;chatSyncIssue=null;lastChatSnapshotAt=0L}
         if (selected?.optString("id") != thread.optString("id")) closePreview()
         if (selected?.optString("id") != thread.optString("id")) error = null
@@ -665,6 +666,7 @@ class PocketModel(private val context: Context,filename:String="pocket-state.enc
         val merged = if (olderPage && sameSource) mergeTimeline(incoming, previous)
             else replaceTimelineTail(previous, incoming, next.optJSONObject("history")?.optBoolean("hasEarlier") == true)
         val accepted = if (olderPage && sameSource && current != null) JSONObject(current.toString()) else next
+        accepted.optJSONObject("thread")?.let{accepted.put("thread",normalizeLocalThreadHost(it))}
         accepted.put("messages", JSONArray(merged.map { it.value }))
         accepted.optJSONObject("history")?.apply { put("before", merged.firstOrNull()?.key ?: JSONObject.NULL); put("hasEarlier", (merged.firstOrNull()?.order ?: 0) > 0) }
         snapshot = accepted

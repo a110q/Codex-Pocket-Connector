@@ -73,6 +73,14 @@ internal fun threadTime(thread:JSONObject):String{
     }catch(_:Exception){""}
 }
 
+internal fun threadBelongsToProject(thread:JSONObject,project:JSONObject):Boolean {
+    if(normalizeLocalThreadHost(thread).optString("hostId","local")!=normalizeLocalProjectHost(project).optString("hostId","local"))return false
+    if(thread.isNull("projectId")||thread.optString("projectId").isBlank())return false
+    fun ids(value:JSONObject)=listOf("projectId","canonicalProjectId").filterNot{value.isNull(it)}.map{value.optString(it)}.filter{it.isNotBlank()}
+    val projectIds=ids(project)
+    return ids(thread).any{it in projectIds}
+}
+
 private enum class WorkspaceFilter(val label:String){
     ALL("全部"),RUNNING("运行中"),PENDING("待我处理");
 
@@ -129,12 +137,11 @@ private enum class WorkspaceFilter(val label:String){
             val pageFilter=WorkspaceFilter.entries[page]
             val threads=allThreads.filter{pageFilter.matches(threadActivity(it))}
             val openThread:(JSONObject)->Unit=if(pageFilter==WorkspaceFilter.PENDING)onOpenPending else model::openThread
-            val projectIds=model.projects.map{it.optString("projectId")}.toSet()
             val visible=model.projects.filter{p->
-                val children=threads.filter{it.optString("projectId")==p.optString("projectId")}
+                val children=threads.filter{threadBelongsToProject(it,p)}
                 (pageFilter==WorkspaceFilter.ALL||children.isNotEmpty())&&(search.isBlank()||p.label().contains(search,true)||children.any(::matches))
             }
-            val standalone=threads.filter{it.optString("projectId") !in projectIds}.filter(::matches)
+            val standalone=threads.filter{thread->model.projects.none{threadBelongsToProject(thread,it)}}.filter(::matches)
             LazyColumn(Modifier.fillMaxSize().then(if(page==pager.currentPage)Modifier else Modifier.clearAndSetSemantics{}).testTag("workspace-list-${pageFilter.name}").navigationBarsPadding(),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                 if(activeOnly){
                     val shown=threads.filter(::matches)
@@ -142,7 +149,7 @@ private enum class WorkspaceFilter(val label:String){
                     items(shown,key={it.optString("hostId")+it.optString("id")}){WorkspaceThread(it,model,false){openThread(it)}}
                 }else{
                     visible.forEach{project->
-                        val id=project.optString("projectId");val children=threads.filter{it.optString("projectId")==id}
+                        val id=project.optString("projectId");val children=threads.filter{threadBelongsToProject(it,project)}
                         val open=id !in model.collapsedProjects||search.isNotBlank()||pageFilter!=WorkspaceFilter.ALL
                         item(key="project:$id"){
                             ProjectHeading(project,children.size,children.count{threadActivity(it)==ThreadActivity.RUNNING},children.count{threadActivity(it).waiting},children.count(model::hasUnseenCompletion),open,model.connected,onToggle={model.collapsedProjects=if(id in model.collapsedProjects)model.collapsedProjects-id else model.collapsedProjects+id},onNew={onProjectNew(id)})

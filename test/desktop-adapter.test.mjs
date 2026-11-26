@@ -306,6 +306,86 @@ test('full read-only catalog preserves explicit memberships, canonical aliases, 
   assert.deepEqual((await adapter.call('threads.list', { projectId: 'explicit-project' })).threads.map(thread => thread.id), ['t0']);
 });
 
+test('live canonical project IDs retain desktop aliases, order and empty projects without reviving removed projects', async t => {
+  const fixture = await catalogFixture(t);
+  const adapter = new DesktopAdapter({ codexHome: fixture.codexHome }); t.after(() => adapter.close());
+  let projects = [
+    { projectId: 'new-empty', projectKind: 'local', hostId: 'local', label: 'YunqiPay', path: '/new' },
+    { projectId: 'canonical-project', projectKind: 'local', hostId: 'local', label: '全能文件保管箱', path: '/workspace' },
+    { projectId: 'canonical-project', projectKind: 'remote', hostId: 'remote', label: '另一台电脑' },
+  ];
+  adapter.tool = async () => ({ projects });
+  const result = (await adapter.listProjects()).projects;
+  assert.deepEqual(result.map(p => p.projectId), ['new-empty', 'legacy-project', 'canonical-project']);
+  assert.equal(result[1].canonicalProjectId, 'canonical-project');
+  assert.equal(result[1].label, '全能文件保管箱');
+  assert.deepEqual(result[1].rootPaths, ['/workspace']);
+  assert.equal(result.some(p => p.projectId === 'explicit-project'), false);
+  adapter.tool = async name => name === 'list_projects' ? { projects } : { threads: [
+    { id: 'fresh-live', kind: 'codex', hostId: 'local', projectId: 'canonical-project' },
+    { id: 'detached-live', kind: 'codex', hostId: 'local', projectId: null, canonicalProjectId: 'canonical-project' },
+  ] };
+  const legacy = (await adapter.listThreads({ projectId: 'legacy-project' })).threads;
+  const canonical = (await adapter.listThreads({ projectId: 'canonical-project' })).threads;
+  assert.deepEqual(legacy.map(t => t.id), canonical.map(t => t.id));
+  assert(legacy.some(t => t.id === 'fresh-live'));
+  assert.equal(legacy.some(t => t.id === 'detached-live'), false);
+  assert((await adapter.listThreads({ projectId: null })).threads.some(t => t.id === 'detached-live'));
+  projects = [];
+  assert.deepEqual((await adapter.listProjects()).projects, []);
+});
+
+test('creating a chat from a normalized project targets the ID accepted by the current desktop', async t => {
+  const adapter = new DesktopAdapter({ catalog: false }); t.after(() => adapter.close());
+  adapter.ready = true;
+  adapter.localCatalog = async () => ({ projects: [{ projectId: 'box-old', canonicalProjectId: 'box-new', projectKind: 'local', hostId: 'local' }] });
+  let currentId = 'box-new'; const creations = [];
+  adapter.tool = async (name, args) => {
+    if (name === 'list_projects') return { projects: [{ projectId: currentId, projectKind: 'local', hostId: 'local' }] };
+    assert.equal(name, 'create_thread');
+    creations.push(args); return { threadId: 'created' };
+  };
+  assert.equal((await adapter.call('thread.create', { projectId: 'box-old', text: '项目内新建' })).threadId, 'created');
+  assert.equal(creations[0].target.projectId, 'box-new');
+  currentId = 'box-old';
+  await adapter.call('thread.create', { projectId: 'box-new', text: '迁移期间新建' });
+  assert.equal(creations[1].target.projectId, 'box-old');
+  await adapter.call('thread.create', { text: '独立新建' });
+  assert.deepEqual(creations[2].target, { type: 'projectless' });
+});
+
+test('explicit local projects with empty hosts keep aliases, threads and creation on the local host', async t => {
+  const adapter = new DesktopAdapter({ catalog: false }); t.after(() => adapter.close());
+  adapter.ready = true;
+  adapter.localCatalog = async () => ({ threads: [], projects: [
+    { projectId: 'box-old', canonicalProjectId: 'box-new', projectKind: 'local', hostId: 'local' }
+  ] });
+  for (const hostId of [null, '', '  ', undefined, 'local']) {
+    const creations = [];
+    adapter.tool = async (name, args) => {
+      if (name === 'list_projects') return { projects: [
+        { projectId: 'yunqi', projectKind: 'local', hostId, label: 'YunqiPay' },
+        { projectId: 'box-new', projectKind: 'local', hostId, label: '全能文件保管箱' },
+        { projectId: 'box-new', projectKind: 'remote', hostId: 'remote', label: '远程项目' }
+      ] };
+      if (name === 'list_threads') return { threads: [
+        { id: 'new-chat', kind: 'codex', hostId, projectId: 'box-new' },
+        { id: 'detached', kind: 'codex', hostId, projectId: null, canonicalProjectId: 'box-new' },
+        { id: 'remote-chat', kind: 'codex', hostId: 'remote', projectId: 'box-new' }
+      ] };
+      assert.equal(name, 'create_thread'); creations.push(args); return { threadId: 'created' };
+    };
+    const projects = (await adapter.listProjects()).projects;
+    assert.deepEqual(projects.map(p => p.hostId), ['local', 'local', 'remote']);
+    assert.deepEqual(projects.map(p => p.projectId), ['yunqi', 'box-old', 'box-new']);
+    const chats = (await adapter.listThreads({ projectId: 'box-old', hostId: 'local' })).threads;
+    assert.deepEqual(chats.map(c => c.id), ['new-chat']);
+    assert.equal(chats[0].hostId, 'local');
+    await adapter.call('thread.create', { projectId: 'box-old', text: '手机在项目内新建' });
+    assert.equal(creations[0].target.projectId, 'box-new');
+  }
+});
+
 test('completed membership migration makes canonical database assignments authoritative', async t => {
   const fixture = await catalogFixture(t, { migrated: true }); const catalog = await readDesktopCatalog(fixture);
   const byId = new Map(catalog.threads.map(thread => [thread.id, thread]));
